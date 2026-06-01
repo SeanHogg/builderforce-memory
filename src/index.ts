@@ -33,6 +33,10 @@ export {
 
 export { BPETokenizer } from './tokenizer/bpe.js';
 
+// ── Seeded RNG (reproducible weight init) ─────────────────────────────────────
+
+export { SeededRng, setInitSeed, randn, gaussianArray } from './utils/rng.js';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type {

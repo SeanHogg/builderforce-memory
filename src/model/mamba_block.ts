@@ -13,6 +13,7 @@ import {
 } from '../utils/gpu_utils.js';
 
 import { SELECTIVE_SCAN_FORWARD_WGSL }  from '../kernels/selective_scan.js';
+import { gaussianArray }                from '../utils/rng.js';
 import { CONV1D_FORWARD_WGSL }          from '../kernels/conv1d.js';
 import { LINEAR_FORWARD_WGSL }          from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }             from '../kernels/activations.js';
@@ -116,14 +117,7 @@ export class MambaBlock {
         const K = dConv;
         const R = this.dtRank;
 
-        const randn = (n: number, std = 0.02): Float32Array => {
-            const a = new Float32Array(n);
-            for (let i = 0; i < n; i++) {
-                const u1 = Math.random(), u2 = Math.random();
-                a[i] = std * Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
-            }
-            return a;
-        };
+        const randn = (n: number, std = 0.02): Float32Array => gaussianArray(n, std);
 
         const zeros  = (n: number): Float32Array    => new Float32Array(n);
         const ones   = (n: number): Float32Array    => new Float32Array(n).fill(1.0);

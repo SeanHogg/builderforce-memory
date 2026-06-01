@@ -34,6 +34,8 @@ import {
 } from '../utils/gpu_utils.js';
 import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
+import { gaussianArray, setInitSeed } from '../utils/rng.js';
+import { quantizeFp16, dequantizeFp16 } from '../utils/quantization.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -71,6 +73,14 @@ export interface HybridMambaModelConfig {
     mimoGroup?       : number;
 
     eosId?           : number;
+
+    /**
+     * Optional deterministic seed for weight initialisation. When set, the
+     * embedding table and all block weights are initialised reproducibly — the
+     * same seed yields byte-identical initial weights on any machine. When
+     * omitted, weights use `Math.random` (non-reproducible) as before.
+     */
+    seed?            : number;
 }
 
 /** Legacy Mamba-1-only config (fully backward-compatible). */
@@ -140,8 +150,14 @@ export class HybridMambaModel {
             defaultMamba3 : {},
             defaultAttention: {},
             layers        : undefined as unknown as LayerSpec[],
+            seed          : undefined as unknown as number,
             ...config,
         } as Required<HybridMambaModelConfig>;
+
+        // Install the deterministic init seed (if any) for the duration of
+        // construction, so the embedding table and every block initialise
+        // reproducibly. Restored to Math.random once all weights are built.
+        setInitSeed(this.config.seed);
 
         // Resolve layer schedule
         const layerSchedule: LayerSpec[] = config.layers
@@ -156,16 +172,14 @@ export class HybridMambaModel {
 
         // Embedding table
         const { vocabSize, dModel } = this.config;
-        const embedData = new Float32Array(vocabSize * dModel);
-        const std = 1.0 / Math.sqrt(dModel);
-        for (let i = 0; i < embedData.length; i++) {
-            const u1 = Math.random(), u2 = Math.random();
-            embedData[i] = std * Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
-        }
+        const embedData = gaussianArray(vocabSize * dModel, 1.0 / Math.sqrt(dModel));
         this.gpuEmbedding = createStorageBuffer(device, embedData, true);
 
-        // Build layers
+        // Build layers (block constructors also draw from the seeded source)
         this.layers = layerSchedule.map(spec => this._buildLayer(spec));
+
+        // Restore the default Math.random source now that all weights are built.
+        setInitSeed(undefined);
 
         // Final RMSNorm
         this.gpuFinalNorm = createStorageBuffer(device, new Float32Array(dModel).fill(1.0), true);
@@ -403,22 +417,26 @@ export class HybridMambaModel {
         this._wslaMode = enabled;
     }
 
-    // ── Serialisation (MBJS v2) ───────────────────────────────────────────────
+    // ── Serialisation (MBJS v2 / v3) ──────────────────────────────────────────
 
     /**
      * Export all parameters to an ArrayBuffer.
      *
-     * MBJS v2 format:
+     * MBJS v2/v3 format (identical header; only the data encoding differs):
      *   [0..3]   magic    : uint32 = 0x4D424A53
-     *   [4..7]   version  : uint32 = 2
+     *   [4..7]   version  : uint32 = 2 (fp32 data) | 3 (fp16 data)
      *   [8..11]  nLayers  : uint32
      *   [12 .. 12+nLayers-1]  layerType[i]: uint8 (0=m1, 1=m2, 2=m3, 3=attn)
      *   aligned to 4 bytes: padding
      *   [next 4] nParams  : uint32
      *   [next 4*nParams]  numel[i]: uint32
-     *   [data]  float32 values
+     *   [data]  float32 values (v2)  |  float16 values (v3, half the size)
+     *
+     * Pass `{ fp16: true }` to emit a v3 checkpoint — roughly half the bytes,
+     * with a small precision loss that is negligible for SSM weights.
      */
-    async exportWeights(): Promise<ArrayBuffer> {
+    async exportWeights(opts: { fp16?: boolean } = {}): Promise<ArrayBuffer> {
+        const fp16     = opts.fp16 ?? false;
         const params   = this.parameters();
         const nParams  = params.length;
         const nLayers  = this.layers.length;
@@ -430,14 +448,16 @@ export class HybridMambaModel {
         // Header: magic(4) + version(4) + nLayers(4) + layerTypes(nLayers, padded to 4) + nParams(4) + numels(4*nParams)
         const layerTypeBytes = Math.ceil(nLayers / 4) * 4;  // align to 4
         const headerBytes    = 4 + 4 + 4 + layerTypeBytes + 4 + nParams * 4;
-        const dataBytes      = arrays.reduce((a, arr) => a + arr.byteLength, 0);
+        const bytesPerEl     = fp16 ? 2 : 4;
+        const totalEls       = arrays.reduce((a, arr) => a + arr.length, 0);
+        const dataBytes      = totalEls * bytesPerEl;
         const out  = new ArrayBuffer(headerBytes + dataBytes);
         const view = new DataView(out);
 
         let off = 0;
-        view.setUint32(off, MBJS_MAGIC, true); off += 4;
-        view.setUint32(off, 2,           true); off += 4;   // version 2
-        view.setUint32(off, nLayers,     true); off += 4;
+        view.setUint32(off, MBJS_MAGIC, true);   off += 4;
+        view.setUint32(off, fp16 ? 3 : 2, true); off += 4;   // version 2 (fp32) | 3 (fp16)
+        view.setUint32(off, nLayers,     true);  off += 4;
 
         for (let i = 0; i < nLayers; i++) {
             const lt = this.layers[i]!.layerType;
@@ -450,19 +470,30 @@ export class HybridMambaModel {
             view.setUint32(off, p.numel, true);
             off += 4;
         }
-        for (const arr of arrays) {
-            new Float32Array(out, off, arr.length).set(arr);
-            off += arr.byteLength;
+        // Header bytes are a multiple of 4, so both Float32Array and Uint16Array
+        // views below are correctly aligned at `off`.
+        if (fp16) {
+            for (const arr of arrays) {
+                const half = quantizeFp16(arr);
+                new Uint16Array(out, off, half.length).set(half);
+                off += half.length * 2;
+            }
+        } else {
+            for (const arr of arrays) {
+                new Float32Array(out, off, arr.length).set(arr);
+                off += arr.byteLength;
+            }
         }
 
         return out;
     }
 
     /**
-     * Load parameters from an MBJS v1 or v2 ArrayBuffer.
+     * Load parameters from an MBJS v1, v2, or v3 ArrayBuffer.
      *
      * v1: assumes all layers are mamba1 (backward compatible).
-     * v2: reads layer type array and validates per-layer parameter counts.
+     * v2: reads layer type array and validates per-layer parameter counts (fp32 data).
+     * v3: identical layout to v2 but the data section is fp16 (dequantised on load).
      */
     async loadWeights(buffer: ArrayBuffer): Promise<void> {
         const view = new DataView(buffer);
@@ -504,7 +535,8 @@ export class HybridMambaModel {
             return;
         }
 
-        if (version === 2) {
+        if (version === 2 || version === 3) {
+            const fp16    = version === 3;
             const nLayers = view.getUint32(off, true); off += 4;
 
             if (nLayers !== this.layers.length) {
@@ -546,13 +578,19 @@ export class HybridMambaModel {
                 if (numel !== p.numel) {
                     throw new Error(`Parameter ${i} ("${p.name}") size mismatch: file=${numel}, model=${p.numel}.`);
                 }
-                uploadBuffer(this.device, p.buf, new Float32Array(buffer, off, p.numel));
-                off += p.numel * 4;
+                if (fp16) {
+                    const half = new Uint16Array(buffer, off, numel);
+                    uploadBuffer(this.device, p.buf, dequantizeFp16(half));
+                    off += numel * 2;
+                } else {
+                    uploadBuffer(this.device, p.buf, new Float32Array(buffer, off, p.numel));
+                    off += numel * 4;
+                }
             }
             return;
         }
 
-        throw new Error(`Unsupported MBJS version: ${version}. Expected 1 or 2.`);
+        throw new Error(`Unsupported MBJS version: ${version}. Expected 1, 2, or 3.`);
     }
 
     destroy(): void {

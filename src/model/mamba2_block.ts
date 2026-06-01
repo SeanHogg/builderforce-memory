@@ -22,6 +22,7 @@ import {
 } from '../utils/gpu_utils.js';
 
 import { SSD_FORWARD_WGSL }    from '../kernels/ssd.js';
+import { gaussianArray } from '../utils/rng.js';
 import { CONV1D_FORWARD_WGSL } from '../kernels/conv1d.js';
 import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
@@ -99,14 +100,7 @@ export class Mamba2Block implements SequenceLayer {
         const H  = nHeads;
         const G  = nGroups;
 
-        const randn = (n: number, std = 0.02): Float32Array => {
-            const a = new Float32Array(n);
-            for (let i = 0; i < n; i++) {
-                const u1 = Math.random(), u2 = Math.random();
-                a[i] = std * Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
-            }
-            return a;
-        };
+        const randn = (n: number, std = 0.02): Float32Array => gaussianArray(n, std);
 
         const zeros = (n: number) => new Float32Array(n);
         const ones  = (n: number) => new Float32Array(n).fill(1.0);
