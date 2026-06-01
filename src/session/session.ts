@@ -453,6 +453,24 @@ export class MambaSession {
         }
     }
 
+    // ── Embedding ──────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a fixed-length (`dModel`) L2-normalised embedding for `text`,
+     * derived from the model's final hidden state. Suitable for cosine-similarity
+     * semantic search (see MemoryStore.recallSimilar).
+     *
+     * Returns a zero vector for empty input.
+     */
+    async embed(text: string): Promise<Float32Array> {
+        this._assertNotDestroyed();
+        const ids = this._tokenizer.encode(text);
+        if (ids.length === 0) {
+            return new Float32Array(this._model.config.dModel);
+        }
+        return this._model.embed(ids);
+    }
+
     // ── Fine-tuning ────────────────────────────────────────────────────────────
 
     async adapt(text: string, options: AdaptOptions = {}): Promise<AdaptResult> {

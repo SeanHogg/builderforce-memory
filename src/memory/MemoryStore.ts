@@ -67,12 +67,17 @@ interface SaveLoadRuntime {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SSMRuntimeRef = any;
 
+/** Max number of cached content→embedding vectors retained in memory. */
+const EMBED_CACHE_MAX = 2000;
+
 export class MemoryStore {
     private readonly _dbName     : string;
     private readonly _weightsKey : string;
     private readonly _idb        : IDBFactory | undefined;
     private readonly _defaultTtl : number | undefined;
     private _db: IDBDatabase | null = null;
+    /** Content → L2-normalised embedding cache, used by recallSimilar. */
+    private readonly _embedCache = new Map<string, Float32Array>();
 
     constructor(opts: MemoryStoreOptions = {}) {
         this._dbName     = opts.dbName     ?? 'ssmjs';
@@ -218,16 +223,42 @@ export class MemoryStore {
     }
 
     /**
-     * Finds the top-K semantically similar entries to `query` using Jaccard
-     * word-overlap similarity.  The `runtime` parameter is reserved for future
-     * SSM-hidden-state embeddings — the current implementation is CPU-only.
+     * Finds the top-K semantically similar entries to `query`.
+     *
+     * When `runtime` exposes an `embed()` method (the SSMRuntime does), similarity
+     * is computed as cosine distance between SSM hidden-state embeddings — i.e. the
+     * memory layer uses the very model it is attached to, and recall quality
+     * improves automatically as that model is adapted/distilled. Embeddings are
+     * cached per content string to avoid recomputing across calls.
+     *
+     * If no embedding-capable runtime is provided, or embedding fails for any
+     * reason, it transparently falls back to Jaccard word-overlap similarity.
      */
-    async recallSimilar(query: string, topK: number, _runtime: SSMRuntimeRef): Promise<MemoryEntry[]> {
+    async recallSimilar(query: string, topK: number, runtime?: SSMRuntimeRef): Promise<MemoryEntry[]> {
         const all = await this.recallAll();
         if (all.length === 0) return [];
 
-        const queryTokens = new Set(tokenize(query));
+        // ── Preferred path: SSM-embedding cosine similarity ───────────────────
+        if (runtime != null && typeof runtime.embed === 'function') {
+            const queryVec = await this._embedWithCache(runtime, query);
+            if (queryVec) {
+                const scored: { entry: MemoryEntry; score: number }[] = [];
+                let embeddedAll = true;
+                for (const entry of all) {
+                    const entryVec = await this._embedWithCache(runtime, entry.content);
+                    if (!entryVec) { embeddedAll = false; break; }
+                    scored.push({ entry, score: cosineSimilarity(queryVec, entryVec) });
+                }
+                if (embeddedAll) {
+                    scored.sort((a, b) => b.score - a.score);
+                    return scored.slice(0, topK).map(s => s.entry);
+                }
+            }
+            // Any failure falls through to the Jaccard path below.
+        }
 
+        // ── Fallback: Jaccard word-overlap similarity ─────────────────────────
+        const queryTokens = new Set(tokenize(query));
         const scored = all.map(entry => {
             const entryTokens = new Set(tokenize(entry.content));
             const score       = jaccardSimilarity(queryTokens, entryTokens);
@@ -236,6 +267,28 @@ export class MemoryStore {
 
         scored.sort((a, b) => b.score - a.score);
         return scored.slice(0, topK).map(s => s.entry);
+    }
+
+    /**
+     * Returns a cached embedding for `text`, computing it via `runtime.embed()`
+     * on a cache miss. Returns `null` (never throws) when embedding is
+     * unavailable so callers can fall back to lexical similarity.
+     */
+    private async _embedWithCache(runtime: SSMRuntimeRef, text: string): Promise<Float32Array | null> {
+        const cached = this._embedCache.get(text);
+        if (cached) return cached;
+        try {
+            const vec = await runtime.embed(text);
+            if (vec instanceof Float32Array && vec.length > 0) {
+                // Bound cache growth — simplest eviction is a full clear.
+                if (this._embedCache.size >= EMBED_CACHE_MAX) this._embedCache.clear();
+                this._embedCache.set(text, vec);
+                return vec;
+            }
+        } catch {
+            // Embedding unavailable (no GPU, destroyed runtime, etc.) — signal fallback.
+        }
+        return null;
     }
 
     /**
@@ -377,4 +430,22 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
     }
     const union = a.size + b.size - intersection;
     return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Cosine similarity between two equal-length vectors.
+ * Vectors from MambaSession.embed() are already L2-normalised, so this reduces
+ * to a dot product, but we normalise defensively for vectors from other sources.
+ */
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+    const n = Math.min(a.length, b.length);
+    if (n === 0) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < n; i++) {
+        dot += a[i]! * b[i]!;
+        na  += a[i]! * a[i]!;
+        nb  += b[i]! * b[i]!;
+    }
+    const denom = Math.sqrt(na) * Math.sqrt(nb);
+    return denom === 0 ? 0 : dot / denom;
 }

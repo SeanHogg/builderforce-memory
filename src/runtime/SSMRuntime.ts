@@ -191,6 +191,16 @@ export class SSMRuntime {
         return this._session.evaluate(text);
     }
 
+    /**
+     * Returns an L2-normalised SSM embedding for `text`.
+     * Pass-through to MambaSession.embed(). Consumed by MemoryStore.recallSimilar
+     * for SSM-based semantic search.
+     */
+    async embed(text: string): Promise<Float32Array> {
+        this._checkAlive();
+        return this._session.embed(text);
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     /**
