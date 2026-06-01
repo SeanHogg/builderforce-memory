@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/mambacode.js",
-  "version": "2026.3.21",
+  "version": "2026.5.31",
   "description": "High-performance TypeScript/WGSL Mamba SSM library for browser-based code model training and inference",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -26,7 +26,18 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mamba", "ssm", "state-space-model", "webgpu", "wgsl", "machine-learning", "code-model", "bpe", "transformer-alternative", "typescript"],
+  "keywords": [
+    "mamba",
+    "ssm",
+    "state-space-model",
+    "webgpu",
+    "wgsl",
+    "machine-learning",
+    "code-model",
+    "bpe",
+    "transformer-alternative",
+    "typescript"
+  ],
   "author": {
     "name": "Sean Hogg",
     "email": "seanhogg@gmail.com",
@@ -58,7 +69,9 @@
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",
-    "extensionsToTreatAsEsm": [".ts"],
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
     "transform": {
       "^.+\\.tsx?$": [
         "ts-jest",
@@ -70,7 +83,10 @@
             "strict": true,
             "esModuleInterop": true,
             "skipLibCheck": true,
-            "types": ["@webgpu/types", "jest"]
+            "types": [
+              "@webgpu/types",
+              "jest"
+            ]
           }
         }
       ]
