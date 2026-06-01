@@ -26,26 +26,17 @@ import type { Tokenizer } from './tokenizer.js';
 const DEFAULT_VOCAB_URL  = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/vocab.json';
 const DEFAULT_MERGES_URL = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/merges.txt';
 
-/**
- * Default checkpoint: nano model trained on TinyStories.
- *
- * Trained with:
- *   - Architecture : nano (dModel=128, numLayers=4)
- *   - Tokenizer    : Qwen2.5-Coder BPE (151,936 tokens)
- *   - Dataset      : roneneldan/TinyStories (~480 M tokens)
- *   - Precision    : fp16 (~40 MB)
- *
- * To produce this checkpoint:
- *   1. Open tools/pretrain.html after `npm run serve`
- *   2. Click "Load TinyStories" to fetch the dataset
- *   3. Train (nano, fullTrain, ~2 hrs on a consumer GPU with WebGPU)
- *   4. Download the .bin
- *   5. Upload to: https://huggingface.co/SeanHogg/mambakit-nano
- *   6. Update this URL and uncomment DEFAULT_CHECKPOINT_URL below
- *
- * Uncomment once the checkpoint is hosted:
- */
-// const DEFAULT_CHECKPOINT_URL = 'https://huggingface.co/SeanHogg/mambakit-nano/resolve/main/nano-tinystories-fp16.bin';
+// Checkpoint provenance
+// ----------------------
+// There is intentionally no hard-coded default checkpoint URL. A model with no
+// checkpoint starts from initialised weights and generates poorly until trained
+// or adapted — callers must opt in to a checkpoint explicitly via one of:
+//   • `checkpointUrl`    — fetch a hosted .bin (browser or any fetch-capable env)
+//   • `checkpointBuffer` — load an already-read ArrayBuffer (Node/local files;
+//                          fetch() cannot read local paths in Node)
+// To produce a checkpoint without a hosted model:
+//   • Untrained (deterministic seed): `node tools/generate-bin.js --size nano`
+//   • Trained: open tools/pretrain.html, train on a corpus, download the .bin
 import { resolveModelConfig } from './presets.js';
 import {
     saveToIndexedDB,
@@ -61,6 +52,13 @@ import { tokenStream } from './streaming.js';
 export interface MambaSessionOptions {
     /** URL to a .bin checkpoint file. Optional — model starts with random weights if omitted. */
     checkpointUrl?  : string;
+    /**
+     * Pre-read checkpoint bytes. Takes precedence over `checkpointUrl` and is
+     * loaded directly via `model.loadWeights()` with no network fetch.
+     * Use this in Node.js, where `fetch()` cannot read local file paths — read
+     * the .bin with `fs` and pass the resulting ArrayBuffer here.
+     */
+    checkpointBuffer?: ArrayBuffer;
     /** URL to vocab.json. Defaults to the Qwen2.5-Coder vocabulary. */
     vocabUrl?       : string;
     /** URL to merges.txt. Defaults to the Qwen2.5-Coder merge rules. */
@@ -361,7 +359,21 @@ export class MambaSession {
         emit('model', 1.0, 'Model ready');
 
         // Step 4 — Checkpoint (optional)
-        if (options.checkpointUrl != null) {
+        // A pre-read buffer takes precedence over a URL (Node/local-file path);
+        // fetch() is only used when a URL is supplied.
+        if (options.checkpointBuffer != null) {
+            emit('weights', 0.0, 'Loading checkpoint…');
+            try {
+                await model.loadWeights(options.checkpointBuffer);
+            } catch (err) {
+                throw new SessionError(
+                    'CHECKPOINT_INVALID',
+                    `Checkpoint buffer is invalid or incompatible: ${(err as Error).message}`,
+                    err,
+                );
+            }
+            emit('weights', 1.0, 'Checkpoint loaded');
+        } else if (options.checkpointUrl != null) {
             emit('weights', 0.0, 'Fetching checkpoint…');
             let buffer: ArrayBuffer | null = null;
             let lastErr: unknown;

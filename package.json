@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/ssmjs",
-  "version": "2026.3.21",
+  "version": "2026.5.31",
   "description": "JavaScript-native AI runtime — SSM execution, Transformer orchestration, online distillation, and persistent agent memory",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -25,9 +25,17 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "mamba", "ssm", "state-space-model", "webgpu", "ai-runtime",
-    "distillation", "online-learning", "agent", "transformer-bridge",
-    "browser-ai", "typescript"
+    "mamba",
+    "ssm",
+    "state-space-model",
+    "webgpu",
+    "ai-runtime",
+    "distillation",
+    "online-learning",
+    "agent",
+    "transformer-bridge",
+    "browser-ai",
+    "typescript"
   ],
   "author": {
     "name": "Sean Hogg",
@@ -40,7 +48,7 @@
     "url": "https://github.com/SeanHogg/SSMjs.git"
   },
   "peerDependencies": {
-    "@seanhogg/mambacode.js": "^2026.3.21"
+    "@seanhogg/mambacode.js": "^2026.5.31"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
@@ -48,7 +56,7 @@
     "@typescript-eslint/parser": "^7.0.0",
     "@webgpu/node": "^0.1.0",
     "@webgpu/types": "^0.1.49",
-    "@seanhogg/mambacode.js": "^2026.3.21",
+    "@seanhogg/mambacode.js": "^2026.5.31",
     "eslint": "^8.57.0",
     "fake-indexeddb": "^6.0.0",
     "jest": "^29.7.0",
@@ -57,7 +65,9 @@
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",
-    "extensionsToTreatAsEsm": [".ts"],
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
     "transform": {
       "^.+\\.tsx?$": [
         "ts-jest",
@@ -69,7 +79,10 @@
             "strict": false,
             "esModuleInterop": true,
             "skipLibCheck": true,
-            "types": ["@webgpu/types", "jest"]
+            "types": [
+              "@webgpu/types",
+              "jest"
+            ]
           }
         }
       ]

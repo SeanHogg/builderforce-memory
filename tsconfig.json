@@ -4,6 +4,7 @@
     "module": "ES2022",
     "moduleResolution": "node",
     "lib": ["ES2022", "DOM"],
+    "types": ["@webgpu/types"],
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
