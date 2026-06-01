@@ -292,6 +292,71 @@ export class HybridMambaModel {
         return { logits, gpuLogits, caches };
     }
 
+    /**
+     * Produces a single fixed-length embedding vector for a token sequence.
+     *
+     * Runs the full layer stack plus the final RMSNorm — i.e. the same hidden
+     * state the LM head consumes — then mean-pools across sequence positions and
+     * L2-normalises the result. The returned vector has length `dModel` and is
+     * suitable for cosine-similarity semantic search.
+     *
+     * Unlike `forward()`, this skips the (expensive) LM-head projection: it only
+     * needs the `dModel`-wide hidden state, not `vocabSize` logits.
+     *
+     * The embedding reflects whatever the model currently knows — an untrained
+     * model behaves like a random projection of the token embeddings (still
+     * lexically discriminative), and the representation sharpens automatically as
+     * the model is adapted/distilled.
+     */
+    async embed(tokenIds: number[] | Uint32Array): Promise<Float32Array> {
+        const { dModel } = this.config;
+        const seqLen = tokenIds.length;
+        const batch  = 1;
+        const M      = batch * seqLen;
+        if (M === 0) return new Float32Array(dModel);
+
+        let hidden = this.embedTokens(tokenIds, batch, seqLen);
+        for (const layer of this.layers) {
+            const { output } = layer.forward(hidden, batch, seqLen);
+            hidden.destroy();
+            hidden = output;
+        }
+
+        // Final RMSNorm — mirrors forward(), but we stop here (no LM head).
+        const normOut = createEmptyStorageBuffer(this.device, M * dModel * 4, true);
+        const normInv = createEmptyStorageBuffer(this.device, M * 4, false);
+        {
+            const params = new ArrayBuffer(16);
+            new Uint32Array(params, 0, 2).set([M, dModel]);
+            new Float32Array(params, 8, 1).set([1e-6]);
+            const pBuf = createUniformBuffer(this.device, params);
+            const bg = createBindGroup(this.device, this._rmsnormPipeline,
+                [pBuf, hidden, this.gpuFinalNorm, normOut, normInv]);
+            dispatchKernel(this.device, this._rmsnormPipeline, bg, [cdiv(M, 64), 1, 1]);
+        }
+        hidden.destroy();
+
+        const normed = await readBuffer(this.device, normOut, M * dModel * 4);
+        normOut.destroy();
+        normInv.destroy();
+
+        // Mean-pool across sequence positions → dModel vector.
+        const out = new Float32Array(dModel);
+        for (let t = 0; t < seqLen; t++) {
+            const base = t * dModel;
+            for (let d = 0; d < dModel; d++) out[d]! += normed[base + d]!;
+        }
+        for (let d = 0; d < dModel; d++) out[d]! /= seqLen;
+
+        // L2-normalise so cosine similarity reduces to a dot product.
+        let norm = 0;
+        for (let d = 0; d < dModel; d++) norm += out[d]! * out[d]!;
+        norm = Math.sqrt(norm) || 1;
+        for (let d = 0; d < dModel; d++) out[d]! /= norm;
+
+        return out;
+    }
+
     async generate(promptIds: number[], maxNewTokens = 200, samplingOpts: SamplingOptions = {}): Promise<number[]> {
         const { temperature = 1.0, topK = 50, topP = 0.9 } = samplingOpts;
         const { vocabSize } = this.config;
