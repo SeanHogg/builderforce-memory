@@ -117,5 +117,6 @@ export function resolveModelConfig(
         mimoGroup,
         eosId,
         layers,
+        seed: options.seed,
     };
 }

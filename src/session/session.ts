@@ -135,6 +135,13 @@ export interface MambaSessionOptions {
     allowCpuFallback?: boolean;
     /** Number of times to retry a failed checkpoint fetch. Default: 2. */
     fetchRetries?   : number;
+    /**
+     * Deterministic seed for weight initialisation. When set, a model created
+     * without a checkpoint initialises reproducibly — the same seed yields
+     * byte-identical weights on any machine. Omit for non-reproducible
+     * `Math.random` init (the default).
+     */
+    seed?           : number;
 }
 
 export interface CompleteOptions {
