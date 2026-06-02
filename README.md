@@ -382,6 +382,12 @@ MambaCode.js (WebGPU kernels)
 
 ---
 
+## Consolidated Gap Register
+
+- **Release publish blocked by NPM_TOKEN permissions** (`.github/workflows/release.yml`): the `2026.5.31` tag failed `npm publish` with a 404 PUT. The package exists on npm (maintainer `seanhogg`) and `npm whoami` passes, so the `NPM_TOKEN` secret authenticates but lacks read-write on `@seanhogg/mambacode.js` (read-only token, wrong account, or a granular token whose allowlist omits the package). The workflow now fails fast with this diagnosis, but the actual fix is registry-side and manual: rotate `NPM_TOKEN` to an Automation/granular token with publish rights, then re-push the tag. Unblocks every downstream consumer pinned to a published `@seanhogg/mambacode.js` version.
+
+---
+
 ## License
 
 MIT
