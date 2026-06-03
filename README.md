@@ -408,23 +408,23 @@ No logic changes are required, only the import path.
 
 ---
 
-## CoderClaw Integration
+## BuilderForce Agents Integration
 
-SSM.js serves as the **hippocampus** layer of [CoderClaw](https://coderclaw.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
+SSM.js serves as the **hippocampus** layer of [BuilderForce Agents](https://builderforce.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
 
-The `SsmMemoryService` class in CoderClaw's `src/infra/ssm-memory-service.ts` wraps an `SSMRuntime` + `SSMAgent` + `MemoryStore` triplet:
+The `SsmMemoryService` class in BuilderForce Agents's `src/infra/ssm-memory-service.ts` wraps an `SSMRuntime` + `SSMAgent` + `MemoryStore` triplet:
 
 ```
-CoderClaw gateway
+BuilderForce Agents gateway
 ├── server-startup.ts       ← initSsmMemoryService() on boot
 ├── infra/knowledge-loop.ts ← remember() + learn() on every agent run
 ├── infra/ssm-memory-service.ts  ← SsmMemoryService wrapper
-└── coderclaw/orchestrator.ts    ← recallSimilar() injected into task prompts
+└── builderforce/orchestrator.ts    ← recallSimilar() injected into task prompts
 ```
 
 **Data flow:**
 1. Agent run completes → `KnowledgeLoopService` derives activity summary
-2. Summary is stored in `.coderClaw/memory/YYYY-MM-DD.md` (markdown log)
+2. Summary is stored in `.builderforce/memory/YYYY-MM-DD.md` (markdown log)
 3. Summary is also passed to `ssmSvc.remember()` (tagged + importance-weighted)
 4. Summary is passed to `ssmSvc.learn()` → WSLA fine-tuning adapts the SSM
 5. On next workflow task, `recallSimilar(taskDescription, 5)` injects relevant memories into the prompt as a `[Memory Context]` block
@@ -449,7 +449,7 @@ GPU init is optional: if `@webgpu/node` is unavailable, the service starts in me
 - `MemoryStore.recallByTag(tag)` — tag-based filtering
 - `MemoryStore.exportAll()` / `importAll(entries, strategy)` — cross-session merge
 
-### Phase 3 — CoderClaw Integration
+### Phase 3 — BuilderForce Agents Integration
 - `SsmMemoryService` in `src/infra/ssm-memory-service.ts` — singleton gateway service
 - `server-startup.ts`: `initSsmMemoryService()` on boot; non-fatal GPU fallback
 - `KnowledgeLoopService`: `remember()` + `learn()` on every agent run completion
