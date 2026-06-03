@@ -366,7 +366,7 @@ npm run lint    # ESLint
 - **Dataset generation** — LLM-assisted JSONL instruction dataset creation with streaming progress
 - **Workforce Registry** — publish trained models as specialist AI agents; discoverable and hirable by the community
 - **Agent portability** — `AgentPackage` bundles the LoRA adapter, `MambaStateSnapshot`, and agent profile into a single portable JSON artifact
-- **CoderClaw mesh** — trained agents deploy as self-hosted coding agents via [CoderClaw](https://coderclaw.ai), orchestrated from Builderforce
+- **BuilderForce Agents mesh** — trained agents deploy as self-hosted coding agents via [BuilderForce Agents](https://builderforce.ai), orchestrated from Builderforce
 
 Use MambaCode.js to build and experiment locally. Use Builderforce.ai to deploy, manage, and share at scale.
 
@@ -377,7 +377,7 @@ MambaCode.js (WebGPU kernels)
       ↓
  Builderforce.ai (enterprise IDE + training + registry)
       ↓
-   CoderClaw (self-hosted agent mesh)
+   BuilderForce Agents (self-hosted agent mesh)
 ```
 
 ---
