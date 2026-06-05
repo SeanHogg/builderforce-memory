@@ -1,7 +1,7 @@
 {
-  "name": "@seanhogg/ssmjs",
+  "name": "@builderforce/memory",
   "version": "2026.5.31",
-  "description": "JavaScript-native AI runtime — SSM execution, Transformer orchestration, online distillation, and persistent agent memory",
+  "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, and persistent agent memory for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "lint": "eslint src/ tests/",
     "prepublishOnly": "npm run build"
   },
@@ -35,6 +35,8 @@
     "agent",
     "transformer-bridge",
     "browser-ai",
+    "agent-memory",
+    "builderforce",
     "typescript"
   ],
   "author": {
@@ -45,17 +47,23 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SeanHogg/SSMjs.git"
+    "url": "https://github.com/SeanHogg/builderforce-memory.git",
+    "directory": "packages/memory"
   },
+  "bugs": {
+    "url": "https://github.com/SeanHogg/builderforce-memory/issues"
+  },
+  "homepage": "https://github.com/SeanHogg/builderforce-memory/tree/main/packages/memory#readme",
   "peerDependencies": {
-    "@seanhogg/mambacode.js": "^2026.5.31"
+    "@builderforce/memory-core": "workspace:^"
   },
   "devDependencies": {
+    "@jest/globals": "^29.7.0",
     "@types/jest": "^29.5.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@webgpu/types": "^0.1.49",
-    "@seanhogg/mambacode.js": "^2026.5.31",
+    "@builderforce/memory-core": "workspace:*",
     "eslint": "^8.57.0",
     "fake-indexeddb": "^6.0.0",
     "jest": "^29.7.0",

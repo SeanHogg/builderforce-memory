@@ -15,7 +15,7 @@ import {
     type HybridMambaModelConfig,
     type LayerSpec,
     type LayerType,
-} from '@seanhogg/mambacode.js';
+} from '@builderforce/memory-core';
 
 import { SessionError } from './errors.js';
 import type { Tokenizer } from './tokenizer.js';

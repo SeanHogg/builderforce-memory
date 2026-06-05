@@ -5,7 +5,7 @@
  * token is yielded immediately after sampling, enabling real-time streaming UIs.
  */
 
-import type { HybridMambaModel, SamplingOptions } from '@seanhogg/mambacode.js';
+import type { HybridMambaModel, SamplingOptions } from '@builderforce/memory-core';
 
 /** Minimum effective temperature — avoids division by zero in sampling. */
 const MIN_TEMPERATURE = 1e-7;
