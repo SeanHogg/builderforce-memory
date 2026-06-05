@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/memory-engine" },
-    { "path": "./packages/memory" }
+    { "path": "./packages/memory" },
+    { "path": "./packages/memory-mcp" }
   ]
 }

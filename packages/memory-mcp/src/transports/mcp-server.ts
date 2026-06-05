@@ -22,13 +22,18 @@ export function buildMcpServer(backend: MemoryBackend, opts: McpServerOptions = 
         version: opts.version ?? "2026.5.31",
     });
 
+    // The generic registerTool() over a zod raw shape trips TS2589 (excessively
+    // deep instantiation); the tool surface is identical across our transports,
+    // so register through a loose signature. Runtime behaviour is unchanged —
+    // both frameworks consume (name, {description, inputSchema}, handler).
+    const register = server.registerTool.bind(server) as (
+        name: string,
+        config: { description: string; inputSchema: unknown },
+        handler: unknown,
+    ) => void;
+
     for (const t of buildMemoryTools(backend, opts)) {
-        server.registerTool(
-            t.name,
-            { description: t.description, inputSchema: t.inputSchema },
-            // MCP SDK and our ToolResult share the CallToolResult shape.
-            t.handler as never,
-        );
+        register(t.name, { description: t.description, inputSchema: t.inputSchema }, t.handler);
     }
 
     return server;
