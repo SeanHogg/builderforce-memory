@@ -141,7 +141,7 @@ async function* parseAnthropicStream(body: ReadableStream<Uint8Array>): AsyncIte
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
+            buffer = lines.pop() as string; // split() always yields ≥1 element → never undefined
 
             for (const line of lines) {
                 const trimmed = line.trim();

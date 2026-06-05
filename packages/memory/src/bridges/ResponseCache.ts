@@ -76,8 +76,9 @@ export class ResponseCache {
         this._store.set(key, { value, timestamp: now });
 
         while (this._store.size > this._maxEntries) {
-            const oldest = this._store.keys().next().value;
-            if (oldest === undefined) break;
+            // size > maxEntries (≥ 0) guarantees the map is non-empty, so the
+            // oldest key always exists — the non-null assertion is safe.
+            const oldest = this._store.keys().next().value as string;
             this._store.delete(oldest);
         }
     }

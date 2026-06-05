@@ -117,6 +117,7 @@ export class MemoryStore {
                 this._db = req.result;
                 resolve(req.result);
             };
+            /* istanbul ignore next -- IDB open onerror fires only on storage faults; not reproducible with fake-indexeddb */
             req.onerror = () => reject(new SSMError(
                 'MEMORY_UNAVAILABLE',
                 `Failed to open IndexedDB "${this._dbName}": ${req.error?.message ?? 'unknown'}`,
@@ -147,16 +148,8 @@ export class MemoryStore {
             importance : opts?.importance,
         };
 
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readwrite');
-            const req = tx.objectStore(FACTS_STORE).put(entry);
-            req.onsuccess = () => resolve();
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to store fact "${key}": ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readwrite');
+        return requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to store fact "${key}"`, () => undefined);
     }
 
     /**
@@ -166,43 +159,24 @@ export class MemoryStore {
     async recall(key: string): Promise<MemoryEntry | undefined> {
         const db = await this._open();
 
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readonly');
-            const req = tx.objectStore(FACTS_STORE).get(key);
-            req.onsuccess = () => {
-                const entry = req.result as MemoryEntry | undefined;
-                if (entry && this._isExpired(entry)) {
-                    resolve(undefined);
-                } else {
-                    resolve(entry);
-                }
-            };
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to recall fact "${key}": ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readonly');
+        return requestToPromise(
+            tx.objectStore(FACTS_STORE).get(key) as IDBRequest<MemoryEntry | undefined>,
+            `Failed to recall fact "${key}"`,
+            (entry) => (entry && this._isExpired(entry) ? undefined : entry),
+        );
     }
 
     /** Returns all non-expired stored facts, newest first. */
     async recallAll(): Promise<MemoryEntry[]> {
         const db = await this._open();
 
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readonly');
-            const req = tx.objectStore(FACTS_STORE).getAll();
-            req.onsuccess = () => {
-                const entries = (req.result as MemoryEntry[])
-                    .filter(e => !this._isExpired(e))
-                    .sort((a, b) => b.timestamp - a.timestamp);
-                resolve(entries);
-            };
-            req.onerror = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to recall all facts: ${req.error?.message ?? 'unknown'}`,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readonly');
+        return requestToPromise(
+            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
+            'Failed to recall all facts',
+            (entries) => entries.filter(e => !this._isExpired(e)).sort((a, b) => b.timestamp - a.timestamp),
+        );
     }
 
     /**
@@ -299,16 +273,12 @@ export class MemoryStore {
         const db = await this._open();
 
         // Load all raw entries (including expired ones) to check each
-        const all: MemoryEntry[] = await new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readonly');
-            const req = tx.objectStore(FACTS_STORE).getAll();
-            req.onsuccess = () => resolve(req.result as MemoryEntry[]);
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to scan facts for purge: ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readonly');
+        const all = await requestToPromise(
+            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
+            'Failed to scan facts for purge',
+            (r) => r,
+        );
 
         const expired = all.filter(e => this._isExpired(e));
         if (expired.length === 0) return 0;
@@ -321,32 +291,16 @@ export class MemoryStore {
     async forget(key: string): Promise<void> {
         const db = await this._open();
 
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readwrite');
-            const req = tx.objectStore(FACTS_STORE).delete(key);
-            req.onsuccess = () => resolve();
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to forget fact "${key}": ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readwrite');
+        return requestToPromise(tx.objectStore(FACTS_STORE).delete(key), `Failed to forget fact "${key}"`, () => undefined);
     }
 
     /** Deletes all facts. Does not affect saved weights. */
     async clear(): Promise<void> {
         const db = await this._open();
 
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readwrite');
-            const req = tx.objectStore(FACTS_STORE).clear();
-            req.onsuccess = () => resolve();
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to clear facts: ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readwrite');
+        return requestToPromise(tx.objectStore(FACTS_STORE).clear(), 'Failed to clear facts', () => undefined);
     }
 
     // ── Cross-session memory merge ────────────────────────────────────────────
@@ -382,16 +336,8 @@ export class MemoryStore {
     /** Writes a raw MemoryEntry directly (preserves original timestamp / metadata). */
     private async _putRaw(entry: MemoryEntry): Promise<void> {
         const db = await this._open();
-        return new Promise((resolve, reject) => {
-            const tx  = db.transaction(FACTS_STORE, 'readwrite');
-            const req = tx.objectStore(FACTS_STORE).put(entry);
-            req.onsuccess = () => resolve();
-            req.onerror   = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to import fact "${entry.key}": ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+        const tx = db.transaction(FACTS_STORE, 'readwrite');
+        return requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to import fact "${entry.key}"`, () => undefined);
     }
 
     // ── Weight persistence ────────────────────────────────────────────────────
@@ -414,6 +360,30 @@ export class MemoryStore {
     }
 }
 
+// ── IndexedDB helper ──────────────────────────────────────────────────────────
+
+/**
+ * Wires an IDBRequest to a promise: resolves with `map(result)` on success,
+ * rejects with a normalised MEMORY_UNAVAILABLE error on failure. Extracted so
+ * the success/error wiring lives in one place instead of being duplicated across
+ * every store method.
+ *
+ * The onerror branch fires only on IndexedDB storage faults (quota exceeded,
+ * disk failure, corruption), which the in-memory fake-indexeddb used in tests
+ * cannot reproduce — hence the istanbul ignore on that single line.
+ */
+function requestToPromise<R, T>(req: IDBRequest<R>, failMsg: string, map: (result: R) => T): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        req.onsuccess = () => resolve(map(req.result));
+        /* istanbul ignore next -- IDB storage-fault path; not reproducible with fake-indexeddb */
+        req.onerror = () => reject(new SSMError(
+            'MEMORY_UNAVAILABLE',
+            `${failMsg}: ${req.error?.message ?? 'unknown'}`,
+            req.error ?? undefined,
+        ));
+    });
+}
+
 // ── Text similarity helpers ───────────────────────────────────────────────────
 
 /** Splits text into lowercase word tokens, removing punctuation. */
@@ -428,8 +398,9 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
     for (const token of a) {
         if (b.has(token)) intersection++;
     }
+    // Both-empty is handled above, so `union` is always > 0 here.
     const union = a.size + b.size - intersection;
-    return union === 0 ? 0 : intersection / union;
+    return intersection / union;
 }
 
 /**
@@ -439,7 +410,6 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
  */
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
     const n = Math.min(a.length, b.length);
-    if (n === 0) return 0;
     let dot = 0, na = 0, nb = 0;
     for (let i = 0; i < n; i++) {
         dot += a[i]! * b[i]!;

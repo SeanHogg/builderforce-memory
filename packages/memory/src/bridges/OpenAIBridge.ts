@@ -119,7 +119,7 @@ async function* parseOpenAIStream(body: ReadableStream<Uint8Array>): AsyncIterab
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';   // keep the last (possibly partial) line
+            buffer = lines.pop() as string;   // keep the last (possibly partial) line; split() always yields ≥1 element
 
             for (const line of lines) {
                 const trimmed = line.trim();
