@@ -114,13 +114,14 @@ export class SSMAgent {
      */
     async think(input: string, opts: ThinkOptions = {}): Promise<string> {
         const { systemPrompt, injectAllFacts, ...generateOpts } = opts;
-        const prompt = await this._buildPrompt(input, systemPrompt, injectAllFacts);
+        const { system, conversation } = await this._buildPrompt(input, systemPrompt, injectAllFacts);
 
-        const raw = await this._runtime.generate(prompt, {
+        const raw = await this._runtime.generate(conversation, {
             maxNewTokens: 200,
             temperature : 0.7,
             topK        : 50,
             topP        : 0.9,
+            system,
             ...generateOpts,
         });
 
@@ -138,14 +139,15 @@ export class SSMAgent {
      */
     async *thinkStream(input: string, opts: ThinkOptions = {}): AsyncIterable<string> {
         const { systemPrompt, injectAllFacts, bridgeOpts: _b, ...completeOpts } = opts;
-        const prompt = await this._buildPrompt(input, systemPrompt, injectAllFacts);
+        const { system, conversation } = await this._buildPrompt(input, systemPrompt, injectAllFacts);
 
         let full = '';
-        for await (const token of this._runtime.stream(prompt, {
+        for await (const token of this._runtime.stream(conversation, {
             maxNewTokens: 200,
             temperature : 0.7,
             topK        : 50,
             topP        : 0.9,
+            system,
             ...completeOpts,
         })) {
             full += token;
@@ -228,13 +230,25 @@ export class SSMAgent {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Builds the prompt as two parts split at the cache boundary:
+     *   - `system`       : the System line + injected Facts — stable across a
+     *                      turn, so the transformer can cache it (see
+     *                      SSMRuntime.GenerateOptions.system).
+     *   - `conversation` : trimmed history + the current User turn — volatile,
+     *                      regenerated every turn.
+     *
+     * Joining them with a newline (which SSMRuntime does on the SSM path)
+     * reproduces the original single-string MambaChatbot format exactly, so the
+     * SSM sees an unchanged prompt.
+     */
     private async _buildPrompt(
         input                : string,
         systemPromptOverride?: string,
         injectAllFacts?      : boolean,
-    ): Promise<string> {
-        const sys   = systemPromptOverride ?? this._systemPrompt;
-        const lines : string[] = [`System: ${sys}`];
+    ): Promise<{ system: string; conversation: string }> {
+        const sys         = systemPromptOverride ?? this._systemPrompt;
+        const systemLines : string[] = [`System: ${sys}`];
 
         // Inject relevant facts from MemoryStore, sorted by importance descending
         if (this._memory) {
@@ -249,7 +263,7 @@ export class SSMAgent {
             );
 
             for (const fact of sorted) {
-                lines.push(`Fact (${fact.key}): ${fact.content}`);
+                systemLines.push(`Fact (${fact.key}): ${fact.content}`);
             }
         }
 
@@ -259,14 +273,19 @@ export class SSMAgent {
             ? this._history.slice(this._history.length - maxMessages)
             : this._history;
 
+        const convoLines: string[] = [];
         for (const msg of trimmed) {
             const speaker = msg.role === 'user' ? 'User' : 'Assistant';
-            lines.push(`${speaker}: ${msg.content}`);
+            convoLines.push(`${speaker}: ${msg.content}`);
         }
 
-        lines.push(`User: ${input}`);
-        lines.push('Assistant:');
-        return lines.join('\n');
+        convoLines.push(`User: ${input}`);
+        convoLines.push('Assistant:');
+
+        return {
+            system      : systemLines.join('\n'),
+            conversation: convoLines.join('\n'),
+        };
     }
 
     private _appendHistory(input: string, response: string): void {

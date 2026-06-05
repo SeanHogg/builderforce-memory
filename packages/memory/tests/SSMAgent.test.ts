@@ -90,35 +90,42 @@ test('turnCount increments after each think()', async () => {
 
 // ── think() — prompt structure ────────────────────────────────────────────────
 
-test('prompt includes System: line', async () => {
+// The stable System + Facts prefix is passed as the `system` generate option
+// (2nd arg) so the transformer can cache it; the volatile conversation (history
+// + current User turn) is the prompt (1st arg). Joined with a newline on the SSM
+// path they reproduce the original single-string trained format.
+function systemOf(generate: jest.Mock<any>, call = 0): string {
+    return ((generate.mock.calls[call][1] ?? {}) as { system?: string }).system ?? '';
+}
+
+test('System: line is passed as the stable system prefix', async () => {
     const runtime = makeRuntime();
     const agent   = new SSMAgent({ runtime, systemPrompt: 'You are a pirate.' });
 
     await agent.think('arr');
-    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
-    expect(prompt).toContain('System: You are a pirate.');
+    expect(systemOf(runtime.generate as jest.Mock<any>)).toContain('System: You are a pirate.');
 });
 
-test('prompt ends with "User: <input>\\nAssistant:"', async () => {
+test('conversation ends with "User: <input>\\nAssistant:"', async () => {
     const runtime = makeRuntime();
     const agent   = new SSMAgent({ runtime });
 
     await agent.think('my question');
-    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
-    expect(prompt).toMatch(/User: my question\nAssistant:$/);
+    const conversation = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
+    expect(conversation).toMatch(/User: my question\nAssistant:$/);
 });
 
-test('prompt includes history from prior turns', async () => {
+test('conversation includes history from prior turns', async () => {
     const runtime = makeRuntime();
     const agent   = new SSMAgent({ runtime });
 
     await agent.think('first');
     await agent.think('second');
 
-    const secondPrompt = (runtime.generate as jest.Mock<any>).mock.calls[1][0] as string;
-    expect(secondPrompt).toContain('User: first');
-    expect(secondPrompt).toContain('Assistant: assistant reply');
-    expect(secondPrompt).toContain('User: second');
+    const secondConversation = (runtime.generate as jest.Mock<any>).mock.calls[1][0] as string;
+    expect(secondConversation).toContain('User: first');
+    expect(secondConversation).toContain('Assistant: assistant reply');
+    expect(secondConversation).toContain('User: second');
 });
 
 test('per-turn systemPrompt override is used', async () => {
@@ -126,9 +133,9 @@ test('per-turn systemPrompt override is used', async () => {
     const agent   = new SSMAgent({ runtime, systemPrompt: 'default' });
 
     await agent.think('hi', { systemPrompt: 'override' });
-    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
-    expect(prompt).toContain('System: override');
-    expect(prompt).not.toContain('System: default');
+    const system = systemOf(runtime.generate as jest.Mock<any>);
+    expect(system).toContain('System: override');
+    expect(system).not.toContain('System: default');
 });
 
 // ── history trimming ──────────────────────────────────────────────────────────
@@ -140,11 +147,11 @@ test('history is trimmed to maxHistoryTurns pairs', async () => {
     await agent.think('turn1');
     await agent.think('turn2');
 
-    // After turn2, the third prompt should only contain turn2 history (not turn1)
+    // After turn2, the third conversation should only contain turn2 history (not turn1)
     await agent.think('turn3');
-    const thirdPrompt = (runtime.generate as jest.Mock<any>).mock.calls[2][0] as string;
-    expect(thirdPrompt).toContain('User: turn2');
-    expect(thirdPrompt).not.toContain('User: turn1');
+    const thirdConversation = (runtime.generate as jest.Mock<any>).mock.calls[2][0] as string;
+    expect(thirdConversation).toContain('User: turn2');
+    expect(thirdConversation).not.toContain('User: turn1');
 });
 
 // ── clearHistory() ────────────────────────────────────────────────────────────
@@ -230,12 +237,12 @@ test('facts matching input keys are injected into the prompt', async () => {
     const agent = new SSMAgent({ runtime, memory });
 
     await agent.think('What stack should I use?');
-    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
+    const system = systemOf(runtime.generate as jest.Mock<any>);
 
     // "stack" appears in the input
-    expect(prompt).toContain('Fact (stack): React + TypeScript');
+    expect(system).toContain('Fact (stack): React + TypeScript');
     // "goal" does NOT appear in the input
-    expect(prompt).not.toContain('Fact (goal):');
+    expect(system).not.toContain('Fact (goal):');
 });
 
 test('injectAllFacts injects all facts regardless of key match', async () => {
@@ -247,10 +254,10 @@ test('injectAllFacts injects all facts regardless of key match', async () => {
     const agent = new SSMAgent({ runtime, memory });
 
     await agent.think('unrelated question', { injectAllFacts: true });
-    const prompt = (runtime.generate as jest.Mock<any>).mock.calls[0][0] as string;
+    const system = systemOf(runtime.generate as jest.Mock<any>);
 
-    expect(prompt).toContain('Fact (stack):');
-    expect(prompt).toContain('Fact (goal):');
+    expect(system).toContain('Fact (stack):');
+    expect(system).toContain('Fact (goal):');
 });
 
 // ── learn() ───────────────────────────────────────────────────────────────────

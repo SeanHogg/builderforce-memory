@@ -58,7 +58,7 @@ test('generate includes x-api-key and anthropic-version headers', async () => {
     fetchSpy.mockRestore();
 });
 
-test('generate sets system as top-level field (not a message role)', async () => {
+test('generate sets system as a cacheable content block (not a message role)', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
         makeJsonResponse({ content: [{ text: 'ok' }] }),
     );
@@ -67,9 +67,37 @@ test('generate sets system as top-level field (not a message role)', async () =>
 
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
     const body = JSON.parse(init.body as string);
-    expect(body.system).toBe('Be concise.');
+    // Caching is on by default: system is a content-block array with cache_control.
+    expect(body.system).toEqual([
+        { type: 'text', text: 'Be concise.', cache_control: { type: 'ephemeral' } },
+    ]);
     // No system role in messages array
     expect(body.messages.every((m: { role: string }) => m.role !== 'system')).toBe(true);
+    fetchSpy.mockRestore();
+});
+
+test('generate sends system as a plain string when cacheSystem is false', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeJsonResponse({ content: [{ text: 'ok' }] }),
+    );
+
+    await new AnthropicBridge({ apiKey: 'key', systemPrompt: 'Be concise.', cacheSystem: false })
+        .generate('hi');
+
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.system).toBe('Be concise.');
+    fetchSpy.mockRestore();
+});
+
+test('generate defaults to the current claude-haiku-4-5 model', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeJsonResponse({ content: [{ text: 'ok' }] }),
+    );
+
+    await new AnthropicBridge({ apiKey: 'key' }).generate('hi');
+
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.model).toBe('claude-haiku-4-5');
     fetchSpy.mockRestore();
 });
 

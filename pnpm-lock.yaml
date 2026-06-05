@@ -26,9 +26,9 @@ importers:
 
   packages/memory:
     devDependencies:
-      '@builderforce/memory-core':
+      '@builderforce/memory-engine':
         specifier: workspace:*
-        version: link:../memory-core
+        version: link:../memory-engine
       '@jest/globals':
         specifier: ^29.7.0
         version: 29.7.0
@@ -60,7 +60,7 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
-  packages/memory-core:
+  packages/memory-engine:
     devDependencies:
       '@types/jest':
         specifier: ^29.5.0

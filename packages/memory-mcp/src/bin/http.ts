@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+/**
+ * `builderforce-memory-mcp-http` — Streamable HTTP MCP server over the LOCAL
+ * MemoryStore. A reference host; in production builderforce.ai would mount
+ * createMemoryHttpHandler() against a shared/remote backend instead.
+ *
+ * Env:
+ *   PORT                          Listen port (default 8787).
+ *   BUILDERFORCE_MEMORY_TOKEN     Bearer token required on every request (recommended).
+ *   BUILDERFORCE_MEMORY_DB        IndexedDB database name.
+ *   BUILDERFORCE_MEMORY_READONLY  '1' to disable remember/forget tools.
+ */
+
+import http from "node:http";
+import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
+import { createMemoryHttpHandler } from "../transports/http.js";
+
+const backend = await createLocalMemoryStoreBackend({
+    dbName: process.env["BUILDERFORCE_MEMORY_DB"],
+});
+
+const handler = createMemoryHttpHandler(backend, {
+    authToken: process.env["BUILDERFORCE_MEMORY_TOKEN"],
+    writable: process.env["BUILDERFORCE_MEMORY_READONLY"] !== "1",
+});
+
+const port = Number(process.env["PORT"] ?? 8787);
+
+http.createServer((req, res) => {
+    void handler(req, res).catch((err) => {
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+    });
+}).listen(port, () => {
+    process.stderr.write(`[builderforce-memory-mcp-http] listening on :${port}\n`);
+});

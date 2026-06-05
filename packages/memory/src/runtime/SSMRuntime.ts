@@ -34,6 +34,18 @@ export type GenerateOptions = CompleteOptions & {
      * Ignored when SSM is selected.
      */
     bridgeOpts?: BridgeGenerateOptions;
+
+    /**
+     * Stable system / context prefix, kept separate from the volatile `input`.
+     *
+     * Splitting it out is what makes transformer-side prompt caching possible:
+     * on the SSM path it is prepended to `input` (reproducing the single-string
+     * trained prompt format, so SSM behaviour is unchanged), while on the
+     * transformer path it is sent as the cacheable `system` field rather than
+     * being concatenated into the user message. A bridge can then cache it
+     * across turns; concatenating it into the per-turn input could never cache.
+     */
+    system?: string;
 };
 
 export interface SSMRuntimeOptions {
@@ -128,12 +140,12 @@ export class SSMRuntime {
         const decision = await this._router.route(input);
 
         if (decision.target === 'transformer' && this._bridge) {
-            return this._bridge.generate(input, opts.bridgeOpts);
+            return this._bridge.generate(input, this._bridgeOptsWithSystem(opts));
         }
 
         // SSM path — extract only CompleteOptions fields
-        const { bridgeOpts: _, ...completeOpts } = opts;
-        return this._session.complete(input, completeOpts);
+        const { bridgeOpts: _b, system, ...completeOpts } = opts;
+        return this._session.complete(this._ssmInput(input, system), completeOpts);
     }
 
     /**
@@ -145,8 +157,8 @@ export class SSMRuntime {
      */
     async *stream(input: string, opts: GenerateOptions = {}): AsyncIterable<string> {
         this._checkAlive();
-        const { bridgeOpts: _, ...completeOpts } = opts;
-        yield* this._session.completeStream(input, completeOpts);
+        const { bridgeOpts: _b, system, ...completeOpts } = opts;
+        yield* this._session.completeStream(this._ssmInput(input, system), completeOpts);
     }
 
     /**
@@ -159,16 +171,39 @@ export class SSMRuntime {
         const decision = await this._router.route(input);
 
         if (decision.target === 'transformer' && this._bridge) {
+            const bridgeOpts = this._bridgeOptsWithSystem(opts);
             if (this._bridge.supportsStreaming && this._bridge.stream) {
-                yield* this._bridge.stream(input, opts.bridgeOpts);
+                yield* this._bridge.stream(input, bridgeOpts);
             } else {
-                yield await this._bridge.generate(input, opts.bridgeOpts);
+                yield await this._bridge.generate(input, bridgeOpts);
             }
             return;
         }
 
-        const { bridgeOpts: _, ...completeOpts } = opts;
-        yield* this._session.completeStream(input, completeOpts);
+        const { bridgeOpts: _b, system, ...completeOpts } = opts;
+        yield* this._session.completeStream(this._ssmInput(input, system), completeOpts);
+    }
+
+    // ── Prompt-prefix helpers ─────────────────────────────────────────────────
+
+    /**
+     * Combines the stable `system` prefix with the volatile `input` for the SSM
+     * path, reproducing the single-string format the model was trained on.
+     */
+    private _ssmInput(input: string, system: string | undefined): string {
+        return system ? `${system}\n${input}` : input;
+    }
+
+    /**
+     * Maps the top-level `system` prefix onto the bridge's `systemPrompt` so the
+     * transformer receives it as a cacheable `system` field. An explicit
+     * `bridgeOpts.systemPrompt` wins if the caller set one.
+     */
+    private _bridgeOptsWithSystem(opts: GenerateOptions): BridgeGenerateOptions {
+        return {
+            ...opts.bridgeOpts,
+            systemPrompt: opts.bridgeOpts?.systemPrompt ?? opts.system,
+        };
     }
 
     // ── Adaptation ────────────────────────────────────────────────────────────

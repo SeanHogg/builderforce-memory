@@ -1,7 +1,7 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/memory-core" },
+    { "path": "./packages/memory-engine" },
     { "path": "./packages/memory" }
   ]
 }

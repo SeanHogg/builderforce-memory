@@ -49,9 +49,13 @@ export type { TransformerBridge, BridgeGenerateOptions } from './bridges/Transfo
 export { OpenAIBridge }    from './bridges/OpenAIBridge.js';
 export { AnthropicBridge } from './bridges/AnthropicBridge.js';
 export { FetchBridge }     from './bridges/FetchBridge.js';
+export { CachingBridge }   from './bridges/CachingBridge.js';
+export { ResponseCache, buildCacheKey } from './bridges/ResponseCache.js';
 export type { OpenAIBridgeOptions }    from './bridges/OpenAIBridge.js';
 export type { AnthropicBridgeOptions } from './bridges/AnthropicBridge.js';
 export type { FetchBridgeOptions }     from './bridges/FetchBridge.js';
+export type { CachingBridgeOptions }   from './bridges/CachingBridge.js';
+export type { ResponseCacheOptions }   from './bridges/ResponseCache.js';
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export { InferenceRouter } from './router/InferenceRouter.js';

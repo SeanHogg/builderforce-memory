@@ -2,6 +2,10 @@ export type { TransformerBridge, BridgeGenerateOptions } from './TransformerBrid
 export { OpenAIBridge }    from './OpenAIBridge.js';
 export { AnthropicBridge } from './AnthropicBridge.js';
 export { FetchBridge }     from './FetchBridge.js';
+export { CachingBridge }   from './CachingBridge.js';
+export { ResponseCache, buildCacheKey } from './ResponseCache.js';
 export type { OpenAIBridgeOptions }    from './OpenAIBridge.js';
 export type { AnthropicBridgeOptions } from './AnthropicBridge.js';
 export type { FetchBridgeOptions }     from './FetchBridge.js';
+export type { CachingBridgeOptions }   from './CachingBridge.js';
+export type { ResponseCacheOptions }   from './ResponseCache.js';

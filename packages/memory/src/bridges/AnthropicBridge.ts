@@ -11,7 +11,11 @@ import type { TransformerBridge, BridgeGenerateOptions } from './TransformerBrid
 export interface AnthropicBridgeOptions {
     /** Anthropic API key. */
     apiKey        : string;
-    /** Model to use. Default: 'claude-3-5-haiku-latest'. */
+    /**
+     * Model to use. Default: 'claude-haiku-4-5' (cheapest current model:
+     * $1/1M input, $5/1M output). The previous default `claude-3-5-haiku-*`
+     * was retired on 2026-02-19 and now 404s.
+     */
     model?        : string;
     /** Anthropic API version header. Default: '2023-06-01'. */
     apiVersion?   : string;
@@ -19,6 +23,15 @@ export interface AnthropicBridgeOptions {
     systemPrompt? : string;
     /** Default max tokens — required by Anthropic. Default: 1024. */
     maxTokens?    : number;
+    /**
+     * When true (default), the system prompt is sent as a cacheable content
+     * block (`cache_control: {type: 'ephemeral'}`). Prompt caching bills cache
+     * reads at ~10% of the input price, so a stable system prefix reused across
+     * turns is up to ~90% cheaper on its input tokens. Caching only engages once
+     * the cached prefix exceeds the model minimum (~4096 tokens for Haiku 4.5);
+     * below that it is a silent no-op, never an error. Set false to opt out.
+     */
+    cacheSystem?  : boolean;
 }
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -31,13 +44,15 @@ export class AnthropicBridge implements TransformerBridge {
     private readonly _apiVersion  : string;
     private readonly _systemPrompt: string;
     private readonly _maxTokens   : number;
+    private readonly _cacheSystem : boolean;
 
     constructor(opts: AnthropicBridgeOptions) {
         this._apiKey       = opts.apiKey;
-        this._model        = opts.model      ?? 'claude-3-5-haiku-latest';
+        this._model        = opts.model      ?? 'claude-haiku-4-5';
         this._apiVersion   = opts.apiVersion ?? '2023-06-01';
         this._systemPrompt = opts.systemPrompt ?? '';
         this._maxTokens    = opts.maxTokens    ?? 1024;
+        this._cacheSystem  = opts.cacheSystem  ?? true;
     }
 
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
@@ -86,7 +101,15 @@ export class AnthropicBridge implements TransformerBridge {
             max_tokens: opts.maxTokens ?? this._maxTokens,
             messages  : [{ role: 'user', content: prompt }],
         };
-        if (sys) body['system'] = sys;
+        if (sys) {
+            // Caching is a prefix match: render the stable system prompt as a
+            // single cache-marked content block so reads on subsequent turns are
+            // billed at ~10% of input price. The volatile user message is sent
+            // unmarked after it, so it never enters the cached prefix.
+            body['system'] = this._cacheSystem
+                ? [{ type: 'text', text: sys, cache_control: { type: 'ephemeral' } }]
+                : sys;
+        }
         if (stream) body['stream'] = true;
         return JSON.stringify(body);
     }
