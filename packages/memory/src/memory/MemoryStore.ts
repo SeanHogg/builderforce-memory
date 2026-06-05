@@ -16,6 +16,14 @@ export interface MemoryEntry {
     key        : string;
     content    : string;
     timestamp  : number;
+    /**
+     * Monotonic write sequence, used only to break `timestamp` ties so that
+     * ordering stays deterministic when several entries are written within the
+     * same millisecond (Date.now() resolution). Higher = written later.
+     * Optional for backward compatibility with entries persisted/imported
+     * before this field existed (those sort as seq 0).
+     */
+    seq?       : number;
     /** Optional time-to-live in milliseconds. */
     ttlMs?     : number;
     /** Semantic type of the stored value. Default: 'text'. */
@@ -56,6 +64,13 @@ export interface MemoryStoreOptions {
 const FACTS_STORE   = 'facts';
 const WEIGHTS_STORE = 'weights';
 const DB_VERSION    = 1;
+
+/**
+ * Process-wide monotonic counter stamped onto each remembered entry. Strictly
+ * increasing per write regardless of store instance, so it reliably breaks
+ * `timestamp` ties (same-millisecond writes) in newest-first ordering.
+ */
+let _writeSeq = 0;
 
 // Minimal interface to avoid importing SSMRuntime (circular dep)
 interface SaveLoadRuntime {
@@ -142,6 +157,7 @@ export class MemoryStore {
             key,
             content,
             timestamp  : Date.now(),
+            seq        : ++_writeSeq,
             ttlMs      : opts?.ttlMs ?? this._defaultTtl,
             type       : opts?.type,
             tags       : opts?.tags,
@@ -175,7 +191,12 @@ export class MemoryStore {
         return requestToPromise(
             tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
             'Failed to recall all facts',
-            (entries) => entries.filter(e => !this._isExpired(e)).sort((a, b) => b.timestamp - a.timestamp),
+            (entries) => entries
+                .filter(e => !this._isExpired(e))
+                // Newest first; break same-millisecond ties by write sequence so
+                // ordering is deterministic (IndexedDB getAll() returns key order,
+                // which would otherwise surface same-ms writes oldest-first).
+                .sort((a, b) => b.timestamp - a.timestamp || (b.seq ?? 0) - (a.seq ?? 0)),
         );
     }
 
