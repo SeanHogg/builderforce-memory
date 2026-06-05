@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MambaCode.js — Convert state-spaces/mamba to MBJS</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0;
+      min-height: 100dvh; display: flex; flex-direction: column;
+    }
+    header {
+      padding: 14px 20px; background: #1a1d27; border-bottom: 1px solid #2d3148;
+      display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    .badge { font-size: 0.7rem; background: #7c3aed; color: #fff; padding: 2px 8px; border-radius: 999px; }
+
+    #app { flex: 1; max-width: 720px; margin: 0 auto; padding: 32px 20px; width: 100%; }
+
+    h2 { font-size: 0.72rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+
+    .card {
+      background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px;
+      padding: 20px; margin-bottom: 20px;
+    }
+
+    .info {
+      background: #0f1a30; border: 1px solid #1e3a5f; color: #93c5fd;
+      border-radius: 6px; padding: 12px 14px; font-size: 0.82rem; line-height: 1.6; margin-bottom: 16px;
+    }
+    .info strong { color: #bfdbfe; }
+    .info code { background: #1e3a5f; padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; }
+
+    .warning {
+      background: #1c1a07; border: 1px solid #854d0e; color: #fbbf24;
+      border-radius: 6px; padding: 10px 14px; font-size: 0.82rem; line-height: 1.6; margin-bottom: 16px;
+    }
+
+    .drop-zone {
+      border: 2px dashed #2d3148; border-radius: 8px; padding: 40px 20px;
+      text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: #7c3aed; background: #1a1030; }
+    .drop-zone p { color: #94a3b8; font-size: 0.85rem; margin-top: 8px; }
+    .drop-zone strong { color: #e2e8f0; font-size: 1rem; }
+    #file-input { display: none; }
+
+    #model-info {
+      display: none; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px;
+      padding: 12px 14px; font-size: 0.82rem; line-height: 1.8; margin-top: 12px;
+    }
+    #model-info.visible { display: block; }
+    #model-info dt { color: #64748b; display: inline; }
+    #model-info dd { color: #e2e8f0; font-weight: 600; display: inline; margin-left: 6px; }
+    #model-info .row { margin-bottom: 2px; }
+
+    #convert-btn {
+      width: 100%; padding: 10px; background: #7c3aed; color: #fff; border: none;
+      border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; margin-top: 16px;
+    }
+    #convert-btn:hover:not(:disabled) { background: #6d28d9; }
+    #convert-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #progress-wrap { margin-top: 12px; display: none; }
+    #progress-wrap.visible { display: block; }
+    #progress-bar-bg { height: 4px; background: #2d3148; border-radius: 2px; }
+    #progress-bar { height: 100%; background: #7c3aed; border-radius: 2px; width: 0; transition: width 0.15s; }
+    #progress-label { font-size: 0.75rem; color: #64748b; margin-top: 5px; }
+
+    #error-msg {
+      background: #2d1515; border: 1px solid #7f1d1d; color: #fca5a5;
+      border-radius: 5px; padding: 8px 12px; font-size: 0.8rem; margin-top: 10px; display: none;
+    }
+    #error-msg.visible { display: block; }
+
+    #result { display: none; }
+    #result.visible { display: block; }
+    .result-card {
+      background: #0a1f0a; border: 1px solid #14532d; border-radius: 8px;
+      padding: 20px; margin-bottom: 16px;
+    }
+    .result-card h2 { color: #4ade80; margin-bottom: 10px; }
+    .result-card p { font-size: 0.85rem; color: #86efac; line-height: 1.6; }
+    #save-idb-btn, #save-dl-btn {
+      padding: 8px 20px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+      border: none; margin-right: 8px; margin-top: 12px;
+    }
+    #save-dl-btn { background: #7c3aed; color: #fff; }
+    #save-dl-btn:hover { background: #6d28d9; }
+    #save-idb-btn { background: #1e293b; color: #e2e8f0; border: 1px solid #2d3148; }
+    #save-idb-btn:hover { background: #334155; }
+
+    .step {
+      display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px;
+    }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%; background: #2d3148;
+      color: #94a3b8; font-size: 0.72rem; font-weight: 700; display: flex;
+      align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;
+    }
+    .step-text { font-size: 0.83rem; color: #94a3b8; line-height: 1.5; }
+    .step-text strong { color: #e2e8f0; }
+    .step-text a { color: #818cf8; }
+    .step-text code { background: #1e293b; padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; color: #c4b5fd; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Convert state-spaces/mamba → MBJS</h1>
+  <span class="badge">Tool</span>
+</header>
+
+<div id="app">
+
+  <div class="card">
+    <h2>What this does</h2>
+    <div class="info">
+      <strong>state-spaces/mamba</strong> models use the same Mamba SSM architecture as mambacode.js.
+      This converter reads their <code>.safetensors</code> weights and writes them in the
+      <strong>MBJS binary format</strong> that mambacode.js can load.<br><br>
+      Qwen2.5-Coder is a <em>Transformer</em> — different architecture, cannot be converted.
+      The only part of Qwen used in mambacode.js / MambaKit is the <strong>tokenizer vocabulary</strong>.
+    </div>
+    <div class="warning">
+      <strong>Vocabulary mismatch:</strong> state-spaces/mamba was trained with the GPT-NeoX tokenizer
+      (50,257 tokens). mambacode.js uses Qwen2.5-Coder (151,936 tokens). The SSM layers transfer cleanly;
+      the embedding table is padded with initialised values for the extra Qwen tokens.
+      Run a few passes through <strong>pretrain.html</strong> after converting to warm up the new token slots.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Step 1 — Download the model</h2>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">
+        Go to <a href="https://huggingface.co/state-spaces/mamba-130m" target="_blank">huggingface.co/state-spaces/mamba-130m</a>
+        (or 370m / 790m / 1.4b / 2.8b — larger = better quality, slower inference).
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">
+        Click <strong>Files and versions</strong> → download <code>model.safetensors</code>.
+        Do <strong>not</strong> download pytorch_model.bin — only safetensors is supported here.
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Drop the file below.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Step 2 — Convert</h2>
+
+    <div class="drop-zone" id="drop-zone">
+      <strong>Drop model.safetensors here</strong>
+      <p>or click to browse</p>
+      <input type="file" id="file-input" accept=".safetensors" />
+    </div>
+
+    <div id="model-info"></div>
+
+    <button id="convert-btn" disabled>Convert to MBJS</button>
+
+    <div id="progress-wrap">
+      <div id="progress-bar-bg"><div id="progress-bar"></div></div>
+      <div id="progress-label">Loading…</div>
+    </div>
+    <div id="error-msg"></div>
+  </div>
+
+  <div id="result" class="result-card">
+    <h2>✓ Conversion complete</h2>
+    <p id="result-text"></p>
+    <div>
+      <button id="save-dl-btn">Download .bin</button>
+      <button id="save-idb-btn">Save to browser storage</button>
+    </div>
+    <p style="margin-top:12px;font-size:0.78rem;color:#4ade80;">
+      After saving, load in your app via <code>model.loadWeights()</code> or open
+      <strong>pretrain.html</strong> to continue training on your corpus.<br>
+      Using MambaKit? Load via <code>session.load({ storage: 'indexedDB' })</code>.
+    </p>
+  </div>
+
+</div>
+
+<script type="module">
+// ── Qwen vocab size (what mambacode.js expects) ───────────────────────────────
+const QWEN_VOCAB = 151936;
+
+// ── BF16 → F32 ───────────────────────────────────────────────────────────────
+function bf16ToF32(bytes) {
+  const n      = bytes.length / 2;
+  const f32    = new Float32Array(n);
+  const u16    = new Uint16Array(bytes.buffer, bytes.byteOffset, n);
+  const u32out = new Uint32Array(f32.buffer);
+  for (let i = 0; i < n; i++) u32out[i] = u16[i] << 16;
+  return f32;
+}
+
+function f16ToF32(bytes) {
+  const n   = bytes.length / 2;
+  const f32 = new Float32Array(n);
+  const u16 = new Uint16Array(bytes.buffer, bytes.byteOffset, n);
+  for (let i = 0; i < n; i++) {
+    const h = u16[i];
+    const sign = (h >> 15) & 1;
+    const exp  = (h >> 10) & 0x1f;
+    const frac =  h & 0x3ff;
+    if (exp === 0)       { f32[i] = (sign ? -1 : 1) * Math.pow(2, -14) * (frac / 1024); }
+    else if (exp === 31) { f32[i] = frac ? NaN : (sign ? -Infinity : Infinity); }
+    else                 { f32[i] = (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + frac / 1024); }
+  }
+  return f32;
+}
+
+// ── Safetensors parser ────────────────────────────────────────────────────────
+function parseSafetensors(buffer) {
+  const view      = new DataView(buffer);
+  const headerLen = Number(view.getBigUint64(0, true));
+  const headerStr = new TextDecoder().decode(new Uint8Array(buffer, 8, headerLen));
+  const header    = JSON.parse(headerStr);
+  const dataStart = 8 + headerLen;
+  return { header, dataStart, buffer };
+}
+
+function getTensor(st, name) {
+  const info = st.header[name];
+  if (!info) return null;
+  const { dtype, shape, data_offsets: [start, end] } = info;
+  const bytes = new Uint8Array(st.buffer, st.dataStart + start, end - start);
+  let f32;
+  if      (dtype === 'F32')  f32 = new Float32Array(bytes.buffer, bytes.byteOffset, (end - start) / 4);
+  else if (dtype === 'BF16') f32 = bf16ToF32(bytes);
+  else if (dtype === 'F16')  f32 = f16ToF32(bytes);
+  else throw new Error(`Unsupported dtype: ${dtype}`);
+  return { data: f32, shape };
+}
+
+// ── Detect model config from safetensors header ───────────────────────────────
+function detectConfig(header) {
+  // d_model from embedding shape
+  const emb = header['backbone.embedding.weight'];
+  if (!emb) throw new Error('Cannot find backbone.embedding.weight — is this a state-spaces/mamba model?');
+  const [origVocab, dModel] = emb.shape;
+
+  // Count layers
+  let numLayers = 0;
+  while (header[`backbone.layers.${numLayers}.mixer.in_proj.weight`]) numLayers++;
+  if (numLayers === 0) throw new Error('No layers found.');
+
+  // d_inner from in_proj shape (2*d_inner, d_model)
+  const inProj = header[`backbone.layers.0.mixer.in_proj.weight`];
+  const dInner = inProj.shape[0] / 2;
+
+  // d_conv from conv1d weight shape (d_inner, 1, d_conv) or (d_inner, d_conv)
+  const conv = header[`backbone.layers.0.mixer.conv1d.weight`];
+  const dConv = conv.shape[conv.shape.length - 1];
+
+  // d_state from A_log shape (d_inner, d_state)
+  const aLog  = header[`backbone.layers.0.mixer.A_log`];
+  const dState = aLog.shape[1];
+
+  const expand  = dInner / dModel;
+  const dtRank  = Math.ceil(dModel / 16);
+
+  return { dModel, numLayers, dInner, dConv, dState, expand, dtRank, origVocab };
+}
+
+// ── Write MBJS v2 binary ──────────────────────────────────────────────────────
+// All converted state-spaces/mamba checkpoints are Mamba-1 (layerType=0).
+function writeMbjs(paramList, numLayers) {
+  // Pad layerType bytes to 4-byte alignment
+  const typeByteLen = Math.ceil(numLayers / 4) * 4;
+
+  const totalFloats = paramList.reduce((s, p) => s + p.data.length, 0);
+  const nParams     = paramList.length;
+
+  // Header: magic(4) + version(4) + nLayers(4) + layerTypes(typeByteLen) + nParams(4) + numels(nParams*4)
+  const headerBytes = 12 + typeByteLen + 4 + nParams * 4;
+  const buf         = new ArrayBuffer(headerBytes + totalFloats * 4);
+  const view        = new DataView(buf);
+
+  view.setUint32(0,  0x4D424A53, true); // 'MBJS'
+  view.setUint32(4,  2,          true); // version 2
+  view.setUint32(8,  numLayers,  true); // nLayers
+
+  // layerType bytes — all 0 (mamba1) for state-spaces/mamba converted checkpoints
+  // (bytes default to 0 in ArrayBuffer, no writes needed)
+
+  let pos = 12 + typeByteLen;
+  view.setUint32(pos, nParams, true); pos += 4;
+  for (const p of paramList) { view.setUint32(pos, p.data.length, true); pos += 4; }
+
+  const f32out = new Float32Array(buf, headerBytes);
+  let offset = 0;
+  for (const p of paramList) {
+    f32out.set(p.data, offset);
+    offset += p.data.length;
+  }
+  return buf;
+}
+
+// ── Gaussian random (Box-Muller, for padding extra vocab rows) ────────────────
+function* gaussianGen(std = 0.02) {
+  while (true) {
+    const u1 = Math.random() || 1e-10;
+    const u2 = Math.random();
+    const r   = std * Math.sqrt(-2 * Math.log(u1));
+    yield r * Math.cos(2 * Math.PI * u2);
+    yield r * Math.sin(2 * Math.PI * u2);
+  }
+}
+
+function randFill(n, std = 0.02) {
+  const f32 = new Float32Array(n);
+  const gen = gaussianGen(std);
+  for (let i = 0; i < n; i++) f32[i] = gen.next().value;
+  return f32;
+}
+
+function zeros(n) { return new Float32Array(n); }
+function ones(n)  { const f = new Float32Array(n); f.fill(1); return f; }
+
+// ── Main conversion ───────────────────────────────────────────────────────────
+function convert(st, cfg, onProgress) {
+  const { dModel, numLayers, dInner, dConv, dState, dtRank, origVocab } = cfg;
+  const params = [];
+  let step = 0;
+  const totalSteps = 2 + numLayers;
+
+  function progress(msg) { onProgress(++step / totalSteps, msg); }
+
+  // ── Embedding (vocab: origVocab → QWEN_VOCAB) ─────────────────────────────
+  progress('Converting embedding…');
+  const origEmb = getTensor(st, 'backbone.embedding.weight');
+  let embData;
+  if (origVocab >= QWEN_VOCAB) {
+    // Truncate (unlikely but safe)
+    embData = origEmb.data.slice(0, QWEN_VOCAB * dModel);
+  } else {
+    // Pad: copy existing rows, random-init the rest
+    embData = new Float32Array(QWEN_VOCAB * dModel);
+    embData.set(origEmb.data);
+    const extra = randFill((QWEN_VOCAB - origVocab) * dModel, 0.02);
+    embData.set(extra, origVocab * dModel);
+  }
+  params.push({ name: 'embedding', data: embData });
+
+  // ── Blocks ────────────────────────────────────────────────────────────────
+  for (let i = 0; i < numLayers; i++) {
+    progress(`Converting layer ${i + 1}/${numLayers}…`);
+    const pfx = `backbone.layers.${i}.mixer`;
+
+    // wInProj (2D, dModel) — no bias in state-spaces, zero bInProj
+    const wInProj = getTensor(st, `${pfx}.in_proj.weight`);
+    params.push({ name: `block${i}.wInProj`, data: wInProj.data });
+    params.push({ name: `block${i}.bInProj`, data: zeros(2 * dInner) });
+
+    // wConv (D, K) — state-spaces stores (D, 1, K) or (D, K); squeeze middle dim if needed
+    const convTensor = getTensor(st, `${pfx}.conv1d.weight`);
+    let wConvData = convTensor.data;
+    if (convTensor.shape.length === 3) {
+      // (D, 1, K) → (D, K): layout is already contiguous, just reinterpret
+      wConvData = convTensor.data; // same bytes, shape is semantic only
+    }
+    params.push({ name: `block${i}.wConv`, data: wConvData });
+    const bConv = getTensor(st, `${pfx}.conv1d.bias`);
+    params.push({ name: `block${i}.bConv`, data: bConv ? bConv.data : zeros(dInner) });
+
+    // wXProj (R+2N, D) — no bias in state-spaces, zero bXProj
+    const wXProj = getTensor(st, `${pfx}.x_proj.weight`);
+    params.push({ name: `block${i}.wXProj`, data: wXProj.data });
+    params.push({ name: `block${i}.bXProj`, data: zeros(dtRank + 2 * dState) });
+
+    // wDtProj (D, R) + bDtProj (D)
+    const wDtProj = getTensor(st, `${pfx}.dt_proj.weight`);
+    params.push({ name: `block${i}.wDtProj`, data: wDtProj.data });
+    const bDtProj = getTensor(st, `${pfx}.dt_proj.bias`);
+    params.push({ name: `block${i}.bDtProj`, data: bDtProj ? bDtProj.data : zeros(dInner) });
+
+    // A_log (D, N)
+    const aLog = getTensor(st, `${pfx}.A_log`);
+    params.push({ name: `block${i}.A_log`, data: aLog.data });
+
+    // D_vec (D)
+    const dVec = getTensor(st, `${pfx}.D`);
+    params.push({ name: `block${i}.D_vec`, data: dVec.data });
+
+    // wOutProj (dModel, D) — no bias in state-spaces, zero bOutProj
+    const wOutProj = getTensor(st, `${pfx}.out_proj.weight`);
+    params.push({ name: `block${i}.wOutProj`, data: wOutProj.data });
+    params.push({ name: `block${i}.bOutProj`, data: zeros(dModel) });
+
+    // normWeight (dModel) — per-block RMSNorm
+    const normW = getTensor(st, `backbone.layers.${i}.norm.weight`);
+    params.push({ name: `block${i}.normWeight`, data: normW ? normW.data : ones(dModel) });
+  }
+
+  // ── Final norm ────────────────────────────────────────────────────────────
+  progress('Finalising…');
+  const finalNorm = getTensor(st, 'backbone.norm_f.weight');
+  params.push({ name: 'final_norm', data: finalNorm ? finalNorm.data : ones(dModel) });
+
+  return writeMbjs(params, numLayers);
+}
+
+// ── UI ────────────────────────────────────────────────────────────────────────
+const dropZone    = document.getElementById('drop-zone');
+const fileInput   = document.getElementById('file-input');
+const modelInfo   = document.getElementById('model-info');
+const convertBtn  = document.getElementById('convert-btn');
+const progressWrap = document.getElementById('progress-wrap');
+const progressBar  = document.getElementById('progress-bar');
+const progressLabel = document.getElementById('progress-label');
+const errorMsg    = document.getElementById('error-msg');
+const resultEl    = document.getElementById('result');
+const resultText  = document.getElementById('result-text');
+const saveIdbBtn  = document.getElementById('save-idb-btn');
+const saveDlBtn   = document.getElementById('save-dl-btn');
+
+let loadedFile = null;
+let mbjsBuffer = null;
+let detectedCfg = null;
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+function handleFile(file) {
+  if (!file) return;
+  loadedFile = file;
+  errorMsg.classList.remove('visible');
+  resultEl.classList.remove('visible');
+  modelInfo.classList.remove('visible');
+  convertBtn.disabled = true;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const st  = parseSafetensors(e.target.result);
+      const cfg = detectConfig(st.header);
+      detectedCfg = cfg;
+
+      const totalParams = cfg.numLayers * 13 + 2; // blocks + embedding + final_norm
+      const totalFloats =
+        QWEN_VOCAB * cfg.dModel +       // embedding
+        cfg.numLayers * (
+          2 * cfg.dInner * cfg.dModel + 2 * cfg.dInner +  // wInProj, bInProj
+          cfg.dInner * cfg.dConv + cfg.dInner +            // wConv, bConv
+          (cfg.dtRank + 2 * cfg.dState) * cfg.dInner + (cfg.dtRank + 2 * cfg.dState) + // wXProj, bXProj
+          cfg.dInner * cfg.dtRank + cfg.dInner +          // wDtProj, bDtProj
+          cfg.dInner * cfg.dState + cfg.dInner +          // A_log, D_vec
+          cfg.dModel * cfg.dInner + cfg.dModel +          // wOutProj, bOutProj
+          cfg.dModel                                       // normWeight
+        ) +
+        cfg.dModel;                     // final_norm
+      const sizeMb = (totalFloats * 4 / 1024 / 1024).toFixed(0);
+
+      modelInfo.innerHTML = `
+        <div class="row"><dt>d_model</dt><dd>${cfg.dModel}</dd> &nbsp; <dt>layers</dt><dd>${cfg.numLayers}</dd> &nbsp; <dt>d_inner</dt><dd>${cfg.dInner}</dd></div>
+        <div class="row"><dt>orig vocab</dt><dd>${cfg.origVocab.toLocaleString()}</dd> &nbsp; <dt>→ Qwen vocab</dt><dd>${QWEN_VOCAB.toLocaleString()}</dd></div>
+        <div class="row"><dt>output size</dt><dd>~${sizeMb} MB</dd> &nbsp; <dt>parameters</dt><dd>${totalParams.toLocaleString()} tensors</dd></div>
+      `;
+      modelInfo.classList.add('visible');
+      convertBtn.disabled = false;
+    } catch (err) {
+      errorMsg.textContent = `Failed to read file: ${err.message}`;
+      errorMsg.classList.add('visible');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+convertBtn.addEventListener('click', async () => {
+  errorMsg.classList.remove('visible');
+  resultEl.classList.remove('visible');
+  convertBtn.disabled = true;
+  progressWrap.classList.add('visible');
+  progressBar.style.width = '0%';
+
+  // yield to browser between heavy steps
+  await new Promise(r => setTimeout(r, 0));
+
+  try {
+    const reader = new FileReader();
+    const buffer = await new Promise((res, rej) => {
+      reader.onload = e => res(e.target.result);
+      reader.onerror = rej;
+      reader.readAsArrayBuffer(loadedFile);
+    });
+
+    const st = parseSafetensors(buffer);
+
+    mbjsBuffer = convert(st, detectedCfg, (pct, msg) => {
+      progressBar.style.width = `${(pct * 100).toFixed(0)}%`;
+      progressLabel.textContent = msg;
+    });
+
+    const sizeMb = (mbjsBuffer.byteLength / 1024 / 1024).toFixed(0);
+    resultText.textContent =
+      `Converted ${detectedCfg.numLayers}-layer Mamba-1 model (d_model=${detectedCfg.dModel}) to MBJS v2 format. ` +
+      `Size: ${sizeMb} MB. The embedding table has been padded from ${detectedCfg.origVocab.toLocaleString()} ` +
+      `to ${QWEN_VOCAB.toLocaleString()} tokens — run a few passes through pretrain.html to warm up the new token slots.`;
+    resultEl.classList.add('visible');
+    progressBar.style.width = '100%';
+    progressLabel.textContent = 'Done';
+  } catch (err) {
+    errorMsg.textContent = `Conversion failed: ${err.message}`;
+    errorMsg.classList.add('visible');
+  } finally {
+    convertBtn.disabled = false;
+  }
+});
+
+saveDlBtn.addEventListener('click', () => {
+  if (!mbjsBuffer) return;
+  const blob = new Blob([mbjsBuffer], { type: 'application/octet-stream' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'mamba-converted.bin'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+saveIdbBtn.addEventListener('click', async () => {
+  if (!mbjsBuffer) return;
+  saveIdbBtn.disabled = true;
+  try {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('mambacode', 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore('checkpoints');
+      req.onsuccess = e => {
+        const db  = e.target.result;
+        const tx  = db.transaction('checkpoints', 'readwrite');
+        tx.objectStore('checkpoints').put(mbjsBuffer, 'mambacode-default');
+        tx.oncomplete = resolve;
+        tx.onerror    = reject;
+      };
+      req.onerror = reject;
+    });
+    saveIdbBtn.textContent = '✓ Saved';
+  } catch (err) {
+    alert(`IndexedDB error: ${err.message}`);
+  } finally {
+    saveIdbBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MambaCode.js — Pretrain</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0;
+      min-height: 100dvh; display: flex; flex-direction: column;
+    }
+    header {
+      padding: 14px 20px; background: #1a1d27; border-bottom: 1px solid #2d3148;
+      display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    .badge { font-size: 0.7rem; background: #b45309; color: #fff; padding: 2px 8px; border-radius: 999px; }
+    #status-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; margin-left: auto; transition: background 0.3s; }
+    #status-dot.ready   { background: #22c55e; }
+    #status-dot.loading { background: #f59e0b; animation: pulse 1s infinite; }
+    #status-dot.error   { background: #ef4444; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+
+    #main { flex: 1; display: grid; grid-template-columns: 320px 1fr; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      background: #1a1d27; border-right: 1px solid #2d3148;
+      padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
+    }
+    #sidebar h2 { font-size: 0.72rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 0.72rem; color: #94a3b8; display: flex; justify-content: space-between; }
+    .field label span { color: #e2e8f0; font-weight: 600; }
+    .field input[type=range] { width: 100%; accent-color: #b45309; }
+    .field select, .field input[type=number] {
+      background: #0f1117; border: 1px solid #2d3148; border-radius: 5px;
+      padding: 6px 9px; color: #e2e8f0; font-size: 0.82rem; width: 100%;
+    }
+    .field select:focus, .field input:focus { outline: none; border-color: #b45309; }
+
+    .divider { height: 1px; background: #2d3148; }
+
+    #start-btn {
+      width: 100%; padding: 9px; background: #b45309; color: #fff; border: none;
+      border-radius: 6px; font-size: 0.875rem; font-weight: 600; cursor: pointer;
+    }
+    #start-btn:hover:not(:disabled) { background: #d97706; }
+    #start-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #stop-btn {
+      width: 100%; padding: 9px; background: transparent; color: #94a3b8;
+      border: 1px solid #2d3148; border-radius: 6px; font-size: 0.875rem; font-weight: 600; cursor: pointer; display: none;
+    }
+    #stop-btn.visible { display: block; }
+    #stop-btn:hover { color: #e2e8f0; border-color: #475569; }
+
+    #save-row { display: flex; gap: 6px; }
+    #save-idb-btn, #save-dl-btn {
+      flex: 1; padding: 7px; border: 1px solid #2d3148; border-radius: 5px;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer; background: #1e293b; color: #94a3b8;
+    }
+    #save-idb-btn:hover:not(:disabled), #save-dl-btn:hover:not(:disabled) { color: #e2e8f0; border-color: #475569; }
+    #save-idb-btn:disabled, #save-dl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #save-status { font-size: 0.72rem; color: #64748b; }
+
+    #error-msg {
+      background: #2d1515; border: 1px solid #7f1d1d; color: #fca5a5;
+      border-radius: 5px; padding: 7px 9px; font-size: 0.78rem; display: none;
+    }
+    #error-msg.visible { display: block; }
+
+    /* ── Editor / corpus ── */
+    #right { display: flex; flex-direction: column; overflow: hidden; }
+    #corpus-header {
+      padding: 10px 16px; background: #1a1d27; border-bottom: 1px solid #2d3148;
+      display: flex; align-items: center; gap: 10px;
+    }
+    #corpus-header h2 { font-size: 0.72rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+    #load-file-btn {
+      padding: 5px 14px; background: #1e293b; color: #e2e8f0; border: 1px solid #2d3148;
+      border-radius: 5px; font-size: 0.8rem; cursor: pointer; margin-left: auto;
+    }
+    #load-file-btn:hover { background: #334155; }
+    #corpus-meta { font-size: 0.72rem; color: #64748b; }
+    #file-input { display: none; }
+
+    #corpus-textarea {
+      flex: 1; background: #0f1117; border: none; padding: 16px 20px;
+      color: #e2e8f0; font-family: 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.85rem; line-height: 1.7; resize: none; outline: none; overflow-y: auto;
+    }
+
+    /* ── Chart ── */
+    #chart-wrap {
+      border-top: 1px solid #2d3148; padding: 12px 16px; background: #1a1d27; height: 180px;
+    }
+    #chart-wrap h3 { font-size: 0.7rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+    #loss-chart { width: 100%; height: 130px; }
+    #chart-stats { font-size: 0.72rem; color: #64748b; display: flex; gap: 20px; margin-top: 4px; }
+    #chart-stats span { color: #e2e8f0; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>MambaCode.js Pretrain</h1>
+  <span class="badge">Tool</span>
+  <div id="status-dot"></div>
+</header>
+
+<div id="main">
+  <aside id="sidebar">
+    <h2>Model</h2>
+
+    <div class="field">
+      <label>Model size</label>
+      <select id="model-size">
+        <option value="nano">nano — ~6 M params (fastest)</option>
+        <option value="small">small — ~20 M params</option>
+        <option value="medium">medium — ~50 M params</option>
+        <option value="large">large — ~120 M params</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>SSM variant</label>
+      <select id="mamba-type">
+        <option value="mamba1">Mamba-1 (S6 — default, checkpoint compatible)</option>
+        <option value="mamba2">Mamba-2 (SSD — better GPU throughput)</option>
+        <option value="mamba3">Mamba-3 (complex states — 2× smaller state)</option>
+        <option value="jamba">Jamba hybrid (every 4th = attention + Mamba-2)</option>
+        <option value="zamba">Zamba hybrid (every 6th = attention + Mamba-3)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Checkpoint URL <span style="font-size:0.65rem;color:#64748b;">(optional — resume)</span></label>
+      <input id="checkpoint-url" type="url" placeholder="https://example.com/base.bin"
+        style="background:#0f1117;border:1px solid #2d3148;border-radius:5px;padding:6px 9px;color:#e2e8f0;font-size:0.78rem;width:100%;" />
+    </div>
+
+    <div class="divider"></div>
+    <h2>Training</h2>
+
+    <div class="field">
+      <label>Epochs <span id="epochs-val">5</span></label>
+      <input id="epochs" type="range" min="1" max="50" step="1" value="5" />
+    </div>
+    <div class="field">
+      <label>Sequence length <span id="seq-len-val">128</span></label>
+      <input id="seq-len" type="range" min="32" max="512" step="32" value="128" />
+    </div>
+    <div class="field">
+      <label>Learning rate <span id="lr-val">1e-3</span></label>
+      <input id="lr" type="range" min="-5" max="-2" step="0.25" value="-3" />
+    </div>
+
+    <div id="error-msg"></div>
+
+    <button id="start-btn" disabled>Start Training</button>
+    <button id="stop-btn">Stop</button>
+
+    <div class="divider"></div>
+    <h2>Save</h2>
+    <div id="save-row">
+      <button id="save-idb-btn" disabled>Save to browser</button>
+      <button id="save-dl-btn"  disabled>Download .bin</button>
+    </div>
+    <div id="save-status"></div>
+  </aside>
+
+  <div id="right">
+    <div id="corpus-header">
+      <h2>Training Corpus</h2>
+      <div id="corpus-meta">0 chars · 0 tokens</div>
+      <div style="display:flex;gap:6px;margin-left:auto;align-items:center;">
+        <select id="dataset-select" style="background:#1e293b;border:1px solid #2d3148;border-radius:5px;padding:5px 8px;color:#e2e8f0;font-size:0.78rem;cursor:pointer;">
+          <option value="smollm-python">SmolLM python-edu (coding, ODC-BY)</option>
+          <option value="codesearchnet-python">CodeSearchNet Python (Apache 2.0)</option>
+          <option value="codesearchnet-javascript">CodeSearchNet JavaScript (Apache 2.0)</option>
+          <option value="codesearchnet-go">CodeSearchNet Go (Apache 2.0)</option>
+          <option value="tinystories">TinyStories (English stories)</option>
+        </select>
+        <button id="load-dataset-btn" style="padding:5px 12px;background:#b45309;color:#fff;border:none;border-radius:5px;font-size:0.78rem;font-weight:600;cursor:pointer;">Load ↓</button>
+        <label id="load-file-btn">Load file <input id="file-input" type="file" accept=".txt,.md,.js,.ts,.py,.go" /></label>
+      </div>
+    </div>
+    <div id="dataset-info" style="display:none;padding:10px 16px;background:#1c1a07;border-bottom:1px solid #854d0e;font-size:0.78rem;color:#fbbf24;line-height:1.6;"></div>
+    <div id="dataset-progress" style="display:none;padding:8px 16px;background:#12181f;border-bottom:1px solid #2d3148;font-size:0.78rem;color:#94a3b8;">
+      <span id="dataset-progress-text">Loading…</span>
+      <button id="dataset-stop-btn" style="margin-left:12px;padding:2px 10px;background:transparent;border:1px solid #475569;border-radius:4px;color:#94a3b8;font-size:0.75rem;cursor:pointer;">Stop</button>
+    </div>
+    <textarea id="corpus-textarea" placeholder="Select a dataset above and click Load ↓ to stream training data from HuggingFace.
+
+Recommended for code:
+  • SmolLM python-edu  — Python educational text, 1 GB, ODC-BY licence
+  • CodeSearchNet      — Documented functions across Python / JS / Go
+
+Recommended for general language:
+  • TinyStories        — 480 M tokens, purpose-built for tiny models
+
+After training:
+  1. Download the .bin checkpoint
+  2. Upload to HuggingFace or your preferred host
+  3. Set DEFAULT_CHECKPOINT_URL in MambaKit's src/kit/session.ts (if using MambaKit)
+  4. Or load directly in your app via model.loadWeights(await fetch(url).then(r => r.arrayBuffer()))"></textarea>
+    <div id="chart-wrap">
+      <h3>Training Loss</h3>
+      <canvas id="loss-chart"></canvas>
+      <div id="chart-stats">
+        Step: <span id="stat-step">—</span>
+        &nbsp;Loss: <span id="stat-loss">—</span>
+        &nbsp;Perplexity: <span id="stat-ppl">—</span>
+        &nbsp;Elapsed: <span id="stat-time">—</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import { initWebGPU, BPETokenizer, HybridMambaModel, MambaTrainer } from '../dist/index.js';
+
+  // ── Tokenizer vocab (Qwen2.5-Coder, loaded from HuggingFace) ─────────────
+  const VOCAB_URL  = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/vocab.json';
+  const MERGES_URL = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/merges.txt';
+
+  // ── Model size presets ────────────────────────────────────────────────────
+  const MODEL_PRESETS = {
+    nano  : { dModel: 128,  numLayers: 4,  nHeads: 4  },
+    small : { dModel: 256,  numLayers: 6,  nHeads: 8  },
+    medium: { dModel: 512,  numLayers: 8,  nHeads: 8  },
+    large : { dModel: 768,  numLayers: 12, nHeads: 12 },
+  };
+
+  // ── Layer schedule helpers ────────────────────────────────────────────────
+  function resolveSchedule(type, numLayers) {
+    if (type === 'jamba') {
+      return Array.from({ length: numLayers }, (_, i) =>
+        ({ type: i % 4 === 3 ? 'attention' : 'mamba2' })
+      );
+    }
+    if (type === 'zamba') {
+      return Array.from({ length: numLayers }, (_, i) =>
+        ({ type: i % 6 === 5 ? 'attention' : 'mamba3' })
+      );
+    }
+    return Array(numLayers).fill({ type });
+  }
+
+  // ── IndexedDB save/load helpers ───────────────────────────────────────────
+  function idbOpen() {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open('mambacode', 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore('checkpoints');
+      req.onsuccess = e => res(e.target.result);
+      req.onerror   = rej;
+    });
+  }
+
+  async function idbSave(key, buf) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('checkpoints', 'readwrite');
+      tx.objectStore('checkpoints').put(buf, key);
+      tx.oncomplete = res;
+      tx.onerror    = rej;
+    });
+  }
+
+  async function idbLoad(key) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const req = db.transaction('checkpoints', 'readonly').objectStore('checkpoints').get(key);
+      req.onsuccess = e => res(e.target.result ?? null);
+      req.onerror   = rej;
+    });
+  }
+
+  // ── Elements ──────────────────────────────────────────────────────────────
+  const statusDot      = document.getElementById('status-dot');
+  const modelSizeEl    = document.getElementById('model-size');
+  const mambaTypeEl    = document.getElementById('mamba-type');
+  const checkpointUrl  = document.getElementById('checkpoint-url');
+  const epochsEl       = document.getElementById('epochs');
+  const seqLenEl       = document.getElementById('seq-len');
+  const lrEl           = document.getElementById('lr');
+  const corpusEl       = document.getElementById('corpus-textarea');
+  const corpusMeta     = document.getElementById('corpus-meta');
+  const fileInput      = document.getElementById('file-input');
+  const startBtn       = document.getElementById('start-btn');
+  const stopBtn        = document.getElementById('stop-btn');
+  const saveIdbBtn     = document.getElementById('save-idb-btn');
+  const saveDlBtn      = document.getElementById('save-dl-btn');
+  const saveStatus     = document.getElementById('save-status');
+  const errorMsg       = document.getElementById('error-msg');
+  const lossChart          = document.getElementById('loss-chart');
+  const statStep           = document.getElementById('stat-step');
+  const statLoss           = document.getElementById('stat-loss');
+  const statPpl            = document.getElementById('stat-ppl');
+  const statTime           = document.getElementById('stat-time');
+  const datasetSelect      = document.getElementById('dataset-select');
+  const loadDatasetBtn     = document.getElementById('load-dataset-btn');
+  const datasetInfo        = document.getElementById('dataset-info');
+  const datasetProgress    = document.getElementById('dataset-progress');
+  const datasetProgressTxt = document.getElementById('dataset-progress-text');
+  const datasetStopBtn     = document.getElementById('dataset-stop-btn');
+
+  // ── Slider labels ─────────────────────────────────────────────────────────
+  epochsEl.addEventListener('input', () => document.getElementById('epochs-val').textContent = epochsEl.value);
+  seqLenEl.addEventListener('input', () => document.getElementById('seq-len-val').textContent = seqLenEl.value);
+  lrEl.addEventListener('input', () => {
+    document.getElementById('lr-val').textContent = `1e${lrEl.value}`;
+  });
+
+  // ── Corpus meta ───────────────────────────────────────────────────────────
+  function updateMeta() {
+    const chars  = corpusEl.value.length;
+    const tokens = Math.round(chars / 4);
+    corpusMeta.textContent = `${chars.toLocaleString()} chars · ~${tokens.toLocaleString()} tokens`;
+    startBtn.disabled = chars < 500;
+  }
+  corpusEl.addEventListener('input', updateMeta);
+  updateMeta();
+
+  // ── File load ─────────────────────────────────────────────────────────────
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => { corpusEl.value = e.target.result; updateMeta(); };
+    reader.readAsText(file);
+  });
+
+  // ── Dataset definitions ───────────────────────────────────────────────────
+  const DATASETS = {
+    'smollm-python': {
+      label: 'SmolLM python-edu',
+      api: { dataset: 'HuggingFaceTB/smollm-corpus', config: 'python-edu', split: 'train', field: 'text' },
+      batchRows: 100,
+      targetChars: 2_000_000,
+      info: '<strong>SmolLM python-edu</strong> — Python educational text curated from web pages, textbooks, and exercises. '
+          + '~1 GB total (ODC-BY licence). Streamed in batches from the HuggingFace Datasets Server API. '
+          + 'Best choice for a coding-capable nano model. '
+          + 'Recommended settings: <strong>nano, 5 epochs, lr 1e-3, seqLen 128</strong>.',
+    },
+    'codesearchnet-python': {
+      label: 'CodeSearchNet Python',
+      api: { dataset: 'code-search-net/code_search_net', config: 'python', split: 'train', field: 'whole_func_string' },
+      batchRows: 100,
+      targetChars: 2_000_000,
+      info: '<strong>CodeSearchNet Python</strong> — Documented Python functions scraped from open-source GitHub repos. '
+          + '~400 k functions, Apache 2.0. Each sample is a single function with its docstring. '
+          + 'Great for teaching the model Python idioms and docstring conventions.',
+    },
+    'codesearchnet-javascript': {
+      label: 'CodeSearchNet JavaScript',
+      api: { dataset: 'code-search-net/code_search_net', config: 'javascript', split: 'train', field: 'whole_func_string' },
+      batchRows: 100,
+      targetChars: 2_000_000,
+      info: '<strong>CodeSearchNet JavaScript</strong> — Documented JS functions from open-source GitHub repos. '
+          + 'Apache 2.0. Mix with Python-edu for a polyglot model.',
+    },
+    'codesearchnet-go': {
+      label: 'CodeSearchNet Go',
+      api: { dataset: 'code-search-net/code_search_net', config: 'go', split: 'train', field: 'whole_func_string' },
+      batchRows: 100,
+      targetChars: 2_000_000,
+      info: '<strong>CodeSearchNet Go</strong> — Documented Go functions from open-source GitHub repos. Apache 2.0.',
+    },
+    'tinystories': {
+      label: 'TinyStories',
+      directUrl: 'https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-valid.txt',
+      info: '<strong>TinyStories</strong> — 480 M tokens of simple English stories, purpose-built for tiny language models. '
+          + 'This loads the <strong>validation split (~5 MB)</strong> for quick testing. '
+          + 'For a full training run, download <code>TinyStories-train.txt</code> (1.9 GB) from '
+          + '<a href="https://huggingface.co/datasets/roneneldan/TinyStories" target="_blank" style="color:#f59e0b;">HuggingFace</a> '
+          + 'and use the file picker. CDLA-Sharing-1.0 licence.',
+    },
+  };
+
+  // ── HuggingFace Datasets Server streaming ─────────────────────────────────
+  const HF_API = 'https://datasets-server.huggingface.co/rows';
+  let datasetStopFlag = false;
+
+  async function streamDataset(cfg, targetChars) {
+    const { dataset, config, split, field } = cfg;
+    let offset = 0;
+    let accumulated = '';
+    const length = 100;
+
+    while (accumulated.length < targetChars) {
+      if (datasetStopFlag) break;
+
+      const url = `${HF_API}?dataset=${encodeURIComponent(dataset)}&config=${encodeURIComponent(config)}&split=${encodeURIComponent(split)}&offset=${offset}&length=${length}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Datasets API error: HTTP ${res.status}`);
+
+      const json = await res.json();
+      const rows = json.rows ?? [];
+      if (rows.length === 0) break;
+
+      for (const { row } of rows) {
+        const text = row[field] ?? '';
+        if (text.length > 10) accumulated += text + '\n\n';
+      }
+
+      offset += rows.length;
+      const pct = Math.min(100, Math.round((accumulated.length / targetChars) * 100));
+      datasetProgressTxt.textContent = `Loaded ${offset.toLocaleString()} rows · ${(accumulated.length / 1000).toFixed(0)} KB · ${pct}%`;
+
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    return accumulated;
+  }
+
+  loadDatasetBtn.addEventListener('click', async () => {
+    const key = datasetSelect.value;
+    const ds  = DATASETS[key];
+    if (!ds) return;
+
+    loadDatasetBtn.disabled = true;
+    loadDatasetBtn.textContent = 'Loading…';
+    datasetStopFlag = false;
+    datasetInfo.innerHTML = ds.info;
+    datasetInfo.style.display = 'block';
+
+    try {
+      if (ds.directUrl) {
+        datasetProgress.style.display = 'flex';
+        datasetProgressTxt.textContent = 'Fetching…';
+        const res = await fetch(ds.directUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        corpusEl.value = await res.text();
+        datasetProgressTxt.textContent = '✓ Loaded';
+      } else {
+        datasetProgress.style.display = 'flex';
+        datasetProgressTxt.textContent = 'Starting…';
+        const text = await streamDataset(ds.api, ds.targetChars);
+        corpusEl.value = text;
+        datasetProgressTxt.textContent = datasetStopFlag
+          ? `✓ Stopped — ${(text.length / 1000).toFixed(0)} KB loaded`
+          : `✓ Done — ${(text.length / 1000).toFixed(0)} KB loaded`;
+      }
+      updateMeta();
+      loadDatasetBtn.textContent = '✓ Loaded';
+    } catch (err) {
+      loadDatasetBtn.textContent = 'Load ↓';
+      datasetProgressTxt.textContent = `Error: ${err.message}`;
+    } finally {
+      loadDatasetBtn.disabled = false;
+    }
+  });
+
+  datasetStopBtn.addEventListener('click', () => { datasetStopFlag = true; });
+
+  // ── Loss chart ────────────────────────────────────────────────────────────
+  const ctx    = lossChart.getContext('2d');
+  const losses = [];
+
+  function resizeChart() {
+    lossChart.width  = lossChart.offsetWidth  * devicePixelRatio;
+    lossChart.height = lossChart.offsetHeight * devicePixelRatio;
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    drawChart();
+  }
+
+  function drawChart() {
+    const w = lossChart.offsetWidth;
+    const h = lossChart.offsetHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    if (losses.length < 2) return;
+
+    const minL = Math.min(...losses);
+    const maxL = Math.max(...losses);
+    const range = maxL - minL || 1;
+    const pad = { t: 4, b: 4, l: 4, r: 4 };
+    const cw = w - pad.l - pad.r;
+    const ch = h - pad.t - pad.b;
+
+    ctx.strokeStyle = '#b45309';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    losses.forEach((l, i) => {
+      const x = pad.l + (i / (losses.length - 1)) * cw;
+      const y = pad.t + (1 - (l - minL) / range) * ch;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  new ResizeObserver(resizeChart).observe(lossChart);
+
+  // ── Session state ─────────────────────────────────────────────────────────
+  let model    = null;
+  let trainer  = null;
+  let stopFlag = false;
+
+  // ── Start training ────────────────────────────────────────────────────────
+  startBtn.addEventListener('click', async () => {
+    errorMsg.classList.remove('visible');
+    startBtn.disabled  = true;
+    stopBtn.classList.add('visible');
+    saveIdbBtn.disabled = true;
+    saveDlBtn.disabled  = true;
+    statusDot.className = 'loading';
+    stopFlag = false;
+    losses.length = 0;
+    drawChart();
+
+    const ckUrl    = checkpointUrl.value.trim();
+    const epochs   = parseInt(epochsEl.value, 10);
+    const seqLen   = parseInt(seqLenEl.value, 10);
+    const lr       = Math.pow(10, parseFloat(lrEl.value));
+    const corpus   = corpusEl.value;
+    const mSize    = modelSizeEl.value;
+    const mType    = mambaTypeEl.value;
+
+    try {
+      statStep.textContent = 'Initialising WebGPU…';
+      const { device } = await initWebGPU({ powerPreference: 'high-performance' });
+
+      statStep.textContent = 'Loading tokenizer…';
+      const tokenizer = new BPETokenizer();
+      await tokenizer.load(VOCAB_URL, MERGES_URL);
+
+      statStep.textContent = 'Building model…';
+      const preset   = MODEL_PRESETS[mSize];
+      const schedule = resolveSchedule(mType, preset.numLayers);
+
+      model = new HybridMambaModel(device, {
+        vocabSize : tokenizer.vocabSize,
+        dModel    : preset.dModel,
+        numLayers : preset.numLayers,
+        nHeads    : preset.nHeads,
+        layers    : schedule,
+      });
+
+      if (ckUrl) {
+        statStep.textContent = 'Loading checkpoint…';
+        const buf = await (await fetch(ckUrl)).arrayBuffer();
+        await model.loadWeights(buf);
+      }
+
+      statusDot.className = 'ready';
+      statStep.textContent = 'Training…';
+
+      trainer = new MambaTrainer(model, tokenizer);
+      const startMs = Date.now();
+
+      await trainer.train(corpus, {
+        wsla        : false,
+        epochs,
+        learningRate: lr,
+        seqLen,
+        onEpochEnd(epoch, loss) {
+          if (stopFlag) throw new Error('Stopped by user');
+          losses.push(loss);
+          drawChart();
+          statStep.textContent = `Epoch ${epoch}/${epochs}`;
+          statLoss.textContent = loss.toFixed(4);
+          statPpl.textContent  = Math.exp(loss).toFixed(1);
+          statTime.textContent = `${((Date.now() - startMs) / 1000).toFixed(0)}s`;
+        },
+      });
+
+      saveIdbBtn.disabled = false;
+      saveDlBtn.disabled  = false;
+      statStep.textContent = 'Training complete';
+    } catch (err) {
+      if (err.message !== 'Stopped by user') {
+        errorMsg.textContent = err.message ?? String(err);
+        errorMsg.classList.add('visible');
+        statusDot.className = 'error';
+      } else {
+        statusDot.className = 'ready';
+        statStep.textContent = 'Stopped';
+        if (model) { saveIdbBtn.disabled = false; saveDlBtn.disabled = false; }
+      }
+    } finally {
+      startBtn.disabled = false;
+      stopBtn.classList.remove('visible');
+    }
+  });
+
+  stopBtn.addEventListener('click', () => { stopFlag = true; });
+
+  // ── Save ──────────────────────────────────────────────────────────────────
+  saveIdbBtn.addEventListener('click', async () => {
+    if (!model) return;
+    saveIdbBtn.disabled = true;
+    saveDlBtn.disabled  = true;
+    saveStatus.textContent = 'Saving…';
+    try {
+      const buf = model.exportWeights();
+      await idbSave('mambacode-default', buf);
+      saveStatus.textContent = '✓ Saved to browser storage (key: mambacode-default).';
+    } catch (err) {
+      saveStatus.textContent = `Error: ${err.message}`;
+    } finally {
+      saveIdbBtn.disabled = false;
+      saveDlBtn.disabled  = false;
+    }
+  });
+
+  saveDlBtn.addEventListener('click', async () => {
+    if (!model) return;
+    saveIdbBtn.disabled = true;
+    saveDlBtn.disabled  = true;
+    saveStatus.textContent = 'Preparing download…';
+    try {
+      const buf  = model.exportWeights();
+      const blob = new Blob([buf], { type: 'application/octet-stream' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = 'mambacode-pretrained.bin'; a.click();
+      URL.revokeObjectURL(url);
+      saveStatus.textContent = '✓ Downloaded.';
+    } catch (err) {
+      saveStatus.textContent = `Error: ${err.message}`;
+    } finally {
+      saveIdbBtn.disabled = false;
+      saveDlBtn.disabled  = false;
+    }
+  });
+</script>
+</body>
+</html>
