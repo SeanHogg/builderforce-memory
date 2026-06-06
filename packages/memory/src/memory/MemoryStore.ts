@@ -9,6 +9,7 @@
  */
 
 import { SSMError } from '../errors/SSMError.js';
+import { tokenize, jaccardSimilarity, cosineSimilarity } from '../similarity/index.js';
 
 export type FactType = 'text' | 'json' | 'number' | 'boolean';
 
@@ -405,38 +406,3 @@ function requestToPromise<R, T>(req: IDBRequest<R>, failMsg: string, map: (resul
     });
 }
 
-// ── Text similarity helpers ───────────────────────────────────────────────────
-
-/** Splits text into lowercase word tokens, removing punctuation. */
-function tokenize(text: string): string[] {
-    return text.toLowerCase().split(/[\s\W]+/).filter(Boolean);
-}
-
-/** Jaccard similarity between two token sets: |A ∩ B| / |A ∪ B|. */
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-    if (a.size === 0 && b.size === 0) return 1;
-    let intersection = 0;
-    for (const token of a) {
-        if (b.has(token)) intersection++;
-    }
-    // Both-empty is handled above, so `union` is always > 0 here.
-    const union = a.size + b.size - intersection;
-    return intersection / union;
-}
-
-/**
- * Cosine similarity between two equal-length vectors.
- * Vectors from MambaSession.embed() are already L2-normalised, so this reduces
- * to a dot product, but we normalise defensively for vectors from other sources.
- */
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-    const n = Math.min(a.length, b.length);
-    let dot = 0, na = 0, nb = 0;
-    for (let i = 0; i < n; i++) {
-        dot += a[i]! * b[i]!;
-        na  += a[i]! * a[i]!;
-        nb  += b[i]! * b[i]!;
-    }
-    const denom = Math.sqrt(na) * Math.sqrt(nb);
-    return denom === 0 ? 0 : dot / denom;
-}

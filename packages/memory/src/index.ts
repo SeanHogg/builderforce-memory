@@ -50,12 +50,28 @@ export { OpenAIBridge }    from './bridges/OpenAIBridge.js';
 export { AnthropicBridge } from './bridges/AnthropicBridge.js';
 export { FetchBridge }     from './bridges/FetchBridge.js';
 export { CachingBridge }   from './bridges/CachingBridge.js';
+export { SemanticCachingBridge } from './bridges/SemanticCachingBridge.js';
 export { ResponseCache, buildCacheKey } from './bridges/ResponseCache.js';
 export type { OpenAIBridgeOptions }    from './bridges/OpenAIBridge.js';
 export type { AnthropicBridgeOptions } from './bridges/AnthropicBridge.js';
 export type { FetchBridgeOptions }     from './bridges/FetchBridge.js';
 export type { CachingBridgeOptions }   from './bridges/CachingBridge.js';
+export type { SemanticCachingBridgeOptions } from './bridges/SemanticCachingBridge.js';
 export type { ResponseCacheOptions }   from './bridges/ResponseCache.js';
+
+// ── Semantic cache (embedding-keyed, L1 local + L2 shared) ─────────────────────
+export { SemanticCache } from './cache/SemanticCache.js';
+export { FetchSemanticCacheBackend } from './cache/FetchSemanticCacheBackend.js';
+export type {
+    Embedder,
+    SemanticCacheBackend,
+    SemanticCacheHit,
+    SemanticCacheOptions,
+    FetchSemanticCacheBackendOptions,
+} from './cache/index.js';
+
+// ── Similarity primitives ──────────────────────────────────────────────────────
+export { cosineSimilarity, jaccardSimilarity, tokenize } from './similarity/index.js';
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export { InferenceRouter } from './router/InferenceRouter.js';

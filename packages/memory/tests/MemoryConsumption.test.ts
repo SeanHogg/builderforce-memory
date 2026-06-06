@@ -61,13 +61,13 @@ test('a remembered fact whose key appears in the input is injected into the syst
     expect(calls[0].conversation).not.toContain('Fact (stack)');
 });
 
-test('facts whose key is absent from the input are not injected', async () => {
+test('facts whose key is absent from the input are not injected (substring mode)', async () => {
     const store = freshStore();
     await store.remember('stack', 'React', { importance: 0.5 });
     await store.remember('goal', 'ship a chat app', { importance: 0.5 });
 
     const { runtime, calls } = recordingRuntime();
-    const agent = new SSMAgent({ runtime, memory: store });
+    const agent = new SSMAgent({ runtime, memory: store, factSelection: 'substring' });
 
     await agent.think('tell me about the stack');
 

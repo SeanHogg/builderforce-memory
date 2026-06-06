@@ -234,7 +234,7 @@ test('facts matching input keys are injected into the prompt', async () => {
         { key: 'stack', content: 'React + TypeScript', timestamp: 1 },
         { key: 'goal',  content: 'Build a chat app',   timestamp: 0 },
     ]);
-    const agent = new SSMAgent({ runtime, memory });
+    const agent = new SSMAgent({ runtime, memory, factSelection: 'substring' });
 
     await agent.think('What stack should I use?');
     const system = systemOf(runtime.generate as jest.Mock<any>);

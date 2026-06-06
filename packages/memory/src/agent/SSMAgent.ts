@@ -18,7 +18,7 @@
 
 import type { AdaptOptions, AdaptResult } from '../session/index.js';
 import type { SSMRuntime, GenerateOptions } from '../runtime/SSMRuntime.js';
-import type { MemoryStore } from '../memory/MemoryStore.js';
+import type { MemoryStore, MemoryEntry } from '../memory/MemoryStore.js';
 import { SSMError } from '../errors/SSMError.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -50,6 +50,18 @@ export interface SSMAgentOptions {
      * Default: true
      */
     persistHistory?  : boolean;
+    /**
+     * How facts are picked from the MemoryStore for injection each turn:
+     *   - 'semantic'  (default): top-`maxFacts` by SSM-embedding similarity to
+     *     the input (`recallSimilar`) — injects the few *relevant* facts, which
+     *     keeps the prompt small and is paraphrase-robust.
+     *   - 'substring': legacy behaviour — only facts whose key literally appears
+     *     in the input.
+     * `injectAllFacts` on a turn overrides this and injects everything.
+     */
+    factSelection?   : 'semantic' | 'substring';
+    /** Max facts injected in 'semantic' mode. Default: 8. */
+    maxFacts?        : number;
 }
 
 export interface ThinkOptions extends GenerateOptions {
@@ -73,6 +85,8 @@ export class SSMAgent {
     private readonly _systemPrompt    : string;
     private readonly _maxHistoryTurns : number;
     private readonly _persistHistory  : boolean;
+    private readonly _factSelection   : 'semantic' | 'substring';
+    private readonly _maxFacts        : number;
     private _history: AgentMessage[] = [];
 
     constructor(opts: SSMAgentOptions) {
@@ -81,6 +95,8 @@ export class SSMAgent {
         this._systemPrompt    = opts.systemPrompt    ?? 'You are a helpful assistant.';
         this._maxHistoryTurns = opts.maxHistoryTurns ?? 20;
         this._persistHistory  = opts.persistHistory  ?? true;
+        this._factSelection   = opts.factSelection   ?? 'semantic';
+        this._maxFacts        = opts.maxFacts         ?? 8;
     }
 
     /**
@@ -231,6 +247,23 @@ export class SSMAgent {
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /**
+     * Selects which stored facts to inject for this turn:
+     *   - injectAllFacts → every fact
+     *   - 'semantic'     → top-`maxFacts` by SSM-embedding similarity to the input
+     *                      (recallSimilar; falls back to lexical overlap when the
+     *                      runtime can't embed) — small, relevant, paraphrase-robust
+     *   - 'substring'    → legacy key-substring match
+     */
+    private async _selectFacts(input: string, injectAllFacts?: boolean): Promise<MemoryEntry[]> {
+        const memory = this._memory!;
+        if (injectAllFacts) return memory.recallAll();
+        if (this._factSelection === 'semantic') {
+            return memory.recallSimilar(input, this._maxFacts, this._runtime);
+        }
+        return (await memory.recallAll()).filter(f => input.includes(f.key));
+    }
+
+    /**
      * Builds the prompt as two parts split at the cache boundary:
      *   - `system`       : the System line + injected Facts — stable across a
      *                      turn, so the transformer can cache it (see
@@ -252,10 +285,9 @@ export class SSMAgent {
 
         // Inject relevant facts from MemoryStore, sorted by importance descending
         if (this._memory) {
-            const facts = await this._memory.recallAll();
-            const relevant = injectAllFacts
-                ? facts
-                : facts.filter(f => input.includes(f.key));
+            const relevant = (await this._selectFacts(input, injectAllFacts))
+                // Never inject the serialised conversation-history blob as a fact.
+                .filter(f => f.key !== HISTORY_KEY);
 
             // Sort by importance descending (missing importance defaults to 0.5)
             const sorted = relevant.slice().sort(
