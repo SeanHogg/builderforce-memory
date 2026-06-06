@@ -65,7 +65,7 @@ test('destroy() still tears down the runtime when persisting history fails', asy
         remember : jest.fn<any>(async () => { throw new Error('disk full'); }),
     } as unknown as MemoryStore;
 
-    const agent = new SSMAgent({ runtime, memory });
+    const agent = new SSMAgent({ runtime, memory, factSelection: 'substring' });
     await agent.think('hi');                 // creates history worth persisting
     await expect(agent.destroy()).resolves.toBeUndefined(); // swallows the write error
     expect(runtime.destroy).toHaveBeenCalledTimes(1);

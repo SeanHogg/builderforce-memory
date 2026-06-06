@@ -113,6 +113,42 @@ test('with no memory store the system prefix is just the system prompt', async (
     expect(calls[0].conversation).toMatch(/User: hi\nAssistant:$/);
 });
 
+// ── Semantic fact selection (default) ─────────────────────────────────────────
+
+test('semantic mode injects the most embedding-relevant facts, capped at maxFacts', async () => {
+    const store = freshStore();
+    await store.remember('lang',   'the codebase is TypeScript');
+    await store.remember('db',     'we use PostgreSQL');
+    await store.remember('deploy', 'deployed on Cloudflare Workers');
+
+    // A query about language aligns with the 'lang' fact's content embedding.
+    const VEC: Record<string, number[]> = {
+        'what language is this written in?': [1, 0, 0],
+        'the codebase is TypeScript':        [0.99, 0.1, 0],
+        'we use PostgreSQL':                 [0, 1, 0],
+        'deployed on Cloudflare Workers':    [0, 0, 1],
+    };
+    const calls: GenerateCall[] = [];
+    const runtime = {
+        generate: jest.fn<any>(async (conversation: string, opts: { system?: string }) => {
+            calls.push({ conversation, system: opts?.system });
+            return 'reply';
+        }),
+        embed: jest.fn<any>(async (t: string) => new Float32Array(VEC[t] ?? [0, 0, 0])),
+        adapt: jest.fn<any>(), evaluate: jest.fn<any>(), save: jest.fn<any>(), load: jest.fn<any>(), destroy: jest.fn<any>(),
+        get bridge() { return undefined; }, get destroyed() { return false; }, get internals() { return {} as never; },
+    } as unknown as SSMRuntime;
+
+    // factSelection defaults to 'semantic'; cap to the single most relevant fact.
+    const agent = new SSMAgent({ runtime, memory: store, maxFacts: 1 });
+    await agent.think('what language is this written in?');
+
+    expect(runtime.embed).toHaveBeenCalled();
+    expect(calls[0].system).toContain('Fact (lang): the codebase is TypeScript');
+    expect(calls[0].system).not.toContain('Fact (db)');
+    expect(calls[0].system).not.toContain('Fact (deploy)');
+});
+
 // ── Memory-backed persistence across sessions ─────────────────────────────────
 
 test('conversation history persists across destroy()/init() through the MemoryStore', async () => {

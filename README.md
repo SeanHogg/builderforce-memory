@@ -15,6 +15,38 @@ This monorepo consolidates two packages that previously lived in separate repos 
 
 The two-package split is deliberate: the engine is zero-dep and WebGPU-pure and can be consumed standalone; the runtime pulls in LLM-vendor bridges. Flattening them would force engine-only consumers to drag in vendor code and vice versa. They release in lockstep from one pipeline, which kills the publish-drift bug class that the separate-repo setup suffered (bumping one version without publishing + regenerating the consumer lockfile).
 
+## Cutting token cost
+
+Agent Memory ships three layers that reduce LLM spend, in increasing power. All are **portable** — the same code runs in the browser (WebGPU SSM) and in Node (the agent's `@webgpu/node` SSM) because the embedder and storage are injected, never hard-wired.
+
+| Layer | What it does | Saves |
+|---|---|---|
+| **Prompt caching** ([`AnthropicBridge`](packages/memory/src/bridges/AnthropicBridge.ts) `cacheSystem`) | Marks the stable system prompt as an Anthropic `cache_control` block | ~90% on the cached **input** prefix (cost, not count) |
+| **Exact-match cache** ([`CachingBridge`](packages/memory/src/bridges/CachingBridge.ts) + [`ResponseCache`](packages/memory/src/bridges/ResponseCache.ts)) | Reuses byte-identical completions | Eliminates duplicate calls (retries, identical fan-out) |
+| **Semantic cache** ([`SemanticCache`](packages/memory/src/cache/SemanticCache.ts) + [`SemanticCachingBridge`](packages/memory/src/bridges/SemanticCachingBridge.ts)) | Reuses a prior answer when the new prompt is within a cosine **threshold** of one already answered — catches paraphrases | Avoids frontier calls entirely on semantically-repeated prompts |
+
+The semantic cache is the real lever. It is **read-through with two tiers**, mirroring an L1-Map / L2-KV cache:
+
+- **L1** — an in-process vector list, scanned locally with on-device SSM embeddings (free, offline-capable).
+- **L2** — an optional shared backend ([`FetchSemanticCacheBackend`](packages/memory/src/cache/FetchSemanticCacheBackend.ts) → the BuilderForce.ai gateway), so a paraphrase answered by the **web app** is reusable by an **agent** and vice-versa.
+
+```ts
+import { SemanticCache, FetchSemanticCacheBackend, AnthropicBridge } from '@builderforce/memory';
+
+const cache = new SemanticCache({
+  embed: (t) => runtime.embed(t),                                   // on-device SSM (free)
+  l2: new FetchSemanticCacheBackend({ baseUrl, apiKey }),           // shared via the gateway
+  threshold: 0.92,
+});
+
+const { response, cached, tier } = await cache.getOrGenerate(
+  prompt,
+  () => bridge.generate(prompt),                                    // only runs on a miss
+);
+```
+
+Memory-backed fact injection is semantic too: [`SSMAgent`](packages/memory/src/agent/SSMAgent.ts) defaults to `factSelection: 'semantic'`, injecting only the top-`maxFacts` embedding-relevant facts each turn (paraphrase-robust, smaller prompts) instead of an exact key-substring match.
+
 ## Develop
 
 ```bash

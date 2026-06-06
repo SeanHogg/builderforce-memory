@@ -37,6 +37,30 @@ test('recallByTag returns only entries carrying the tag', async () => {
     expect(await store.recallByTag('nope')).toEqual([]);
 });
 
+test('recallAll breaks same-timestamp ties by write sequence (newest first)', async () => {
+    const store = freshStore();
+    // Import entries sharing a timestamp: higher seq is "newer"; a seq-less entry
+    // (imported from a pre-seq export) defaults to 0 and sorts oldest.
+    await store.importAll([
+        { key: 'mid',   content: 'm', timestamp: 1000, seq: 5 },
+        { key: 'new',   content: 'n', timestamp: 1000, seq: 9 },
+        { key: 'noseq', content: 'o', timestamp: 1000 }, // no seq → treated as 0
+    ], 'overwrite');
+
+    const order = (await store.recallAll()).map(e => e.key);
+    expect(order).toEqual(['new', 'mid', 'noseq']);
+});
+
+test('recallAll handles same-timestamp entries that both lack a write sequence', async () => {
+    const store = freshStore();
+    // Both seq-less and same timestamp → the tiebreak compares 0 vs 0 on both sides.
+    await store.importAll([
+        { key: 'p', content: '1', timestamp: 2000 },
+        { key: 'q', content: '2', timestamp: 2000 },
+    ], 'overwrite');
+    expect((await store.recallAll()).map(e => e.key).sort()).toEqual(['p', 'q']);
+});
+
 // ── recallSimilar ─────────────────────────────────────────────────────────────
 
 test('recallSimilar on an empty store returns []', async () => {

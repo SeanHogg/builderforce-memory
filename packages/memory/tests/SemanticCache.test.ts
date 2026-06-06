@@ -123,7 +123,11 @@ test('L2 is best-effort: a throwing lookup degrades to a local miss', async () =
 });
 
 test('L2 is best-effort: a throwing store does not fail the caller', async () => {
-    const l2 = makeL2({ store: jest.fn<any>(async () => { throw new Error('gateway down'); }) });
+    // Lookup must MISS so the generate+store path runs (default lookup would hit).
+    const l2 = makeL2({
+        lookup: jest.fn<any>(async () => undefined),
+        store:  jest.fn<any>(async () => { throw new Error('gateway down'); }),
+    });
     const cache = new SemanticCache({ embed, l2 });
     const r = await cache.getOrGenerate('A', async () => 'answer');
     expect(r).toMatchObject({ response: 'answer', cached: false });
