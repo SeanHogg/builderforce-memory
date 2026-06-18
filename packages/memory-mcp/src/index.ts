@@ -29,3 +29,11 @@ export { runStdio } from "./transports/stdio.js";
 
 export { createMemoryHttpHandler } from "./transports/http.js";
 export type { HttpHandlerOptions } from "./transports/http.js";
+
+// ── Multi-host installer (wire the stdio server into any MCP-capable agent) ───
+export { buildServerSpec, MCP_PACKAGE, MCP_BIN, RUNTIME_PEERS } from "./install/server-spec.js";
+export type { StdioServerSpec, ServerSpecOptions } from "./install/server-spec.js";
+export { installMemoryServer } from "./install/install.js";
+export type { InstallOptions, InstallResult, InstallStatus, HostSelector, FsLike } from "./install/install.js";
+export { HOSTS, SERVER_KEY, findHost } from "./install/hosts.js";
+export type { HostAdapter, HostEnv, ConfigFormat } from "./install/hosts.js";

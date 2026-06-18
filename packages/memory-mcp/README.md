@@ -75,6 +75,26 @@ const backend = await createLocalMemoryStoreBackend({ runtime: ssmMemoryService.
 
 Recall quality then improves automatically as that model is adapted/distilled.
 
+## One-shot install into any MCP host (not just Claude)
+
+```bash
+# Auto-detect installed agents and register the memory server into each:
+npx -y -p @seanhogg/builderforce-memory-mcp builderforce-memory-install
+
+npx -y -p @seanhogg/builderforce-memory-mcp builderforce-memory-install --host=all
+npx -y -p @seanhogg/builderforce-memory-mcp builderforce-memory-install --host=cursor,windsurf
+```
+
+Writes the stdio server entry into each host's own config, idempotently and with
+`.bak` backups. Supported hosts: **Claude Code, Claude Desktop, Cursor, Windsurf,
+VS Code, Cline, Gemini CLI, Codex CLI**. Every agent points at one shared store
+(`~/.builderforce-memory/memory.json` by default, override with `--memory-file`),
+so a fact remembered in one agent is recalled in another. `--readonly` drops the
+write tools; `--local=<dist/bin/stdio.js>` runs a checkout for development.
+
+The same launch spec is exported for programmatic use:
+`buildServerSpec()` / `installMemoryServer()` (see `src/install/`).
+
 ## Quick start — stdio (any process / language)
 
 ```bash
