@@ -1,23 +1,23 @@
-# SSM.js
+# @seanhogg/builderforce-memory
 
 > **JavaScript-native AI runtime** — SSM execution + Transformer orchestration + online distillation + persistent agent memory.
 
-[![npm](https://img.shields.io/npm/v/@seanhogg/ssmjs)](https://www.npmjs.com/package/@seanhogg/ssmjs)
+[![npm](https://img.shields.io/npm/v/@seanhogg/builderforce-memory)](https://www.npmjs.com/package/@seanhogg/builderforce-memory)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-SSM.js is a complete, self-contained AI runtime built directly on top of [MambaCode.js](https://www.npmjs.com/package/@seanhogg/mambacode.js). It includes the full session layer (previously `@seanhogg/mambakit`) as an internal layer, so you only need one package.
+`@seanhogg/builderforce-memory` is the **runtime layer** of BuilderForce Agent Memory — a complete, self-contained AI runtime built directly on top of [`@seanhogg/builderforce-memory-engine`](https://www.npmjs.com/package/@seanhogg/builderforce-memory-engine). It includes the full session layer (previously `@seanhogg/mambakit`) as an internal layer, so you only need one package. *(Formerly published as `@seanhogg/ssmjs`.)*
 
 ---
 
 ## Overview
 
-SSM.js is a JavaScript-native AI runtime that combines local SSM (State Space Model) inference with optional transformer bridge escalation, persistent semantic memory, and online distillation — all without leaving the browser or Node.js process.
+`@seanhogg/builderforce-memory` is a JavaScript-native AI runtime that combines local SSM (State Space Model) inference with optional transformer bridge escalation, persistent semantic memory, and online distillation — all without leaving the browser or Node.js process.
 
 The layered stack:
 
 ```
-MambaCode.js  →  WebGPU kernels (WGSL, Mamba-1/2/3 SSM math)
-SSM.js        →  Session layer + Runtime orchestration (this package)
+@seanhogg/builderforce-memory-engine  →  WebGPU kernels (WGSL, Mamba-1/2/3 SSM math)
+@seanhogg/builderforce-memory        →  Session layer + Runtime orchestration (this package)
                  ├── src/session/   MambaSession, tokenizer, persistence
                  ├── src/runtime/   SSMRuntime, routing
                  ├── src/memory/    MemoryStore
@@ -25,7 +25,7 @@ SSM.js        →  Session layer + Runtime orchestration (this package)
                  └── src/distillation/  DistillationEngine
 ```
 
-| Capability                   | SSM.js |
+| Capability                   | @seanhogg/builderforce-memory |
 |------------------------------|--------|
 | Simple session API           | ✅     |
 | WebGPU execution             | ✅     |
@@ -41,16 +41,16 @@ SSM.js        →  Session layer + Runtime orchestration (this package)
 ## Installation
 
 ```bash
-npm install @seanhogg/ssmjs
+npm install @seanhogg/builderforce-memory
 # or
-pnpm add @seanhogg/ssmjs
+pnpm add @seanhogg/builderforce-memory
 ```
 
-`@seanhogg/ssmjs` includes the full session layer (previously `@seanhogg/mambakit`).
-`@seanhogg/mambacode.js` is a peer dependency — install it alongside:
+`@seanhogg/builderforce-memory` includes the full session layer (previously `@seanhogg/mambakit`).
+`@seanhogg/builderforce-memory-engine` is a peer dependency — install it alongside:
 
 ```bash
-npm install @seanhogg/ssmjs @seanhogg/mambacode.js
+npm install @seanhogg/builderforce-memory @seanhogg/builderforce-memory-engine
 ```
 
 ### Node.js requirements
@@ -71,7 +71,7 @@ npm install @webgpu/node fake-indexeddb
 ### Browser
 
 ```ts
-import { SSM, AnthropicBridge, SSMAgent, MemoryStore } from '@seanhogg/ssmjs';
+import { SSM, AnthropicBridge, SSMAgent, MemoryStore } from '@seanhogg/builderforce-memory';
 
 const runtime = await SSM.create({
   session: { modelSize: 'small', mambaVersion: 'mamba2' },
@@ -96,7 +96,7 @@ runtime.destroy();
 ```ts
 import { create as createGPU } from '@webgpu/node';
 import { IDBFactory }          from 'fake-indexeddb';
-import { SSM, MemoryStore, SSMAgent } from '@seanhogg/ssmjs';
+import { SSM, MemoryStore, SSMAgent } from '@seanhogg/builderforce-memory';
 
 const gpuAdapter = await createGPU().requestAdapter({ powerPreference: 'high-performance' });
 const idbFactory = new IDBFactory();
@@ -126,7 +126,7 @@ await agent.destroy(); // persists history, releases GPU
 By default, `MambaSession` uses the built-in Qwen2.5-Coder BPE tokenizer.  You can override this by passing any object that satisfies the `Tokenizer` interface:
 
 ```ts
-import type { Tokenizer } from '@seanhogg/ssmjs';
+import type { Tokenizer } from '@seanhogg/builderforce-memory';
 
 const myTokenizer: Tokenizer = {
   encode(text: string): number[]  { /* your encode implementation */ return []; },
@@ -156,7 +156,7 @@ Use cases:
 ### Basic usage
 
 ```ts
-import { MemoryStore } from '@seanhogg/ssmjs';
+import { MemoryStore } from '@seanhogg/builderforce-memory';
 
 const memory = new MemoryStore({
   dbName      : 'my-app',
@@ -277,7 +277,7 @@ const log = runtime.getRoutingAuditLog();
 Teach the local SSM using a transformer teacher — runs entirely in the browser or Node.js.
 
 ```ts
-import { DistillationEngine } from '@seanhogg/ssmjs';
+import { DistillationEngine } from '@seanhogg/builderforce-memory';
 
 const distiller = new DistillationEngine(runtime, claude);
 
@@ -326,7 +326,7 @@ The log is bounded to the last 200 entries.
 High-level orchestration: conversation history, routing, memory injection, and lifecycle.
 
 ```ts
-import { SSMAgent, MemoryStore } from '@seanhogg/ssmjs';
+import { SSMAgent, MemoryStore } from '@seanhogg/builderforce-memory';
 
 const memory = new MemoryStore();
 const agent  = new SSMAgent({
@@ -377,12 +377,12 @@ Facts retrieved from `MemoryStore` are sorted by `importance` descending before 
 
 ## Migration from MambaKit
 
-`@seanhogg/mambakit` has been consolidated into this package. `MambaSession` and all related types are now exported directly from `@seanhogg/ssmjs`.
+`@seanhogg/mambakit` has been consolidated into this package. `MambaSession` and all related types are now exported directly from `@seanhogg/builderforce-memory`.
 
 **Before:**
 
 ```bash
-npm install @seanhogg/mambakit @seanhogg/ssmjs
+npm install @seanhogg/mambakit @seanhogg/builderforce-memory
 ```
 
 ```ts
@@ -393,12 +393,12 @@ import type { MambaSessionOptions, Tokenizer } from '@seanhogg/mambakit';
 **After:**
 
 ```bash
-npm install @seanhogg/ssmjs
+npm install @seanhogg/builderforce-memory
 ```
 
 ```ts
-import { MambaSession, SessionError } from '@seanhogg/ssmjs';
-import type { MambaSessionOptions, Tokenizer } from '@seanhogg/ssmjs';
+import { MambaSession, SessionError } from '@seanhogg/builderforce-memory';
+import type { MambaSessionOptions, Tokenizer } from '@seanhogg/builderforce-memory';
 ```
 
 All types are re-exported unchanged — `MambaSessionOptions`, `CompleteOptions`, `AdaptOptions`,
@@ -410,7 +410,7 @@ No logic changes are required, only the import path.
 
 ## BuilderForce Agents Integration
 
-SSM.js serves as the **hippocampus** layer of [BuilderForce Agents](https://builderforce.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
+@seanhogg/builderforce-memory serves as the **hippocampus** layer of [BuilderForce Agents](https://builderforce.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
 
 The `SsmMemoryService` class in BuilderForce Agents's `src/infra/ssm-memory-service.ts` wraps an `SSMRuntime` + `SSMAgent` + `MemoryStore` triplet:
 
@@ -510,7 +510,7 @@ Releases GPU device and all buffers.
 ## Error Handling
 
 ```ts
-import { SSMError, SessionError } from '@seanhogg/ssmjs';
+import { SSMError, SessionError } from '@seanhogg/builderforce-memory';
 
 try {
   const runtime = await SSM.create({ session: { modelSize: 'nano' } });
@@ -565,9 +565,9 @@ src/
 
 ## Professional Platform
 
-**SSM.js patterns are the architectural foundation of [Builderforce.ai](https://builderforce.ai)'s Agent Runtime.**
+**@seanhogg/builderforce-memory patterns are the architectural foundation of [Builderforce.ai](https://builderforce.ai)'s Agent Runtime.**
 
-| SSM.js concept | Builderforce.ai equivalent |
+| @seanhogg/builderforce-memory concept | Builderforce.ai equivalent |
 |---|---|
 | `SSMRuntime` | `AgentRuntime` (browser-native, ties to IDE project) |
 | `DistillationEngine` | LLM-assisted dataset generation → in-browser LoRA training |

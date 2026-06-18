@@ -1,13 +1,11 @@
-# MambaCode.js
+# @seanhogg/builderforce-memory-engine
 
-> WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM library — written in **TypeScript**, compiled for use in any JavaScript application.
+> BuilderForce Agent Memory — **engine layer**. WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM kernels, written in **TypeScript**, compiled for use in any JavaScript application. *(Formerly published as `@seanhogg/mambacode.js`.)*
 
-[![npm](https://img.shields.io/npm/v/@seanhogg/mambacode.js)](https://www.npmjs.com/package/@seanhogg/mambacode.js)
+[![npm](https://img.shields.io/npm/v/@seanhogg/builderforce-memory-engine)](https://www.npmjs.com/package/@seanhogg/builderforce-memory-engine)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-MambaCode.js is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. Version 2.0.0 adds **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints.
-
-> 📖 **New to MambaCode.js?** Start with the [Getting Started Guide](./docs/getting-started.md).
+`@seanhogg/builderforce-memory-engine` is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. It ships **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints. It is the zero-runtime-dep engine consumed by [`@seanhogg/builderforce-memory`](../memory) (the runtime layer).
 
 ---
 
@@ -44,7 +42,7 @@ MambaCode.js is a **TypeScript-first** library that brings the Mamba family of S
 ## Installation
 
 ```bash
-npm install mambacode.js
+npm install @seanhogg/builderforce-memory-engine
 ```
 
 Build from source:
@@ -60,7 +58,7 @@ npm run build   # compiles TypeScript → dist/
 ### Mamba-1 (backward-compatible, unchanged)
 
 ```ts
-import { MambaModel, MambaTrainer, BPETokenizer, initWebGPU } from 'mambacode.js';
+import { MambaModel, MambaTrainer, BPETokenizer, initWebGPU } from '@seanhogg/builderforce-memory-engine';
 
 const { device } = await initWebGPU();
 const tokenizer  = new BPETokenizer();
@@ -80,7 +78,7 @@ console.log(tokenizer.decode(ids));
 ### Mamba-2 (SSD)
 
 ```ts
-import { HybridMambaModel } from 'mambacode.js';
+import { HybridMambaModel } from '@seanhogg/builderforce-memory-engine';
 
 const model = new HybridMambaModel(device, {
   vocabSize : tokenizer.vocabSize,
@@ -228,7 +226,7 @@ docs/
 
 ## Tools
 
-The `tools/` directory contains model-building and checkpoint utilities that operate at the mambacode.js level. These are **not part of the MambaKit API** — they are for authors who want to build, pretrain, or convert model weights.
+The `tools/` directory contains model-building and checkpoint utilities that operate at the engine level. These are **not part of the public API** — they are for authors who want to build, pretrain, or convert model weights.
 
 ### `tools/generate-bin.js` — Generate a blank MBJS checkpoint
 
@@ -320,7 +318,7 @@ const model = new MambaModel(device, config);
 const model = new HybridMambaModel(device, { ...config, layers: Array(8).fill({ type: 'mamba2' }) });
 
 // v2.x — MambaBlock is a deprecated alias for Mamba1Block; both still work
-import { MambaBlock, Mamba1Block } from 'mambacode.js';
+import { MambaBlock, Mamba1Block } from '@seanhogg/builderforce-memory-engine';
 ```
 
 ---
@@ -357,34 +355,28 @@ npm run lint    # ESLint
 
 ## Professional Platform
 
-**Want managed infrastructure for your MambaCode.js models?**
+**Want managed infrastructure for your SSM models?**
 
-[**Builderforce.ai**](https://builderforce.ai) is the professional enterprise platform built on MambaCode.js. It provides:
+[**Builderforce.ai**](https://builderforce.ai) is the professional enterprise platform built on this engine. It provides:
 
-- **In-browser LoRA training** — fine-tune up to 2B-parameter models on instruction datasets using the MambaCode.js WebGPU kernels, entirely client-side
-- **Hybrid Local Brain** — the Mamba State Engine runs a selective scan alongside Transformers.js inference for persistent agent memory, powered by MambaCode.js WGSL kernels
+- **In-browser LoRA training** — fine-tune up to 2B-parameter models on instruction datasets using the engine's WebGPU kernels, entirely client-side
+- **Hybrid Local Brain** — the Mamba State Engine runs a selective scan alongside Transformers.js inference for persistent agent memory, powered by these WGSL kernels
 - **Dataset generation** — LLM-assisted JSONL instruction dataset creation with streaming progress
 - **Workforce Registry** — publish trained models as specialist AI agents; discoverable and hirable by the community
 - **Agent portability** — `AgentPackage` bundles the LoRA adapter, `MambaStateSnapshot`, and agent profile into a single portable JSON artifact
 - **BuilderForce Agents mesh** — trained agents deploy as self-hosted coding agents via [BuilderForce Agents](https://builderforce.ai), orchestrated from Builderforce
 
-Use MambaCode.js to build and experiment locally. Use Builderforce.ai to deploy, manage, and share at scale.
+Use this engine to build and experiment locally. Use Builderforce.ai to deploy, manage, and share at scale.
 
 ```
-MambaCode.js (WebGPU kernels)
+@seanhogg/builderforce-memory-engine (WebGPU kernels)
       ↓
-  SSM.js (session API + runtime + memory)
+@seanhogg/builderforce-memory (session API + runtime + memory)
       ↓
  Builderforce.ai (enterprise IDE + training + registry)
       ↓
    BuilderForce Agents (self-hosted agent mesh)
 ```
-
----
-
-## Consolidated Gap Register
-
-- **Release publish blocked by NPM_TOKEN permissions** (`.github/workflows/release.yml`): the `2026.5.31` tag failed `npm publish` with a 404 PUT. The package exists on npm (maintainer `seanhogg`) and `npm whoami` passes, so the `NPM_TOKEN` secret authenticates but lacks read-write on `@seanhogg/mambacode.js` (read-only token, wrong account, or a granular token whose allowlist omits the package). The workflow now fails fast with this diagnosis, but the actual fix is registry-side and manual: rotate `NPM_TOKEN` to an Automation/granular token with publish rights, then re-push the tag. Unblocks every downstream consumer pinned to a published `@seanhogg/mambacode.js` version.
 
 ---
 
