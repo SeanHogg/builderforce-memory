@@ -3,7 +3,7 @@
  *
  * The MCP tools (src/tools.ts) and all three transports (SDK / stdio / HTTP)
  * depend ONLY on this interface, never on a concrete store. Ship the local
- * `MemoryStoreBackend` (IndexedDB via @builderforce/memory) today; drop in a
+ * `MemoryStoreBackend` (IndexedDB via @seanhogg/memory) today; drop in a
  * networked builderforce.ai adapter later with zero changes to the tools or
  * transports.
  */

@@ -26,12 +26,12 @@ importers:
 
   packages/memory:
     devDependencies:
-      '@builderforce/memory-engine':
-        specifier: workspace:*
-        version: link:../memory-engine
       '@jest/globals':
         specifier: ^29.7.0
         version: 29.7.0
+      '@seanhogg/memory-engine':
+        specifier: workspace:*
+        version: link:../memory-engine
       '@types/jest':
         specifier: ^29.5.0
         version: 29.5.14
@@ -93,7 +93,7 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: '>=0.1.0'
         version: 0.3.163(@anthropic-ai/sdk@0.100.1(zod@3.25.76))(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))(zod@3.25.76)
-      '@builderforce/memory':
+      '@seanhogg/memory':
         specifier: workspace:*
         version: link:../memory
       '@types/node':

@@ -1,5 +1,5 @@
 /**
- * @builderforce/memory-mcp — expose @builderforce/memory to MCP clients.
+ * @seanhogg/memory-mcp — expose @seanhogg/memory to MCP clients.
  *
  * One token-saving tool core over a pluggable MemoryBackend, three transports:
  *   - createMemoryMcpServer  → in-process Claude Agent SDK (type:"sdk")
@@ -10,7 +10,7 @@
 // ── Seam ────────────────────────────────────────────────────────────────────
 export type { MemoryBackend, RecallHit, RememberInput } from "./backend.js";
 
-// ── Local backend (IndexedDB via @builderforce/memory) ────────────────────────
+// ── Local backend (IndexedDB via @seanhogg/memory) ────────────────────────
 export { MemoryStoreBackend, createLocalMemoryStoreBackend } from "./backends/memory-store.js";
 export type { LocalBackendOptions } from "./backends/memory-store.js";
 

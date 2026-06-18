@@ -2,7 +2,7 @@
   "name": "builderforce-memory",
   "version": "2026.6.18",
   "private": true,
-  "description": "BuilderForce Agent Memory — the memory subsystem of BuilderForce.ai. Engine (@builderforce/memory-engine) + runtime (@builderforce/memory) in one workspace.",
+  "description": "BuilderForce Agent Memory — the memory subsystem of BuilderForce.ai. Engine (@seanhogg/memory-engine) + runtime (@seanhogg/memory) in one workspace.",
   "type": "module",
   "author": {
     "name": "Sean Hogg",
@@ -20,10 +20,10 @@
   },
   "packageManager": "pnpm@9.1.0",
   "scripts": {
-    "build": "pnpm --filter @builderforce/memory-engine build && pnpm --filter @builderforce/memory build && pnpm --filter @builderforce/memory-mcp build",
-    "build:engine": "pnpm --filter @builderforce/memory-engine build",
-    "build:memory": "pnpm --filter @builderforce/memory build",
-    "build:mcp": "pnpm --filter @builderforce/memory-mcp build",
+    "build": "pnpm --filter @seanhogg/memory-engine build && pnpm --filter @seanhogg/memory build && pnpm --filter @seanhogg/memory-mcp build",
+    "build:engine": "pnpm --filter @seanhogg/memory-engine build",
+    "build:memory": "pnpm --filter @seanhogg/memory build",
+    "build:mcp": "pnpm --filter @seanhogg/memory-mcp build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r exec rimraf dist",

@@ -1,12 +1,12 @@
-# @builderforce/memory-mcp
+# @seanhogg/memory-mcp
 
-Expose [`@builderforce/memory`](../memory) to any MCP client. One token-saving
+Expose [`@seanhogg/memory`](../memory) to any MCP client. One token-saving
 tool core over a pluggable `MemoryBackend`, three transports:
 
 | Transport | Factory | Consumed as | Use when |
 |---|---|---|---|
 | **In-process (Claude Agent SDK)** | `createMemoryMcpServer(backend)` | the returned `type:"sdk"` object | the consuming product is TS and runs `@anthropic-ai/claude-agent-sdk` in-process — lowest latency |
-| **stdio** | `runStdio(backend)` / `npx @builderforce/memory-mcp` | `{ type:"stdio", command, args }` | any language / separate process; decouples the SSM+IndexedDB deps from the consumer |
+| **stdio** | `runStdio(backend)` / `npx @seanhogg/memory-mcp` | `{ type:"stdio", command, args }` | any language / separate process; decouples the SSM+IndexedDB deps from the consumer |
 | **HTTP (Streamable)** | `createMemoryHttpHandler(backend, { authToken })` | `{ type:"http", url, headers }` | multi-tenant / networked (builderforce.ai hosting, remote claws) |
 
 ## Why this saves tokens
@@ -39,7 +39,7 @@ interface MemoryBackend {
 }
 ```
 
-Ship the local `MemoryStoreBackend` (IndexedDB via `@builderforce/memory`) today;
+Ship the local `MemoryStoreBackend` (IndexedDB via `@seanhogg/memory`) today;
 drop in a networked builderforce.ai adapter later with **zero** changes to tools
 or transports.
 
@@ -47,7 +47,7 @@ or transports.
 
 ```ts
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { createMemoryMcpServer, createLocalMemoryStoreBackend } from "@builderforce/memory-mcp";
+import { createMemoryMcpServer, createLocalMemoryStoreBackend } from "@seanhogg/memory-mcp";
 
 const backend = await createLocalMemoryStoreBackend();          // IndexedDB (fake-indexeddb in Node)
 const memory  = await createMemoryMcpServer(backend);           // type:"sdk" config
@@ -78,12 +78,12 @@ Recall quality then improves automatically as that model is adapted/distilled.
 ## Quick start — stdio (any process / language)
 
 ```bash
-npx -y @builderforce/memory-mcp        # serves the local MemoryStore over stdio
+npx -y @seanhogg/memory-mcp        # serves the local MemoryStore over stdio
 ```
 
 ```ts
 mcpServers: {
-  builderforce_memory: { type: "stdio", command: "npx", args: ["-y", "@builderforce/memory-mcp"] },
+  builderforce_memory: { type: "stdio", command: "npx", args: ["-y", "@seanhogg/memory-mcp"] },
 }
 ```
 
@@ -92,7 +92,7 @@ Env: `BUILDERFORCE_MEMORY_DB` (db name), `BUILDERFORCE_MEMORY_READONLY=1` (drop 
 ## Quick start — HTTP (multi-tenant)
 
 ```bash
-BUILDERFORCE_MEMORY_TOKEN=secret PORT=8787 npx @builderforce/memory-mcp-http
+BUILDERFORCE_MEMORY_TOKEN=secret PORT=8787 npx @seanhogg/memory-mcp-http
 ```
 
 ```ts
@@ -113,7 +113,7 @@ server against any backend (including a future remote one).
 Implement `MemoryBackend` and hand it to any transport:
 
 ```ts
-import { createMemoryMcpServer, type MemoryBackend } from "@builderforce/memory-mcp";
+import { createMemoryMcpServer, type MemoryBackend } from "@seanhogg/memory-mcp";
 
 const remote: MemoryBackend = {
   recall:      (q, k)   => bfClient.search(q, k),
@@ -128,6 +128,6 @@ const server = await createMemoryMcpServer(remote);
 ## Dependencies
 
 `@modelcontextprotocol/sdk` + `zod` are hard deps. `@anthropic-ai/claude-agent-sdk`
-(SDK transport), `@builderforce/memory` + `fake-indexeddb` (local backend) are
+(SDK transport), `@seanhogg/memory` + `fake-indexeddb` (local backend) are
 **optional peers**, imported indirectly — install only what your transport/backend
 needs.

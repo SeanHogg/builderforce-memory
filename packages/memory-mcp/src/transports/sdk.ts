@@ -5,7 +5,7 @@
  * `query({ options: { mcpServers: { builderforce_memory: <this> } } })`.
  * No subprocess, no socket — the tools run in your product's process, calling
  * the MemoryBackend directly. Lowest latency; the consuming product pulls in
- * @anthropic-ai/claude-agent-sdk (and, for the local backend, @builderforce/memory).
+ * @anthropic-ai/claude-agent-sdk (and, for the local backend, @seanhogg/memory).
  *
  * The Agent SDK is imported indirectly so this package builds and so the stdio
  * and HTTP transports don't drag the SDK in.
@@ -32,7 +32,7 @@ export interface SdkMcpServerConfig {
  *
  * @example
  *   import { query } from "@anthropic-ai/claude-agent-sdk";
- *   import { createMemoryMcpServer, createLocalMemoryStoreBackend } from "@builderforce/memory-mcp";
+ *   import { createMemoryMcpServer, createLocalMemoryStoreBackend } from "@seanhogg/memory-mcp";
  *
  *   const backend = await createLocalMemoryStoreBackend();
  *   const memory  = await createMemoryMcpServer(backend);

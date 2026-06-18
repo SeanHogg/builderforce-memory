@@ -1,5 +1,5 @@
 /**
- * MemoryStoreBackend — local adapter mapping @builderforce/memory's MemoryStore
+ * MemoryStoreBackend — local adapter mapping @seanhogg/memory's MemoryStore
  * onto the MemoryBackend seam.
  *
  * Recall quality: when an SSM runtime is supplied it is forwarded to
@@ -10,7 +10,7 @@
 
 import type { MemoryBackend, RecallHit, RememberInput } from "../backend.js";
 
-// Structural views of the @builderforce/memory surface we use, so this package
+// Structural views of the @seanhogg/memory surface we use, so this package
 // type-checks without a hard dependency on the runtime package.
 interface MemoryEntryLike {
     key: string;
@@ -178,7 +178,7 @@ async function hydrateFromDisk(store: MemoryStoreLike, file: string, fs: FsLike)
 
 /**
  * Builds a MemoryStoreBackend over a fresh MemoryStore, wiring fake-indexeddb in
- * Node exactly as SsmMemoryService does. @builderforce/memory and fake-indexeddb
+ * Node exactly as SsmMemoryService does. @seanhogg/memory and fake-indexeddb
  * are imported indirectly so they remain optional peers — a consumer that only
  * wants a custom backend (or the HTTP thin-client) never has to install them.
  */
@@ -188,7 +188,7 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         new Function("m", "return import(m)")(m) as Promise<unknown>;
 
-    const memoryMod = (await _import("@builderforce/memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike };
+    const memoryMod = (await _import("@seanhogg/memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike };
     const { MemoryStore } = memoryMod;
 
     // IndexedDB shim for Node. In the browser the global is used automatically.
