@@ -1,0 +1,46 @@
+name: Deprecate old packages
+
+# Manually-dispatched one-off: marks the superseded / mistakenly-published npm
+# packages as deprecated, pointing each at its canonical @seanhogg/builderforce-memory*
+# replacement. Tolerant per package — a name that does not exist (or is already
+# deprecated) is logged and skipped, never failing the whole run.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Deprecate superseded names
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -u
+          deprecate() {
+            local pkg="$1"; local msg="$2"
+            echo "::group::npm deprecate $pkg"
+            if npm deprecate "$pkg" "$msg"; then
+              echo "✓ deprecated $pkg"
+            else
+              echo "⚠ skipped $pkg (does not exist, already deprecated, or no access)"
+            fi
+            echo "::endgroup::"
+          }
+
+          # Legacy names (pre-consolidation)
+          deprecate "@seanhogg/mambacode.js" "Renamed to @seanhogg/builderforce-memory-engine"
+          deprecate "@seanhogg/ssmjs"        "Renamed to @seanhogg/builderforce-memory"
+          deprecate "@seanhogg/mambakit"     "Consolidated into @seanhogg/builderforce-memory"
+
+          # Mistakenly-published 2026.6.18 names (wrong scope/name before the final rename)
+          deprecate "@seanhogg/memory"        "Renamed to @seanhogg/builderforce-memory"
+          deprecate "@seanhogg/memory-engine" "Renamed to @seanhogg/builderforce-memory-engine"
+          deprecate "@seanhogg/memory-mcp"    "Renamed to @seanhogg/builderforce-memory-mcp"
+
+          echo "Done."
