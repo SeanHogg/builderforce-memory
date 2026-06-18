@@ -23,6 +23,7 @@ interface MemoryEntryLike {
 interface MemoryStoreLike {
     remember(key: string, content: string, opts?: { ttlMs?: number; tags?: string[]; importance?: number }): Promise<void>;
     recall(key: string): Promise<MemoryEntryLike | undefined>;
+    recallAll(): Promise<MemoryEntryLike[]>;
     recallByTag(tag: string): Promise<MemoryEntryLike[]>;
     recallSimilar(query: string, topK: number, runtime?: unknown): Promise<MemoryEntryLike[]>;
     forget(key: string): Promise<void>;
@@ -83,6 +84,96 @@ export interface LocalBackendOptions {
      * the already-loaded hippocampus instead of standing up a second model.
      */
     runtime?: unknown;
+    /**
+     * Absolute path to a JSON file that mirrors the store to disk. Without it the
+     * store is purely in-memory (fake-indexeddb) and evaporates when the process
+     * exits — fine for a long-lived server, fatal for a per-session subprocess
+     * (e.g. an MCP stdio client that respawns the server each launch).
+     *
+     * When set, the store is hydrated from the file on creation and re-snapshotted
+     * after every remember/forget, giving durable cross-process memory. TTLs are
+     * dropped on persist: the snapshot is the durable long-term tier.
+     */
+    persistFile?: string;
+}
+
+/** The on-disk snapshot shape — a flat array of durable entries. */
+interface SnapshotEntry {
+    key: string;
+    content: string;
+    tags?: string[];
+    importance?: number;
+}
+
+type FsLike = {
+    readFileSync(path: string, enc: "utf8"): string;
+    writeFileSync(path: string, data: string): void;
+    mkdirSync(path: string, opts: { recursive: boolean }): void;
+    existsSync(path: string): boolean;
+};
+type PathLike = { dirname(p: string): string };
+
+/**
+ * Wraps a MemoryStoreBackend so every write is mirrored to a JSON file, and
+ * hydrates that file back into the store on boot. This is what turns a respawned
+ * stdio subprocess into a persistent memory: the store itself is in-memory, the
+ * file is the source of truth across process lifetimes.
+ */
+class DiskPersistedBackend implements MemoryBackend {
+    constructor(
+        private readonly inner: MemoryStoreBackend,
+        private readonly store: MemoryStoreLike,
+        private readonly file: string,
+        private readonly fs: FsLike,
+    ) {}
+
+    recall(query: string, topK: number): Promise<RecallHit[]> {
+        return this.inner.recall(query, topK);
+    }
+    get(key: string): Promise<RecallHit | undefined> {
+        return this.inner.get(key);
+    }
+    recallByTag(tag: string, limit: number): Promise<RecallHit[]> {
+        return this.inner.recallByTag(tag, limit);
+    }
+
+    async remember(input: RememberInput): Promise<void> {
+        await this.inner.remember(input);
+        await this.snapshot();
+    }
+
+    async forget(key: string): Promise<void> {
+        await this.inner.forget(key);
+        await this.snapshot();
+    }
+
+    private async snapshot(): Promise<void> {
+        const entries = await this.store.recallAll();
+        const out: SnapshotEntry[] = entries.map((e) => ({
+            key: e.key,
+            content: e.content,
+            tags: e.tags,
+            importance: e.importance,
+        }));
+        this.fs.writeFileSync(this.file, JSON.stringify(out, null, 2));
+    }
+}
+
+/** Reads a snapshot file and replays it into the store as durable (no-TTL) entries. */
+async function hydrateFromDisk(store: MemoryStoreLike, file: string, fs: FsLike): Promise<void> {
+    if (!fs.existsSync(file)) return;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+        // Corrupt/partial snapshot — start clean rather than crash the server.
+        return;
+    }
+    if (!Array.isArray(parsed)) return;
+    for (const raw of parsed as SnapshotEntry[]) {
+        if (!raw || typeof raw.key !== "string" || typeof raw.content !== "string") continue;
+        await store.remember(raw.key, raw.content, { tags: raw.tags, importance: raw.importance });
+    }
 }
 
 /**
@@ -110,5 +201,17 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
     }
 
     const store = new MemoryStore({ idbFactory, dbName: opts.dbName });
-    return new MemoryStoreBackend(store, opts.runtime);
+    const backend = new MemoryStoreBackend(store, opts.runtime);
+
+    if (!opts.persistFile) return backend;
+
+    // Disk-mirror requested. node:fs/path are loaded indirectly so a browser
+    // bundle of this module never statically pulls in Node builtins.
+    const fs = (await _import("node:fs")) as FsLike;
+    const path = (await _import("node:path")) as PathLike;
+    const dir = path.dirname(opts.persistFile);
+    if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    await hydrateFromDisk(store, opts.persistFile, fs);
+    return new DiskPersistedBackend(backend, store, opts.persistFile, fs);
 }

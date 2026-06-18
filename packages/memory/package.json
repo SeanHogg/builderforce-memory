@@ -1,6 +1,6 @@
 {
   "name": "@builderforce/memory",
-  "version": "2026.5.31",
+  "version": "2026.6.18",
   "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, and persistent agent memory for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",

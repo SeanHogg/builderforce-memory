@@ -60,12 +60,12 @@ pnpm lint
 
 ## Release
 
-Both packages version in lockstep (`YYYY.M.D[-beta.N]`).
+All three packages (`memory-engine`, `memory`, `memory-mcp`) version in lockstep (`YYYY.M.D[-beta.N]`).
 
-1. Bump `version` in both `packages/*/package.json` (and root) to the same value.
+1. Bump `version` in every `packages/*/package.json` (and root) to the same value, plus the `@builderforce/memory` range in `memory-mcp`'s `peerDependencies`.
 2. `pnpm release:check` (build + test).
 3. Commit, then `git tag vYYYY.M.D`.
-4. Push the tag — `.github/workflows/release.yml` publishes `memory-engine` then `memory` to npm with provenance.
+4. Push the tag — `.github/workflows/release.yml` runs `pnpm -r publish`, which publishes `memory-engine`, `memory`, and `memory-mcp` to npm with provenance (dependency order is resolved automatically; `workspace:` specifiers are rewritten to real ranges at pack time).
 
 ## Migration / redirect plan for the old packages
 

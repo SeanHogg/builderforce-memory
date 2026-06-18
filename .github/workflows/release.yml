@@ -33,7 +33,7 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # Publishes @builderforce/memory-engine then @builderforce/memory.
+      # Publishes @builderforce/memory-engine, @builderforce/memory, and @builderforce/memory-mcp.
       # pnpm resolves `workspace:^` peer/dep specifiers to real version ranges at pack time.
       - name: Publish
         run: pnpm -r publish --access public --no-git-checks
