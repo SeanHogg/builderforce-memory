@@ -2,7 +2,7 @@
  * presets.ts – Model size presets and config resolver for the MambaSession layer.
  */
 
-import type { HybridMambaModelConfig, LayerSpec, LayerType } from '@seanhogg/memory-engine';
+import type { HybridMambaModelConfig, LayerSpec, LayerType } from '@seanhogg/builderforce-memory-engine';
 import type { MambaSessionOptions } from './session.js';
 
 // ── Model size presets ────────────────────────────────────────────────────────

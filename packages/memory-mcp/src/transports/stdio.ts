@@ -4,7 +4,7 @@
  * Claude Agent SDK as:
  *   mcpServers: {
  *     builderforce_memory: { type: "stdio", command: "npx",
- *                            args: ["-y", "@seanhogg/memory-mcp"] }
+ *                            args: ["-y", "@seanhogg/builderforce-memory-mcp"] }
  *   }
  */
 

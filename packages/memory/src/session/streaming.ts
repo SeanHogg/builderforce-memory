@@ -5,7 +5,7 @@
  * token is yielded immediately after sampling, enabling real-time streaming UIs.
  */
 
-import type { HybridMambaModel, SamplingOptions } from '@seanhogg/memory-engine';
+import type { HybridMambaModel, SamplingOptions } from '@seanhogg/builderforce-memory-engine';
 
 /** Minimum effective temperature — avoids division by zero in sampling. */
 const MIN_TEMPERATURE = 1e-7;
