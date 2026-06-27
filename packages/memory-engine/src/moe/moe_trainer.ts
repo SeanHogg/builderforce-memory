@@ -9,6 +9,7 @@
  */
 
 import { SharedExpertMoE } from "./moe_model.js";
+import { AdamW } from "../optim/adamw.js";
 
 export interface MoESample {
   input: ArrayLike<number>;
@@ -46,9 +47,7 @@ export interface MoEEpochResult {
  * parameter index and persists across {@link step} calls.
  */
 export class MoETrainer {
-  private readonly m: Float32Array[] = [];
-  private readonly v: Float32Array[] = [];
-  private t = 0;
+  private readonly adam: AdamW;
   private readonly opt: Required<MoETrainOptions>;
 
   constructor(
@@ -65,10 +64,7 @@ export class MoETrainer {
       batchSize: options.batchSize ?? 0,
       epochs: options.epochs ?? 1,
     };
-    for (const p of model.parameters()) {
-      this.m.push(new Float32Array(p.numel));
-      this.v.push(new Float32Array(p.numel));
-    }
+    this.adam = new AdamW(model, this.opt);
   }
 
   /** Train for the configured epochs. Returns the per-epoch loss history. */
@@ -118,7 +114,7 @@ export class MoETrainer {
 
       // Average the task gradient over the batch, then AdamW step.
       this.scaleGradients(1 / batch.length);
-      this.adamStep();
+      this.adam.step();
 
       epochLoss += batchLoss;
       lastAux = numExperts * fVec.reduce((sum, f, e) => sum + f * (probsList.length
@@ -133,29 +129,6 @@ export class MoETrainer {
     if (k === 1) return;
     for (const g of this.model.gradients()) {
       for (let i = 0; i < g.data.length; i++) g.data[i] = g.data[i]! * k;
-    }
-  }
-
-  private adamStep(): void {
-    this.t++;
-    const { lr, beta1, beta2, eps, weightDecay } = this.opt;
-    const params = this.model.parameters();
-    const grads = this.model.gradients();
-    const bc1 = 1 - Math.pow(beta1, this.t);
-    const bc2 = 1 - Math.pow(beta2, this.t);
-    for (let p = 0; p < params.length; p++) {
-      const w = params[p]!.data;
-      const g = grads[p]!.data;
-      const m = this.m[p]!;
-      const v = this.v[p]!;
-      for (let i = 0; i < w.length; i++) {
-        const gi = g[i]!;
-        m[i] = beta1 * m[i]! + (1 - beta1) * gi;
-        v[i] = beta2 * v[i]! + (1 - beta2) * gi * gi;
-        const mh = m[i]! / bc1;
-        const vh = v[i]! / bc2;
-        w[i] = w[i]! - lr * (mh / (Math.sqrt(vh) + eps) + weightDecay * w[i]!);
-      }
     }
   }
 }

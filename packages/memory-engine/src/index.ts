@@ -37,6 +37,12 @@ export type {
     ValidationResult,
 } from './moe/index.js';
 
+// ── EvermindLM (the generative model) + AdamW ──────────────────────────────────
+export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED } from './lm/index.js';
+export type { EvermindLMConfig, LMGenerateOptions } from './lm/index.js';
+export { AdamW } from './optim/adamw.js';
+export type { AdamWOptions, OptimTarget, OptimParam } from './optim/adamw.js';
+
 // ── Training ──────────────────────────────────────────────────────────────────
 
 export { MambaTrainer } from './training/trainer.js';

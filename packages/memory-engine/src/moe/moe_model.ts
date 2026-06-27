@@ -293,14 +293,17 @@ export class SharedExpertMoE {
    * expert, the selected routed experts, and the router (so it learns to weight
    * the experts that reduce loss). Call {@link zeroGrad} before a batch and apply
    * an optimiser after. Load balancing is a separate signal (see
-   * {@link LoadBalanceAccumulator}).
+   * {@link LoadBalanceAccumulator}). Returns dL/d(input) so the FFN can stack
+   * inside a residual block (e.g. {@link EvermindLM}).
    */
-  backward(dOutput: ArrayLike<number>, cache: MoECache): void {
+  backward(dOutput: ArrayLike<number>, cache: MoECache): Float32Array {
     const { modelDim } = this.config;
     const dOut = Float32Array.from({ length: modelDim }, (_, d) => dOutput[d] ?? 0);
+    const dx = new Float32Array(modelDim);
 
     // Shared expert (always active) sees the full upstream gradient.
-    this.shared.backward(dOut, cache.x, cache.sharedPre, cache.sharedH);
+    const dxShared = this.shared.backward(dOut, cache.x, cache.sharedPre, cache.sharedH);
+    for (let i = 0; i < modelDim; i++) dx[i] = dx[i]! + dxShared[i]!;
 
     // Routed experts: each scaled by its gate; collect dL/dgate for the router.
     const k = cache.route.experts.length;
@@ -313,12 +316,18 @@ export class SharedExpertMoE {
         scaled[d] = g * dOut[d]!;
         dg += dOut[d]! * cache.expertOut[m]![d]!;
       }
-      this.experts[cache.route.experts[m]!]!.backward(scaled, cache.x, cache.expertPre[m]!, cache.expertH[m]!);
+      const dxe = this.experts[cache.route.experts[m]!]!.backward(
+        scaled,
+        cache.x,
+        cache.expertPre[m]!,
+        cache.expertH[m]!,
+      );
+      for (let i = 0; i < modelDim; i++) dx[i] = dx[i]! + dxe[i]!;
       dGate[m] = dg;
     }
 
     // Router: gates = softmax(selected logits). Backprop dGate through the
-    // softmax Jacobian to the selected logits, then to Wr.
+    // softmax Jacobian to the selected logits, then to Wr and the input.
     const gates = cache.route.gates;
     let dot = 0;
     for (let m = 0; m < k; m++) dot += gates[m]! * dGate[m]!;
@@ -326,8 +335,12 @@ export class SharedExpertMoE {
       const dLogit = gates[m]! * (dGate[m]! - dot);
       const e = cache.route.experts[m]!;
       const off = e * modelDim;
-      for (let i = 0; i < modelDim; i++) this.gWr[off + i] = this.gWr[off + i]! + dLogit * cache.x[i]!;
+      for (let i = 0; i < modelDim; i++) {
+        this.gWr[off + i] = this.gWr[off + i]! + dLogit * cache.x[i]!;
+        dx[i] = dx[i]! + dLogit * this.wr[off + i]!;
+      }
     }
+    return dx;
   }
 
   /**

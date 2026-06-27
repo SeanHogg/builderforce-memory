@@ -90,6 +90,8 @@ export type {
     PackageMeta,
     ValidationResult,
 } from '@seanhogg/builderforce-memory-engine';
+export { EvermindLM, EvermindLMTrainer } from '@seanhogg/builderforce-memory-engine';
+export type { EvermindLMConfig, LMGenerateOptions } from '@seanhogg/builderforce-memory-engine';
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';
@@ -123,6 +125,29 @@ export type {
 
 // ── Similarity primitives ──────────────────────────────────────────────────────
 export { cosineSimilarity, jaccardSimilarity, tokenize } from './similarity/index.js';
+
+// ── Retrieval (chunking, BM25, rank fusion, hybrid RAG) ────────────────────────
+export {
+    chunkText,
+    bm25Search,
+    reciprocalRankFusion,
+    maximalMarginalRelevance,
+    hybridRetrieve,
+} from './retrieval/index.js';
+export type {
+    Chunk,
+    ChunkOptions,
+    Bm25Doc,
+    Bm25Hit,
+    Bm25Options,
+    RankedList,
+    FusedHit,
+    MmrCandidate,
+    RetrievalCandidate,
+    HybridQuery,
+    HybridRetrieveOptions,
+    HybridHit,
+} from './retrieval/index.js';
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export { InferenceRouter } from './router/InferenceRouter.js';

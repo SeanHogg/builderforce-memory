@@ -12,10 +12,14 @@
  */
 
 import { SharedExpertMoE, type MoEConfig } from "./moe_model.js";
+import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;
 const PKG_VERSION = 1;
+
+/** The kinds of model an `.evermind` package can carry. */
+export type EvermindModelType = "shared-expert-moe" | "evermind-lm";
 
 /** Human-facing description published with the model (the "model card"). */
 export interface EvermindModelCard {
@@ -33,11 +37,12 @@ export interface EvermindModelManifest {
   schema: "evermind.model/1";
   name: string;
   version: string;
-  modelType: "shared-expert-moe";
-  config: Required<Omit<MoEConfig, "seed">>;
+  modelType: EvermindModelType;
+  /** Flat numeric model config (the constructor args), serialised verbatim. */
+  config: Record<string, number>;
   /** Total trainable scalar parameters (for sizing / pricing / display). */
   paramCount: number;
-  checkpointFormat: "MoE0";
+  checkpointFormat: "MoE0" | "EVL0";
   checkpointFp16: boolean;
   /** 32-bit FNV-1a over the checkpoint bytes — integrity for download/purchase. */
   checksum: number;
@@ -101,6 +106,26 @@ export class EvermindModelPackage {
     return new EvermindModelPackage(manifest, checkpoint);
   }
 
+  /** Package a trained generative {@link EvermindLM} — the runnable marketplace AI. */
+  static fromLM(lm: EvermindLM, meta: PackageMeta): EvermindModelPackage {
+    const fp16 = meta.fp16 ?? false;
+    const checkpoint = lm.exportWeights({ fp16 });
+    const manifest: EvermindModelManifest = {
+      schema: "evermind.model/1",
+      name: meta.name,
+      version: meta.version,
+      modelType: "evermind-lm",
+      config: lm.config as unknown as Record<string, number>,
+      paramCount: lm.parameters().reduce((n, p) => n + p.data.length, 0),
+      checkpointFormat: "EVL0",
+      checkpointFp16: fp16,
+      checksum: fnv1a(new Uint8Array(checkpoint)),
+      card: meta.card,
+      ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
+    };
+    return new EvermindModelPackage(manifest, checkpoint);
+  }
+
   /** Serialise to a single `.evermind` blob: magic, version, manifest, checkpoint. */
   toBlob(): ArrayBuffer {
     const manifestBytes = new TextEncoder().encode(JSON.stringify(this.manifest));
@@ -135,10 +160,17 @@ export class EvermindModelPackage {
   validate(): ValidationResult {
     const errors: string[] = [];
     if (this.manifest.schema !== "evermind.model/1") errors.push(`unknown schema: ${this.manifest.schema}`);
-    if (this.manifest.modelType !== "shared-expert-moe") errors.push(`unsupported modelType: ${this.manifest.modelType}`);
     const c = this.manifest.config;
-    if (!c || c.modelDim <= 0 || c.hiddenDim <= 0 || c.numExperts <= 0 || c.topK < 1 || c.topK > c.numExperts) {
-      errors.push("invalid config");
+    if (this.manifest.modelType === "shared-expert-moe") {
+      if (!c || c.modelDim! <= 0 || c.hiddenDim! <= 0 || c.numExperts! <= 0 || c.topK! < 1 || c.topK! > c.numExperts!) {
+        errors.push("invalid config");
+      }
+    } else if (this.manifest.modelType === "evermind-lm") {
+      if (!c || c.vocabSize! <= 0 || c.dModel! <= 0 || c.numLayers! <= 0 || c.numExperts! <= 0 || c.topK! < 1 || c.topK! > c.numExperts!) {
+        errors.push("invalid config");
+      }
+    } else {
+      errors.push(`unsupported modelType: ${String(this.manifest.modelType)}`);
     }
     const actual = fnv1a(new Uint8Array(this.checkpoint));
     if (actual !== this.manifest.checksum) {
@@ -147,12 +179,27 @@ export class EvermindModelPackage {
     return { ok: errors.length === 0, errors };
   }
 
-  /** Reconstruct the runnable model. Validates first; throws if invalid. */
+  /** Reconstruct the bare MoE layer. Validates first; throws if invalid / wrong type. */
   loadModel(): SharedExpertMoE {
     const v = this.validate();
     if (!v.ok) throw new Error(`EvermindModelPackage.loadModel: ${v.errors.join("; ")}`);
-    const model = new SharedExpertMoE(this.manifest.config);
+    if (this.manifest.modelType !== "shared-expert-moe") {
+      throw new Error(`loadModel: package is '${this.manifest.modelType}', use loadLM()`);
+    }
+    const model = new SharedExpertMoE(this.manifest.config as Partial<MoEConfig>);
     model.loadWeights(this.checkpoint);
     return model;
+  }
+
+  /** Reconstruct the runnable generative model — what a marketplace buyer runs. */
+  loadLM(): EvermindLM {
+    const v = this.validate();
+    if (!v.ok) throw new Error(`EvermindModelPackage.loadLM: ${v.errors.join("; ")}`);
+    if (this.manifest.modelType !== "evermind-lm") {
+      throw new Error(`loadLM: package is '${this.manifest.modelType}', use loadModel()`);
+    }
+    const lm = new EvermindLM(this.manifest.config as unknown as EvermindLMConfig);
+    lm.loadWeights(this.checkpoint);
+    return lm;
   }
 }
