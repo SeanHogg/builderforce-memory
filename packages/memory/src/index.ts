@@ -182,6 +182,17 @@ export type {
     Verdict,
 } from './cognition/index.js';
 
+// ── Diagnostics (seven-layer stack health as an execution-output timeline) ─────
+export { runStackDiagnostic, buildEvermindStackSteps } from './diagnostics/index.js';
+export type {
+    StackStep,
+    StackStepResult,
+    StackContext,
+    StackDiagnosticResult,
+    RunStackOptions,
+    StepStatus,
+} from './diagnostics/index.js';
+
 // ── Distillation ──────────────────────────────────────────────────────────────
 export { DistillationEngine } from './distillation/DistillationEngine.js';
 export type {
