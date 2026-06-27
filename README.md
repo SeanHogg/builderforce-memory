@@ -11,7 +11,7 @@ This monorepo consolidates two packages that previously lived in separate repos 
 | Package | Layer | Was | Responsibility |
 |---|---|---|---|
 | [`@seanhogg/builderforce-memory-engine`](packages/memory-engine) | **Engine** | `@seanhogg/mambacode.js` | WGSL/WebGPU Mamba SSM kernels, model blocks (Mamba1/2/3 + attention), autograd, trainer, BPE tokenizer, quantization. Zero runtime deps. |
-| [`@seanhogg/builderforce-memory`](packages/memory) | **Runtime** | `@seanhogg/ssmjs` | SSM execution, Transformer orchestration (Anthropic/OpenAI/Fetch bridges), online distillation, inference router, sessions, and the persistent `MemoryStore`. Depends on `memory-engine`. |
+| [`@seanhogg/builderforce-memory`](packages/memory) | **Runtime** | `@seanhogg/ssmjs` | SSM execution, Transformer orchestration (Anthropic/OpenAI/Fetch bridges), online distillation, inference router, sessions, the persistent `MemoryStore`, and **Write-Through Cognition** (`EvermindCognition`). Depends on `memory-engine`. |
 
 The two-package split is deliberate: the engine is zero-dep and WebGPU-pure and can be consumed standalone; the runtime pulls in LLM-vendor bridges. Flattening them would force engine-only consumers to drag in vendor code and vice versa. They release in lockstep from one pipeline, which kills the publish-drift bug class that the separate-repo setup suffered (bumping one version without publishing + regenerating the consumer lockfile).
 
@@ -47,12 +47,46 @@ const { response, cached, tier } = await cache.getOrGenerate(
 
 Memory-backed fact injection is semantic too: [`SSMAgent`](packages/memory/src/agent/SSMAgent.ts) defaults to `factSelection: 'semantic'`, injecting only the top-`maxFacts` embedding-relevant facts each turn (paraphrase-robust, smaller prompts) instead of an exact key-substring match.
 
+## Write-Through Cognition (Evermind)
+
+Caching keeps *answers* fresh; **cognition keeps *knowledge* fresh.** A frozen model — or an append-only memory — drifts: stale and current facts pile up under different keys until something reconciles them by hand. [`EvermindCognition`](packages/memory/src/cognition/EvermindCognition.ts) closes that gap. It is the model-knowledge analogue of a write-through cache with a conflict resolver, so a belief is **replaced on write**, never appended into a reconciliation backlog. This is what lets the hippocampus stay current without a manual reconcile step.
+
+Every candidate fact flows through one pipeline:
+
+> Canonicalize (stable subject key) → recall incumbent → evaluate evidence → reconcile (**augment | confirm | supersede | reject**) → write-through
+
+- **Stable subject key** — facts about the same subject collide and replace, instead of accumulating under per-run ids. This is the anti-drift fix.
+- **Evidence-gated** — a *conflicting* fact only supersedes the incumbent when ground-truth evidence favours it. The [`EvidenceGatherer`](packages/memory/src/cognition/types.ts) is injected, so the evidence source is surface-specific (IDE file tools, a DB probe, an HTTP check); `workspacePresenceGatherer` ships for the common "is it still on disk?" case.
+- **Write-through recall** — `recall()` is served from a version-token cache that invalidates the instant knowledge changes — the same invalidate-on-write rule as the semantic cache, applied to beliefs.
+
+```ts
+import { EvermindCognition, workspacePresenceGatherer, MemoryStore } from '@seanhogg/builderforce-memory';
+
+const cog = new EvermindCognition({ store: new MemoryStore() });
+
+// Seed a (soon-to-be) stale belief.
+await cog.commit({ subjectKey: 'pkg:ssm-stack', content: 'SSM stack = MambaKit + SSMjs' });
+
+// Re-observe: evidence from the real workspace decides the conflict.
+const r = await cog.commit(
+  { subjectKey: 'pkg:ssm-stack', content: 'SSM stack = builderforce-memory monorepo' },
+  workspacePresenceGatherer({
+    list: () => listWorkspace(),                  // e.g. the IDE `list_files` control tool
+    mustExist:   ['builderforce-memory/'],
+    mustBeAbsent: ['MambaKit/', 'SSMjs/'],
+  }),
+);
+// r.verdict === 'supersede' → exactly one belief held, the stale one retired (replace, not append)
+```
+
+`EvermindCognition` is store- and surface-agnostic — the `CognitionFactStore` interface is satisfied structurally by `MemoryStore` (no adapter) — so the same loop runs in the IDE, on-prem, cloud, and the browser.
+
 ## Develop
 
 ```bash
 pnpm install          # links workspace packages; memory-engine auto-builds via prepare
 pnpm build            # builds memory-engine, then memory (order matters — runtime needs core's .d.ts)
-pnpm test             # 232 tests (127 core + 105 runtime)
+pnpm test             # full suite across engine (jest) + runtime (jest, incl. cognition) + mcp (node:test)
 pnpm lint
 ```
 
