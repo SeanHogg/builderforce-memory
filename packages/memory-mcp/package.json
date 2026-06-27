@@ -56,7 +56,7 @@
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
-    "@seanhogg/builderforce-memory": "^2026.6.27",
+    "@seanhogg/builderforce-memory": "^2026.6.28",
     "fake-indexeddb": "^6.0.0"
   },
   "peerDependenciesMeta": {
