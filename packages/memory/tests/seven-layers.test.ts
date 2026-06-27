@@ -18,7 +18,8 @@
 
 import "fake-indexeddb/auto";
 
-import { runStackDiagnostic, buildEvermindStackSteps } from "../src/diagnostics/stack-diagnostic.js";
+import { runStackDiagnostic } from "../src/diagnostics/stack-diagnostic.js";
+import { buildEvermindStackSteps } from "../src/workflow/index.js";
 
 describe("seven-layer agent stack — end to end", () => {
   test("every layer passes in one run (and the order is L1→L3→L4→L5→L2→L6→L7)", async () => {

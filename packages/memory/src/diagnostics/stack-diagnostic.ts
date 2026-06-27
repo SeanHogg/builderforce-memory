@@ -1,29 +1,24 @@
 /**
- * stack-diagnostic.ts — the seven-layer agent stack as a runnable diagnostic.
+ * stack-diagnostic.ts — the generic workflow runner + execution-output types.
  *
- * The SAME evaluators the e2e test asserts, exposed as an ordered set of steps a
- * caller can RUN and observe. `runStackDiagnostic` executes each layer, captures
- * pass/fail + timing + error, and streams a per-step callback — so the result is
- * directly an "execution output" timeline a UI can render: click a button, watch
- * each layer light up, see exactly which step breaks.
+ * A workflow is an ordered list of {@link StackStep}s. `runStackDiagnostic`
+ * executes them, capturing per-step pass/fail + timing + error and streaming a
+ * callback — so the result is an "execution output" timeline a UI renders: run a
+ * workflow, watch each step, see exactly which one breaks.
  *
- * DRY: `tests/seven-layers.test.ts` consumes this module (it does not re-implement
- * the checks), and the BuilderForce execution-output / workflow surface consumes
- * the very same steps — injecting real agent-runtime implementations for the
- * layers it owns (L2/L5/L6) in place of the in-process defaults here.
+ * The concrete steps (the 7 agent-stack layers, the LLM-creation pipeline) and
+ * the configurable workflow/template layer live in `../workflow/` and compile
+ * down to `StackStep[]` runnable here. Steps share a {@link StackContext}: `bag`
+ * is scratch threaded across steps; `artifacts` is the workflow's OUTPUT (e.g. a
+ * trained `.evermind` blob).
  */
-
-import { EvermindLM, BPETokenizer, EvermindModelPackage } from "@seanhogg/builderforce-memory-engine";
-import { EvermindCognition } from "../cognition/index.js";
-import { hybridRetrieve, chunkText } from "../retrieval/index.js";
-import { MemoryStore } from "../memory/MemoryStore.js";
 
 export type StepStatus = "pass" | "fail" | "skip";
 
-/** One layer's result — the shape an execution-output timeline renders per row. */
+/** One step's result — the shape an execution-output timeline renders per row. */
 export interface StackStepResult {
   id: string;
-  /** "L1".."L7". */
+  /** Grouping tag, e.g. "L1".."L7" for the agent-stack layers, or "BUILD". */
   layer: string;
   label: string;
   status: StepStatus;
@@ -34,10 +29,13 @@ export interface StackStepResult {
   error?: string;
 }
 
-/** Shared scratch threaded across steps (e.g. the model L1 builds, L7 deploys). */
+/** Shared state threaded across steps. */
 export interface StackContext {
+  /** Scratch populated/consumed by steps (e.g. the model L1 builds, L7 deploys). */
   bag: Record<string, unknown>;
-  /** Prior step results so far — this IS the observability trace (L6). */
+  /** Workflow OUTPUTS — what the run produces (e.g. `artifacts.evermind` = blob). */
+  artifacts: Record<string, unknown>;
+  /** Prior step results so far — this IS the observability trace. */
   trace: StackStepResult[];
   /** Optional IDBFactory (Node/fake-indexeddb); browser uses global indexedDB. */
   idbFactory?: unknown;
@@ -61,145 +59,13 @@ export interface RunStackOptions {
   idbFactory?: unknown;
 }
 
-const KNOWLEDGE =
-  "BuilderForce orchestrates many agents through a planning loop. " +
-  "The memory layer stores facts as SSM embeddings. " +
-  "Deployment runs on Cloudflare Workers and Durable Objects. " +
-  "Tools are gated by a capability registry.";
-
-let dbSeq = 0;
-
-/**
- * The default seven steps using the real Evermind components for the layers this
- * stack owns (L1/L3/L4/L7) and an in-process harness for the agent-runtime-owned
- * layers (L2/L5/L6). Ordered so dependencies (the model built in L1) precede use.
- */
-export function buildEvermindStackSteps(): StackStep[] {
-  return [
-    {
-      id: "l1-foundation",
-      layer: "L1",
-      label: "Foundation Model — EvermindLM + tokenizer",
-      run: async (ctx) => {
-        const tok = new BPETokenizer();
-        tok.train(KNOWLEDGE.repeat(4), { numMerges: 60 });
-        const model = new EvermindLM({ vocabSize: tok.vocabSize, dModel: 16, numLayers: 2, hiddenDim: 24, seed: 7 });
-        const out = model.generateText("Deployment", tok, { maxNewTokens: 4, temperature: 0 });
-        if (typeof out !== "string") throw new Error("model did not produce text");
-        if (tok.decode(tok.encode("Cloudflare Workers")) !== "Cloudflare Workers") {
-          throw new Error("tokenizer did not round-trip text");
-        }
-        ctx.bag.model = model;
-        ctx.bag.tokenizer = tok;
-        return `vocab ${tok.vocabSize}, generated ${out.length} chars`;
-      },
-    },
-    {
-      id: "l3-memory",
-      layer: "L3",
-      label: "Memory — write-through cognition (replace-on-write)",
-      run: async (ctx) => {
-        const store = new MemoryStore({ dbName: `diag-${ctx.now()}-${dbSeq++}`, idbFactory: ctx.idbFactory as never });
-        const cognition = new EvermindCognition({ store });
-        await cognition.commit({ subjectKey: "fact:deploy", content: "deploy target = unknown" });
-        const r = await cognition.commit({ subjectKey: "fact:deploy", content: "deploy target = Cloudflare" });
-        if (r.verdict !== "supersede") throw new Error(`expected supersede, got ${r.verdict}`);
-        ctx.bag.cognition = cognition;
-        return `verdict ${r.verdict}`;
-      },
-    },
-    {
-      id: "l4-rag",
-      layer: "L4",
-      label: "RAG — chunk + hybrid retrieve",
-      run: async (ctx) => {
-        const candidates = chunkText(KNOWLEDGE, { chunkSize: 70, chunkOverlap: 0 }).map((c, i) => ({ id: `c${i}`, text: c.text }));
-        const hits = hybridRetrieve({ text: "where does deployment run" }, candidates, { topK: 2 });
-        if (hits.length === 0 || !hits[0]!.text.toLowerCase().includes("cloudflare")) {
-          throw new Error("retriever did not surface the deployment passage");
-        }
-        ctx.bag.candidates = candidates;
-        return `top hit: ${hits[0]!.text.slice(0, 40)}…`;
-      },
-    },
-    {
-      id: "l5-tools",
-      layer: "L5",
-      label: "Tools — capability-gated registry",
-      run: async (ctx) => {
-        const tools = new Map<string, (a: string) => string>([["shout", (a) => a.toUpperCase()]]);
-        const fn = tools.get("shout");
-        if (!fn || fn("deploy") !== "DEPLOY") throw new Error("tool invocation failed");
-        if (tools.get("missing")) throw new Error("ungated tool resolved");
-        ctx.bag.tools = tools;
-        return "1 tool registered + invoked";
-      },
-    },
-    {
-      id: "l2-orchestration",
-      layer: "L2",
-      label: "Orchestration — retrieve→recall→act→generate loop",
-      run: async (ctx) => {
-        const model = ctx.bag.model as EvermindLM | undefined;
-        const tokenizer = ctx.bag.tokenizer as BPETokenizer | undefined;
-        const cognition = ctx.bag.cognition as EvermindCognition | undefined;
-        const candidates = ctx.bag.candidates as { id: string; text: string }[] | undefined;
-        const tools = ctx.bag.tools as Map<string, (a: string) => string> | undefined;
-        if (!model || !tokenizer || !cognition || !candidates || !tools) {
-          throw new Error("a prerequisite layer (L1/L3/L4/L5) did not complete");
-        }
-        const steps: string[] = [];
-        const hits = hybridRetrieve({ text: "deployment cloudflare" }, candidates, { topK: 1 });
-        steps.push("retrieve");
-        await cognition.recall("deployment", 3);
-        steps.push("recall");
-        tools.get("shout")!(hits[0]?.text ?? "deploy");
-        steps.push("tool");
-        model.generateText("Deployment", tokenizer, { maxNewTokens: 3, temperature: 0 });
-        steps.push("model");
-        if (steps.join(",") !== "retrieve,recall,tool,model") throw new Error("loop did not complete all stages");
-        return steps.join(" → ");
-      },
-    },
-    {
-      id: "l6-observability",
-      layer: "L6",
-      label: "Observability — trace captured every prior layer",
-      run: async (ctx) => {
-        if (ctx.trace.length === 0) throw new Error("no spans captured");
-        for (const s of ctx.trace) {
-          if (typeof s.layer !== "string" || typeof s.status !== "string" || s.ms < 0) {
-            throw new Error(`malformed span: ${s.id}`);
-          }
-        }
-        return `${ctx.trace.length} spans recorded`;
-      },
-    },
-    {
-      id: "l7-deployment",
-      layer: "L7",
-      label: "Deployment — .evermind artifact ships + runs identically",
-      run: async (ctx) => {
-        const model = ctx.bag.model as EvermindLM | undefined;
-        const tokenizer = ctx.bag.tokenizer as BPETokenizer | undefined;
-        if (!model || !tokenizer) throw new Error("no model from L1 to deploy");
-        const before = model.generateText("Deployment", tokenizer, { maxNewTokens: 4, temperature: 0 });
-        const blob = EvermindModelPackage.fromLM(model, { name: "stack-demo", version: "1.0.0", card: { description: "diagnostic" } }).toBlob();
-        const pkg = EvermindModelPackage.fromBlob(blob);
-        if (!pkg.validate().ok) throw new Error("packaged artifact failed validation");
-        const after = pkg.loadLM().generateText("Deployment", tokenizer, { maxNewTokens: 4, temperature: 0 });
-        if (after !== before) throw new Error("deployed instance produced different output");
-        return `artifact ${blob.byteLength} bytes, output matches`;
-      },
-    },
-  ];
-}
-
 export interface StackDiagnosticResult {
   ok: boolean;
   steps: StackStepResult[];
   /** The first step that failed (the breaking point), if any. */
   firstFailure?: StackStepResult;
+  /** Outputs produced by the run (e.g. `artifacts.evermind` for a build workflow). */
+  artifacts: Record<string, unknown>;
   totalMs: number;
 }
 
@@ -213,7 +79,7 @@ export async function runStackDiagnostic(
   opts: RunStackOptions = {},
 ): Promise<StackDiagnosticResult> {
   const now = opts.now ?? (() => Date.now());
-  const ctx: StackContext = { bag: {}, trace: [], idbFactory: opts.idbFactory, now };
+  const ctx: StackContext = { bag: {}, artifacts: {}, trace: [], idbFactory: opts.idbFactory, now };
   const results: StackStepResult[] = [];
   let firstFailure: StackStepResult | undefined;
   const start = now();
@@ -233,5 +99,5 @@ export async function runStackDiagnostic(
     opts.onStep?.(result);
   }
 
-  return { ok: !firstFailure, steps: results, ...(firstFailure ? { firstFailure } : {}), totalMs: now() - start };
+  return { ok: !firstFailure, steps: results, ...(firstFailure ? { firstFailure } : {}), artifacts: ctx.artifacts, totalMs: now() - start };
 }

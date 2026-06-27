@@ -182,8 +182,8 @@ export type {
     Verdict,
 } from './cognition/index.js';
 
-// ── Diagnostics (seven-layer stack health as an execution-output timeline) ─────
-export { runStackDiagnostic, buildEvermindStackSteps } from './diagnostics/index.js';
+// ── Diagnostics (execution-output runner) ──────────────────────────────────────
+export { runStackDiagnostic } from './diagnostics/index.js';
 export type {
     StackStep,
     StackStepResult,
@@ -192,6 +192,31 @@ export type {
     RunStackOptions,
     StepStatus,
 } from './diagnostics/index.js';
+
+// ── Workflows (configurable templates + step registry → run + .evermind output) ─
+export {
+    runWorkflow,
+    compileWorkflow,
+    validateWorkflow,
+    buildEvermindStackSteps,
+    StepTypeRegistry,
+    createDefaultRegistry,
+    defaultStepRegistry,
+    BUILTIN_STEPS,
+    AGENTIC_SEVEN_LAYER,
+    TRAIN_LLM,
+    WORKFLOW_TEMPLATES,
+    getTemplate,
+    cloneTemplate,
+} from './workflow/index.js';
+export type {
+    WorkflowConfig,
+    WorkflowStepConfig,
+    StepTypeInfo,
+    StepFactory,
+    WorkflowValidationError,
+    RunWorkflowOptions,
+} from './workflow/index.js';
 
 // ── Distillation ──────────────────────────────────────────────────────────────
 export { DistillationEngine } from './distillation/DistillationEngine.js';

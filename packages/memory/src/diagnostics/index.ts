@@ -1,8 +1,9 @@
 /**
- * Diagnostics — runnable health checks shaped as execution-output timelines.
+ * Diagnostics — the generic workflow runner + execution-output types.
+ * The configurable workflow / template layer lives in `../workflow/`.
  */
 
-export { runStackDiagnostic, buildEvermindStackSteps } from "./stack-diagnostic.js";
+export { runStackDiagnostic } from "./stack-diagnostic.js";
 export type {
   StackStep,
   StackStepResult,
