@@ -228,3 +228,25 @@ test('decode skips unknown ids without throwing', () => {
     const t = buildTinyTokenizer();
     expect(() => t.decode([99999])).not.toThrow();
 });
+
+// ── train ───────────────────────────────────────────────────────────────────
+
+test('train learns a self-contained vocab that round-trips real text', () => {
+    const t = new BPETokenizer();
+    const corpus = 'the quick brown fox jumps over the lazy dog. '.repeat(20)
+        + 'the fox and the dog are friends. the quick fox runs.';
+    t.train(corpus, { numMerges: 80 });
+
+    // Full byte coverage (256) + 4 specials + learned merges.
+    expect(t.vocabSize).toBeGreaterThan(256);
+    // Round-trips arbitrary text, including words not in the corpus.
+    expect(t.decode(t.encode('the quick brown fox'))).toBe('the quick brown fox');
+    expect(t.decode(t.encode('hello, world! 123'))).toBe('hello, world! 123');
+});
+
+test('train compresses frequent sequences below their character length', () => {
+    const t = new BPETokenizer();
+    t.train('the the the the the the the the the the cat'.split(' ').join(' '), { numMerges: 50 });
+    // "the" appears often → BPE should encode it in fewer than its 3 byte-chars.
+    expect(t.encode('the').length).toBeLessThan(3);
+});

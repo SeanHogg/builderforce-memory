@@ -28,20 +28,20 @@ import { SeededRng } from "../utils/rng.js";
 import { quantizeFp16, dequantizeFp16 } from "../utils/quantization.js";
 
 export interface EvermindLMConfig {
-  /** Vocabulary size. */
+  /** Vocabulary size (the only required field; everything else has a default). */
   vocabSize: number;
   /** Model (channel) dimension. Default 64. */
-  dModel: number;
+  dModel?: number;
   /** Number of (conv + MoE) blocks. Default 2. */
-  numLayers: number;
+  numLayers?: number;
   /** Causal conv kernel width. Default 3. */
-  convKernel: number;
+  convKernel?: number;
   /** Hidden width of each MoE expert FFN. Default 2·dModel. */
-  hiddenDim: number;
+  hiddenDim?: number;
   /** Routed experts per MoE layer. Default 4. */
-  numExperts: number;
+  numExperts?: number;
   /** Experts activated per token. Default 2. */
-  topK: number;
+  topK?: number;
   /** Deterministic init seed. */
   seed?: number;
 }

@@ -91,6 +91,83 @@ export class BPETokenizer {
         this.padId = this.vocab.get(this.padToken) ?? null;
     }
 
+    /**
+     * Learn a byte-level BPE vocabulary + merges from a text corpus, then load
+     * them into this tokenizer. Makes the tokenizer self-contained (no external
+     * vocab file): train on your data, then `encode`/`decode` round-trips real
+     * text and frequent sequences compress to single tokens. The base vocabulary
+     * always covers all 256 byte symbols, so any input is representable.
+     */
+    train(corpus: string | string[], opts: { numMerges?: number; minPairFreq?: number } = {}): void {
+        const numMerges = opts.numMerges ?? 200;
+        const minPairFreq = opts.minPairFreq ?? 2;
+        const texts = Array.isArray(corpus) ? corpus : [corpus];
+
+        // Byte-encode each pre-token into a symbol sequence; count word frequencies.
+        const wordFreq = new Map<string, number>();
+        for (const text of texts) {
+            for (const word of text.match(PRE_TOKENIZE_RE) ?? []) {
+                const bytes = new TextEncoder().encode(word);
+                const byteStr = Array.from(bytes).map((b) => BYTE_ENCODER.get(b) ?? '?').join('');
+                wordFreq.set(byteStr, (wordFreq.get(byteStr) ?? 0) + 1);
+            }
+        }
+        const words = [...wordFreq].map(([w, freq]) => ({ syms: [...w], freq }));
+
+        // Greedy BPE: repeatedly merge the most frequent adjacent symbol pair.
+        const merges: string[] = [];
+        for (let m = 0; m < numMerges; m++) {
+            const pairCounts = new Map<string, number>();
+            for (const { syms, freq } of words) {
+                for (let i = 0; i < syms.length - 1; i++) {
+                    const pair = syms[i]! + ' ' + syms[i + 1]!;
+                    pairCounts.set(pair, (pairCounts.get(pair) ?? 0) + freq);
+                }
+            }
+            let best = '';
+            let bestCount = 0;
+            for (const [pair, count] of pairCounts) {
+                if (count > bestCount) {
+                    best = pair;
+                    bestCount = count;
+                }
+            }
+            if (bestCount < minPairFreq) break;
+            merges.push(best);
+            const sp = best.indexOf(' ');
+            const a = best.slice(0, sp);
+            const b = best.slice(sp + 1);
+            const merged = a + b;
+            for (const w of words) {
+                const out: string[] = [];
+                for (let i = 0; i < w.syms.length; i++) {
+                    if (i < w.syms.length - 1 && w.syms[i] === a && w.syms[i + 1] === b) {
+                        out.push(merged);
+                        i++;
+                    } else {
+                        out.push(w.syms[i]!);
+                    }
+                }
+                w.syms = out;
+            }
+        }
+
+        // Assemble the vocabulary: specials, every byte symbol (full coverage), then merges.
+        const vocabObj: Record<string, number> = {};
+        let id = 0;
+        for (const special of [this.unkToken, this.bosToken, this.eosToken, this.padToken]) {
+            if (!(special in vocabObj)) vocabObj[special] = id++;
+        }
+        for (const ch of BYTE_ENCODER.values()) {
+            if (!(ch in vocabObj)) vocabObj[ch] = id++;
+        }
+        for (const pair of merges) {
+            const merged = pair.split(' ').join('');
+            if (!(merged in vocabObj)) vocabObj[merged] = id++;
+        }
+        this.loadFromObjects(vocabObj, merges);
+    }
+
     loadFromObjects(vocabObj: Record<string, number>, mergeArr: string[]): void {
         this.vocab     = new Map(Object.entries(vocabObj).map(([k, v]) => [k, Number(v)]));
         this.idToToken = new Map([...this.vocab].map(([k, v]) => [v, k]));
