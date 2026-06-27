@@ -114,7 +114,7 @@ export class AttentionBlock implements SequenceLayer {
     }
 
     private _initWeights(): void {
-        const { dModel, nHeads, hasFfn, ffnMult } = this.config;
+        const { dModel, hasFfn, ffnMult } = this.config;
 
         const randn = (n: number, std = 0.02): Float32Array => gaussianArray(n, std);
 

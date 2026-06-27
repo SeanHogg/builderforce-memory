@@ -410,7 +410,10 @@ export class EvermindLM {
     const fp16 = opts.fp16 ?? false;
     const params = this.parameters();
     const total = params.reduce((n, p) => n + p.data.length, 0);
-    const headerEls = 8; // magic, version, vocab, dModel, numLayers, convKernel, hiddenDim, numExperts(+topK packed)
+    // magic, version, vocab, dModel, numLayers, convKernel, hiddenDim, numExperts, topK.
+    // numExperts and topK get distinct slots (an earlier *16 packing collided once
+    // numExperts ≥ 16 — e.g. (20,20) and (21,4) both packed to 340).
+    const headerEls = 9;
     const headerBytes = headerEls * 4;
     const buf = new ArrayBuffer(headerBytes + (fp16 ? total * 2 : total * 4));
     const head = new Uint32Array(buf, 0, headerEls);
@@ -421,7 +424,8 @@ export class EvermindLM {
     head[4] = this.config.numLayers;
     head[5] = this.config.convKernel;
     head[6] = this.config.hiddenDim;
-    head[7] = this.config.numExperts * 16 + this.config.topK; // pack numExperts,topK
+    head[7] = this.config.numExperts;
+    head[8] = this.config.topK;
     const flat = new Float32Array(total);
     let o = 0;
     for (const p of params) {
@@ -435,7 +439,7 @@ export class EvermindLM {
 
   /** Load weights from an "EVL0" binary. Validates magic + dims. */
   loadWeights(buffer: ArrayBuffer): void {
-    const head = new Uint32Array(buffer, 0, 8);
+    const head = new Uint32Array(buffer, 0, 9);
     if (head[0] !== MAGIC) throw new Error("EvermindLM.loadWeights: bad magic (not an EVL0 checkpoint)");
     const version = head[1]!;
     if (
@@ -444,13 +448,14 @@ export class EvermindLM {
       head[4] !== this.config.numLayers ||
       head[5] !== this.config.convKernel ||
       head[6] !== this.config.hiddenDim ||
-      head[7] !== this.config.numExperts * 16 + this.config.topK
+      head[7] !== this.config.numExperts ||
+      head[8] !== this.config.topK
     ) {
       throw new Error("EvermindLM.loadWeights: config mismatch with checkpoint");
     }
     const params = this.parameters();
     const total = params.reduce((n, p) => n + p.data.length, 0);
-    const headerBytes = 32;
+    const headerBytes = 36;
     const flat =
       version === 2
         ? dequantizeFp16(new Uint16Array(buffer, headerBytes, total))

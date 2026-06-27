@@ -106,7 +106,15 @@ describe("EvermindLM — checkpoint", () => {
 
     const wrong = new EvermindLM({ ...CFG, numLayers: 3 });
     expect(() => wrong.loadWeights(f32)).toThrow(/mismatch/);
-    expect(() => reloaded.loadWeights(new ArrayBuffer(32))).toThrow(/magic/);
+    expect(() => reloaded.loadWeights(new ArrayBuffer(36))).toThrow(/magic/);
+  });
+
+  test("header distinguishes configs the old numExperts·16 packing collided (≥16 experts)", () => {
+    // (20,20) and (21,4) both packed to 340 under the old scheme — must now differ.
+    const a = new EvermindLM({ ...CFG, numExperts: 20, topK: 20 });
+    const blob = a.exportWeights();
+    expect(() => new EvermindLM({ ...CFG, numExperts: 20, topK: 20 }).loadWeights(blob)).not.toThrow();
+    expect(() => new EvermindLM({ ...CFG, numExperts: 21, topK: 4 }).loadWeights(blob)).toThrow(/mismatch/);
   });
 });
 

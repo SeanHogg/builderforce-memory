@@ -375,7 +375,7 @@ export class HybridMambaModel {
         const { temperature = 1.0, topK = 50, topP = 0.9 } = samplingOpts;
         const { vocabSize } = this.config;
 
-        let ids = [...promptIds];
+        const ids = [...promptIds];
 
         for (let step = 0; step < maxNewTokens; step++) {
             const { logits } = await this.forward(new Uint32Array(ids), 1, ids.length);
