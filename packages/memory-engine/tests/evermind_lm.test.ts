@@ -4,8 +4,9 @@
  * and checkpoint round-trip — the generative model behind the .evermind artifact.
  */
 
-import { EvermindLM, EvermindLMTrainer } from "../src/lm/evermind_lm.js";
+import { EvermindLM, EvermindLMTrainer, type TextCodec } from "../src/lm/evermind_lm.js";
 import { EvermindModelPackage } from "../src/moe/moe_package.js";
+import { BPETokenizer } from "../src/tokenizer/bpe.js";
 import { crossEntropyLoss } from "../src/training/autograd.js";
 
 const CFG = {
@@ -134,5 +135,30 @@ describe("EvermindLM — publish → buy → run", () => {
 
     // Wrong loader is rejected.
     expect(() => bought.loadModel()).toThrow(/loadLM/);
+  });
+});
+
+describe("EvermindLM — text I/O", () => {
+  /** A tiny char-level codec so the model overfits text quickly. */
+  const ALPHABET = "abcde";
+  const codec: TextCodec = {
+    encode: (text) => [...text].map((ch) => ALPHABET.indexOf(ch)).filter((i) => i >= 0),
+    decode: (ids) => ids.map((i) => ALPHABET[i] ?? "").join(""),
+  };
+
+  test("generateText consumes and emits real text", () => {
+    const m = new EvermindLM({ ...CFG, vocabSize: ALPHABET.length });
+    new EvermindLMTrainer(m, { lr: 0.03, epochs: 500 }).fit([codec.encode("abcde")]);
+    const out = m.generateText("a", codec, { maxNewTokens: 4, temperature: 0 });
+    expect(out).toBe("bcde");
+  });
+
+  test("the engine BPETokenizer is usable as the LM's TextCodec", () => {
+    // Structural contract (this assignment compiling is the integration point):
+    // BPETokenizer.encode/decode match what generateText needs. A *loaded* vocab
+    // (tok.load(...)) round-trips real text; here we assert the shape of the seam.
+    const tok: TextCodec = new BPETokenizer();
+    expect(Array.isArray(tok.encode("x"))).toBe(true);
+    expect(typeof tok.decode([])).toBe("string");
   });
 });

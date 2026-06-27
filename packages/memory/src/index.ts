@@ -91,7 +91,7 @@ export type {
     ValidationResult,
 } from '@seanhogg/builderforce-memory-engine';
 export { EvermindLM, EvermindLMTrainer } from '@seanhogg/builderforce-memory-engine';
-export type { EvermindLMConfig, LMGenerateOptions } from '@seanhogg/builderforce-memory-engine';
+export type { EvermindLMConfig, LMGenerateOptions, TextCodec } from '@seanhogg/builderforce-memory-engine';
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';

@@ -80,6 +80,12 @@ interface ForwardCache {
   finalX: Float32Array[]; // per position, fed to the tied head
 }
 
+/** A tokenizer the LM can read/write text through (the engine's `BPETokenizer` fits). */
+export interface TextCodec {
+  encode(text: string): number[];
+  decode(ids: number[]): string;
+}
+
 export interface LMGenerateOptions {
   maxNewTokens: number;
   /** Sampling temperature; ≤0 ⇒ greedy argmax. Default 0 (greedy). */
@@ -292,6 +298,16 @@ export class EvermindLM {
   }
 
   // ── Generation ───────────────────────────────────────────────────────────────
+
+  /**
+   * Text-level generation: encode the prompt, generate, decode. `codec` is any
+   * tokenizer exposing encode/decode (the engine's `BPETokenizer` satisfies it),
+   * so the LM consumes and emits real text rather than raw token ids. The model's
+   * `vocabSize` must match the codec's vocabulary.
+   */
+  generateText(prompt: string, codec: TextCodec, opts: LMGenerateOptions): string {
+    return codec.decode(this.generate(codec.encode(prompt), opts));
+  }
 
   /** Greedy / temperature-sampled autoregressive generation. Returns NEW token ids. */
   generate(prompt: number[], opts: LMGenerateOptions): number[] {
