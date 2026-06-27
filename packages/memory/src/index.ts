@@ -75,8 +75,21 @@ export {
     LoadBalanceAccumulator,
     DEFAULT_MOE_CONFIG,
     DEFAULT_MOE_SEED,
+    MoETrainer,
+    EvermindModelPackage,
 } from '@seanhogg/builderforce-memory-engine';
-export type { MoEConfig, MoEParam, RouteResult } from '@seanhogg/builderforce-memory-engine';
+export type {
+    MoEConfig,
+    MoEParam,
+    RouteResult,
+    MoESample,
+    MoETrainOptions,
+    MoEEpochResult,
+    EvermindModelManifest,
+    EvermindModelCard,
+    PackageMeta,
+    ValidationResult,
+} from '@seanhogg/builderforce-memory-engine';
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';

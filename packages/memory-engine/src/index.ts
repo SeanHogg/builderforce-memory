@@ -21,8 +21,21 @@ export {
     LoadBalanceAccumulator,
     DEFAULT_MOE_CONFIG,
     DEFAULT_MOE_SEED,
+    MoETrainer,
+    EvermindModelPackage,
 } from './moe/index.js';
-export type { MoEConfig, MoEParam, RouteResult } from './moe/index.js';
+export type {
+    MoEConfig,
+    MoEParam,
+    RouteResult,
+    MoESample,
+    MoETrainOptions,
+    MoEEpochResult,
+    EvermindModelManifest,
+    EvermindModelCard,
+    PackageMeta,
+    ValidationResult,
+} from './moe/index.js';
 
 // ── Training ──────────────────────────────────────────────────────────────────
 

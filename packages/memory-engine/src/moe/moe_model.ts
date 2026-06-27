@@ -330,6 +330,26 @@ export class SharedExpertMoE {
     }
   }
 
+  /**
+   * Add the load-balancing auxiliary-loss gradient for one token into the router
+   * gradient. `L_aux = E·Σ_e f_e·P̄_e` (Switch/GShard); `f` (per-batch dispatch
+   * fractions) is treated as a stop-grad constant, so only the full softmax `P`
+   * carries gradient: ∂L_aux/∂logit_j = scale·P_j·(f_j − Σ_e f_e·P_e), where the
+   * caller passes `scale = auxWeight·E/T`. Keeps the router from collapsing onto a
+   * few experts. Call once per token over the batch, after {@link backward}.
+   */
+  auxGradStep(x: Float32Array, probs: Float32Array, f: Float32Array, scale: number): void {
+    const { numExperts, modelDim } = this.config;
+    let fp = 0;
+    for (let e = 0; e < numExperts; e++) fp += f[e]! * probs[e]!;
+    for (let j = 0; j < numExperts; j++) {
+      const coeff = scale * probs[j]! * (f[j]! - fp);
+      if (coeff === 0) continue;
+      const off = j * modelDim;
+      for (let i = 0; i < modelDim; i++) this.gWr[off + i] = this.gWr[off + i]! + coeff * x[i]!;
+    }
+  }
+
   // ── Parameters / checkpoint ────────────────────────────────────────────────
 
   /** All trainable parameters in canonical order: router, shared, then experts. */
