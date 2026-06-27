@@ -15,6 +15,15 @@ export { AttentionBlock } from './model/attention_block.js';
 // Deprecated alias — kept until 3.0.0
 export { MambaBlock } from './model/mamba1_block.js';
 
+// ── Mixture-of-Experts (shared-expert hybrid sparsity) ─────────────────────────
+export {
+    SharedExpertMoE,
+    LoadBalanceAccumulator,
+    DEFAULT_MOE_CONFIG,
+    DEFAULT_MOE_SEED,
+} from './moe/index.js';
+export type { MoEConfig, MoEParam, RouteResult } from './moe/index.js';
+
 // ── Training ──────────────────────────────────────────────────────────────────
 
 export { MambaTrainer } from './training/trainer.js';

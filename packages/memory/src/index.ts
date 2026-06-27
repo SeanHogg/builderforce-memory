@@ -68,6 +68,16 @@ export type {
     Region,
 } from '@seanhogg/builderforce-memory-engine';
 
+// ── Mixture-of-Experts (shared-expert hybrid — the Evermind generator's sparsity) ──
+// Re-exported from the engine so consumers reach it from @seanhogg/builderforce-memory.
+export {
+    SharedExpertMoE,
+    LoadBalanceAccumulator,
+    DEFAULT_MOE_CONFIG,
+    DEFAULT_MOE_SEED,
+} from '@seanhogg/builderforce-memory-engine';
+export type { MoEConfig, MoEParam, RouteResult } from '@seanhogg/builderforce-memory-engine';
+
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';
 export type { SSMRuntimeOptions, GenerateOptions } from './runtime/SSMRuntime.js';
