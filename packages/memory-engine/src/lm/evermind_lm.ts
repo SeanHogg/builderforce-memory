@@ -69,8 +69,11 @@ interface MoECacheLike {
 }
 
 interface LayerCache {
-  convIn: Float32Array[]; // input to the conv (== layer input), per position
-  moeIn: Float32Array[]; // input to the MoE (post-conv residual), per position
+  layerIn: Float32Array[]; // residual base for the conv sub-block (the layer input)
+  normedConv: Float32Array[]; // RMSNorm(layerIn) — the conv input
+  rmsConv: number[]; // per-position RMS denom for the conv norm
+  afterConv: Float32Array[]; // residual base for the MoE sub-block
+  rmsMoe: number[]; // per-position RMS denom for the MoE norm
   moeCache: MoECacheLike[]; // per position
 }
 
@@ -105,6 +108,11 @@ export class EvermindLM {
   /** Per-layer depthwise causal conv kernels: dModel × convKernel. */
   private readonly conv: Float32Array[];
   private readonly gConv: Float32Array[];
+  /** Per-layer pre-conv / pre-MoE RMSNorm gains (dModel each). */
+  private readonly nConv: Float32Array[];
+  private readonly gNConv: Float32Array[];
+  private readonly nMoe: Float32Array[];
+  private readonly gNMoe: Float32Array[];
   /** Per-layer channel mixer. */
   private readonly moe: SharedExpertMoE[];
 
@@ -139,6 +147,10 @@ export class EvermindLM {
     this.gEmb = new Float32Array(this.emb.length);
     this.conv = [];
     this.gConv = [];
+    this.nConv = [];
+    this.gNConv = [];
+    this.nMoe = [];
+    this.gNMoe = [];
     this.moe = [];
     for (let l = 0; l < cfg.numLayers; l++) {
       // Conv init near an identity passthrough (current tap ≈ 1, history ≈ 0) so
@@ -147,6 +159,11 @@ export class EvermindLM {
       for (let c = 0; c < cfg.dModel; c++) k[c * cfg.convKernel] = 1;
       this.conv.push(k);
       this.gConv.push(new Float32Array(k.length));
+      // RMSNorm gains start at 1 (identity scale).
+      this.nConv.push(new Float32Array(cfg.dModel).fill(1));
+      this.gNConv.push(new Float32Array(cfg.dModel));
+      this.nMoe.push(new Float32Array(cfg.dModel).fill(1));
+      this.gNMoe.push(new Float32Array(cfg.dModel));
       // Each MoE layer gets a distinct seed for varied expert init.
       this.moe.push(
         new SharedExpertMoE({
@@ -177,34 +194,48 @@ export class EvermindLM {
 
     const layers: LayerCache[] = [];
     for (let l = 0; l < numLayers; l++) {
-      const convIn = x.map((v) => Float32Array.from(v));
-      // Depthwise causal conv → residual.
+      const layerIn = x;
       const ker = this.conv[l]!;
+      const nConv = this.nConv[l]!;
+      const nMoe = this.nMoe[l]!;
+
+      // Pre-norm → depthwise causal conv → residual.
+      const normedConv: Float32Array[] = [];
+      const rmsConv: number[] = [];
+      for (let t = 0; t < T; t++) {
+        const { y, r } = rmsNorm(layerIn[t]!, nConv);
+        normedConv.push(y);
+        rmsConv.push(r);
+      }
       const afterConv: Float32Array[] = [];
       for (let t = 0; t < T; t++) {
-        const out = Float32Array.from(x[t]!);
+        const out = Float32Array.from(layerIn[t]!); // residual base
         for (let c = 0; c < dModel; c++) {
           let acc = 0;
           for (let j = 0; j < convKernel; j++) {
             const ti = t - j;
-            if (ti >= 0) acc += ker[c * convKernel + j]! * convIn[ti]![c]!;
+            if (ti >= 0) acc += ker[c * convKernel + j]! * normedConv[ti]![c]!;
           }
-          out[c] = out[c]! + acc; // residual
+          out[c] = out[c]! + acc;
         }
         afterConv.push(out);
       }
-      // MoE channel mixer → residual.
-      const moeIn = afterConv.map((v) => Float32Array.from(v));
+
+      // Pre-norm → MoE channel mixer → residual.
+      const rmsMoe: number[] = [];
       const moeCache: MoECacheLike[] = [];
       const afterMoe: Float32Array[] = [];
       for (let t = 0; t < T; t++) {
-        const r = this.moe[l]!.forward(moeIn[t]!);
-        const out = Float32Array.from(moeIn[t]!);
-        for (let c = 0; c < dModel; c++) out[c] = out[c]! + r.output[c]!;
+        const { y, r } = rmsNorm(afterConv[t]!, nMoe);
+        rmsMoe.push(r);
+        const out = Float32Array.from(afterConv[t]!); // residual base
+        const mr = this.moe[l]!.forward(y);
+        for (let c = 0; c < dModel; c++) out[c] = out[c]! + mr.output[c]!;
         afterMoe.push(out);
-        moeCache.push(r.cache as unknown as MoECacheLike);
+        moeCache.push(mr.cache as unknown as MoECacheLike);
       }
-      layers.push({ convIn, moeIn, moeCache });
+
+      layers.push({ layerIn, normedConv, rmsConv, afterConv, rmsMoe, moeCache });
       x = afterMoe;
     }
 
@@ -261,31 +292,47 @@ export class EvermindLM {
     // Backprop through layers in reverse.
     for (let l = numLayers - 1; l >= 0; l--) {
       const lc = cache.layers[l]!;
-      // MoE residual: x = moeIn + MoE(moeIn). dMoeIn = dX + MoE.backward(dX).
-      const dMoeIn: Float32Array[] = [];
-      for (let t = 0; t < T; t++) {
-        const dInner = this.moe[l]!.backward(dX[t]!, lc.moeCache[t] as never);
-        const d = Float32Array.from(dX[t]!);
-        for (let c = 0; c < dModel; c++) d[c] = d[c]! + dInner[c]!;
-        dMoeIn.push(d);
-      }
-      // Conv residual: afterConv = convIn + conv(convIn). dConvIn = dMoeIn + convBwd(dMoeIn).
       const ker = this.conv[l]!;
       const gker = this.gConv[l]!;
-      const dConvIn: Float32Array[] = dMoeIn.map((v) => Float32Array.from(v)); // residual passthrough
+      const nConv = this.nConv[l]!;
+      const gNConv = this.gNConv[l]!;
+      const nMoe = this.nMoe[l]!;
+      const gNMoe = this.gNMoe[l]!;
+
+      // MoE sub-block: afterMoe = afterConv + MoE(RMSNorm(afterConv, nMoe)).
+      const dAfterConv: Float32Array[] = [];
+      for (let t = 0; t < T; t++) {
+        const dMoeNormed = this.moe[l]!.backward(dX[t]!, lc.moeCache[t] as never);
+        const { dx, dgain } = rmsNormBackward(dMoeNormed, lc.afterConv[t]!, lc.rmsMoe[t]!, nMoe);
+        for (let c = 0; c < dModel; c++) gNMoe[c] = gNMoe[c]! + dgain[c]!;
+        const d = Float32Array.from(dX[t]!); // residual passthrough
+        for (let c = 0; c < dModel; c++) d[c] = d[c]! + dx[c]!;
+        dAfterConv.push(d);
+      }
+
+      // Conv sub-block: afterConv = layerIn + conv(RMSNorm(layerIn, nConv)).
+      const dNormedConv: Float32Array[] = Array.from({ length: T }, () => new Float32Array(dModel));
+      const dLayerIn: Float32Array[] = dAfterConv.map((v) => Float32Array.from(v)); // residual passthrough
       for (let t = 0; t < T; t++) {
         for (let c = 0; c < dModel; c++) {
-          const dmix = dMoeIn[t]![c]!;
+          const dmix = dAfterConv[t]![c]!;
           if (dmix === 0) continue;
           for (let j = 0; j < convKernel; j++) {
             const ti = t - j;
             if (ti < 0) continue;
-            gker[c * convKernel + j] = gker[c * convKernel + j]! + dmix * lc.convIn[ti]![c]!;
-            dConvIn[ti]![c] = dConvIn[ti]![c]! + dmix * ker[c * convKernel + j]!;
+            gker[c * convKernel + j] = gker[c * convKernel + j]! + dmix * lc.normedConv[ti]![c]!;
+            dNormedConv[ti]![c] = dNormedConv[ti]![c]! + dmix * ker[c * convKernel + j]!;
           }
         }
       }
-      for (let t = 0; t < T; t++) dX[t] = dConvIn[t]!;
+      for (let t = 0; t < T; t++) {
+        const { dx, dgain } = rmsNormBackward(dNormedConv[t]!, lc.layerIn[t]!, lc.rmsConv[t]!, nConv);
+        for (let c = 0; c < dModel; c++) {
+          gNConv[c] = gNConv[c]! + dgain[c]!;
+          dLayerIn[t]![c] = dLayerIn[t]![c]! + dx[c]!;
+        }
+      }
+      for (let t = 0; t < T; t++) dX[t] = dLayerIn[t]!;
     }
 
     // Embedding lookup: dX at layer-0 input flows into the row for token_t.
@@ -332,7 +379,7 @@ export class EvermindLM {
   parameters(): { data: Float32Array }[] {
     const out: { data: Float32Array }[] = [{ data: this.emb }];
     for (let l = 0; l < this.config.numLayers; l++) {
-      out.push({ data: this.conv[l]! });
+      out.push({ data: this.conv[l]! }, { data: this.nConv[l]! }, { data: this.nMoe[l]! });
       for (const p of this.moe[l]!.parameters()) out.push({ data: p.data });
     }
     return out;
@@ -342,7 +389,7 @@ export class EvermindLM {
   gradients(): { data: Float32Array }[] {
     const out: { data: Float32Array }[] = [{ data: this.gEmb }];
     for (let l = 0; l < this.config.numLayers; l++) {
-      out.push({ data: this.gConv[l]! });
+      out.push({ data: this.gConv[l]! }, { data: this.gNConv[l]! }, { data: this.gNMoe[l]! });
       for (const g of this.moe[l]!.gradients()) out.push({ data: g.data });
     }
     return out;
@@ -352,6 +399,8 @@ export class EvermindLM {
     this.gEmb.fill(0);
     for (let l = 0; l < this.config.numLayers; l++) {
       this.gConv[l]!.fill(0);
+      this.gNConv[l]!.fill(0);
+      this.gNMoe[l]!.fill(0);
       this.moe[l]!.zeroGrad();
     }
   }
@@ -441,6 +490,43 @@ export class EvermindLMTrainer {
     }
     return history;
   }
+}
+
+const RMS_EPS = 1e-5;
+
+/** RMSNorm: y[c] = gain[c]·x[c]/rms, rms = sqrt(mean(x²)+eps). Returns y and the denom. */
+function rmsNorm(x: Float32Array, gain: Float32Array): { y: Float32Array; r: number } {
+  const D = x.length;
+  let ss = 0;
+  for (let c = 0; c < D; c++) ss += x[c]! * x[c]!;
+  const r = Math.sqrt(ss / D + RMS_EPS);
+  const y = new Float32Array(D);
+  for (let c = 0; c < D; c++) y[c] = (gain[c]! * x[c]!) / r;
+  return { y, r };
+}
+
+/**
+ * RMSNorm backward. Given dL/dy and the cached input/denom/gain, returns dL/dx and
+ * dL/dgain. dx_j = gain_j·dy_j/r − x_j·A/(D·r³) with A = Σ_c dy_c·gain_c·x_c;
+ * dgain_c = dy_c·x_c/r.
+ */
+function rmsNormBackward(
+  dy: Float32Array,
+  x: Float32Array,
+  r: number,
+  gain: Float32Array,
+): { dx: Float32Array; dgain: Float32Array } {
+  const D = x.length;
+  let A = 0;
+  for (let c = 0; c < D; c++) A += dy[c]! * gain[c]! * x[c]!;
+  const dx = new Float32Array(D);
+  const dgain = new Float32Array(D);
+  const r3 = r * r * r;
+  for (let c = 0; c < D; c++) {
+    dx[c] = (gain[c]! * dy[c]!) / r - (x[c]! * A) / (D * r3);
+    dgain[c] = (dy[c]! * x[c]!) / r;
+  }
+  return { dx, dgain };
 }
 
 function argmax(v: Float32Array): number {
