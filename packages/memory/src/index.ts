@@ -40,6 +40,34 @@ export type {
     Tokenizer,
 } from './session/index.js';
 
+// ── Limbic system (trainable affective dynamics) ──────────────────────────────
+export { LimbicSession } from './limbic/LimbicSession.js';
+export type { LimbicSessionOptions, LimbicGpuMode } from './limbic/LimbicSession.js';
+// Re-export the limbic engine primitives so consumers can use the model/trainer
+// and the region schema directly from @seanhogg/builderforce-memory.
+export {
+    LimbicModel,
+    LimbicTrainer,
+    LIMBIC_DIM,
+    LIMBIC_DIM_NAMES,
+    LIMBIC_STATE_DIM,
+    LIMBIC_BOUNDS,
+    NEUTRAL_STATE,
+    REGION,
+    clampState,
+    neutralState,
+    stateToRecord,
+    recordToState,
+} from '@seanhogg/builderforce-memory-engine';
+export type {
+    LimbicModelConfig,
+    LimbicForward,
+    LimbicSample,
+    LimbicTrainOptions,
+    LimbicDimName,
+    Region,
+} from '@seanhogg/builderforce-memory-engine';
+
 // ── Runtime ───────────────────────────────────────────────────────────────────
 export { SSMRuntime }    from './runtime/SSMRuntime.js';
 export type { SSMRuntimeOptions, GenerateOptions } from './runtime/SSMRuntime.js';

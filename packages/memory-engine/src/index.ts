@@ -108,6 +108,37 @@ export { COMPLEX_SSD_FORWARD_WGSL, COMPLEX_SSD_BACKWARD_WGSL }
 export { ATTENTION_FORWARD_WGSL, ATTENTION_BACKWARD_WGSL, SOFTMAX_WGSL }
     from './kernels/attention.js';
 
+// ── Limbic system (trainable affective dynamics) ──────────────────────────────
+
+export {
+    REGION,
+    LIMBIC_DIM,
+    LIMBIC_DIM_NAMES,
+    LIMBIC_STATE_DIM,
+    LIMBIC_BOUNDS,
+    NEUTRAL_STATE,
+    clampDim,
+    clampState,
+    neutralState,
+    stateToRecord,
+    recordToState,
+    LimbicModel,
+    DEFAULT_LIMBIC_CONFIG,
+    DEFAULT_LIMBIC_SEED,
+    LimbicTrainer,
+} from './limbic/index.js';
+export type {
+    Region,
+    LimbicDimName,
+    LimbicModelConfig,
+    LimbicForward,
+    LimbicParam,
+    LimbicSample,
+    LimbicTrainOptions,
+} from './limbic/index.js';
+
+export { LIMBIC_AFFECT_WGSL } from './kernels/limbic_affect.js';
+
 // ── Version ───────────────────────────────────────────────────────────────────
 
 export const VERSION     = '2.0.0';
