@@ -10,6 +10,7 @@
 
 import { SSMError } from '../errors/SSMError.js';
 import { tokenize, jaccardSimilarity, cosineSimilarity } from '../similarity/index.js';
+import { hybridRetrieve, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
 
 export type FactType = 'text' | 'json' | 'number' | 'boolean';
 
@@ -263,6 +264,41 @@ export class MemoryStore {
 
         scored.sort((a, b) => b.score - a.score);
         return scored.slice(0, topK).map(s => s.entry);
+    }
+
+    /**
+     * Hybrid recall: fuses dense (SSM-embedding cosine) and sparse (BM25 lexical)
+     * rankings via Reciprocal Rank Fusion, then applies an MMR diversity rerank.
+     *
+     * This is the production RAG retrieval path — it catches both semantic matches
+     * (embeddings) and exact-token matches (BM25 — identifiers, codes, rare names)
+     * that cosine-only `recallSimilar` misses, and avoids returning near-duplicate
+     * facts. Degrades to BM25-only when no embedding-capable runtime is available,
+     * so it is always strictly at least as good as the lexical fallback.
+     */
+    async recallHybrid(
+        query: string,
+        topK: number,
+        runtime?: SSMRuntimeRef,
+        opts?: HybridRetrieveOptions,
+    ): Promise<MemoryEntry[]> {
+        const all = await this.recallAll();
+        if (all.length === 0) return [];
+
+        // Embed candidates + query where a runtime is available; null vectors are
+        // fine — hybridRetrieve degrades that candidate to BM25-only.
+        const canEmbed = runtime != null && typeof runtime.embed === 'function';
+        const queryVec = canEmbed ? (await this._embedWithCache(runtime, query)) ?? undefined : undefined;
+
+        const candidates: RetrievalCandidate[] = [];
+        for (const entry of all) {
+            const vector = canEmbed ? (await this._embedWithCache(runtime, entry.content)) ?? undefined : undefined;
+            candidates.push({ id: entry.key, text: entry.content, vector });
+        }
+
+        const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, ...opts });
+        const byKey = new Map(all.map(e => [e.key, e]));
+        return hits.map(h => byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
     }
 
     /**

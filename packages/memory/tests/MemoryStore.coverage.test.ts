@@ -118,6 +118,47 @@ test('recallSimilar falls back to Jaccard when embed() throws', async () => {
     expect(best.key).toBe('k1');
 });
 
+// ── recallHybrid ──────────────────────────────────────────────────────────────
+
+test('recallHybrid on an empty store returns []', async () => {
+    expect(await freshStore().recallHybrid('q', 3)).toEqual([]);
+});
+
+test('recallHybrid runs BM25-only (lexical) when no runtime is given', async () => {
+    const store = freshStore();
+    await store.remember('k1', 'the quick brown fox');
+    await store.remember('k2', 'completely unrelated content');
+
+    const hits = await store.recallHybrid('quick brown fox', 1);
+    expect(hits[0]!.key).toBe('k1');
+});
+
+test('recallHybrid fuses dense embeddings with BM25 when embed() is available', async () => {
+    const store = freshStore();
+    await store.remember('match', 'aligned quick fox');
+    await store.remember('miss',  'orthogonal turtle');
+
+    const vectors: Record<string, Float32Array> = {
+        'query quick fox':   new Float32Array([1, 0]),
+        'aligned quick fox': new Float32Array([1, 0]),
+        'orthogonal turtle': new Float32Array([0, 1]),
+    };
+    const runtime = { embed: jest.fn<any>(async (t: string) => vectors[t] ?? new Float32Array([0.1, 0.1])) };
+
+    const hits = await store.recallHybrid('query quick fox', 1, runtime);
+    expect(hits[0]!.key).toBe('match');
+});
+
+test('recallHybrid tolerates an embed() that yields no vector (BM25 still ranks)', async () => {
+    const store = freshStore();
+    await store.remember('k1', 'alpha beta gamma');
+    await store.remember('k2', 'delta epsilon');
+
+    const runtime = { embed: jest.fn<any>(async () => new Float32Array(0)) };
+    const hits = await store.recallHybrid('alpha beta', 1, runtime);
+    expect(hits[0]!.key).toBe('k1');
+});
+
 // ── export / import ───────────────────────────────────────────────────────────
 
 test('exportAll returns all non-expired entries', async () => {
