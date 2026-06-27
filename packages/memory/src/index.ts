@@ -120,6 +120,20 @@ export type {
     FactType,
 } from './memory/MemoryStore.js';
 
+// ── Cognition (Evermind — Write-Through Cognition) ────────────────────────────
+export { EvermindCognition, workspacePresenceGatherer } from './cognition/index.js';
+export type {
+    EvermindCognitionOptions,
+    WorkspacePresenceRule,
+    Claim,
+    CognitionFactStore,
+    CommitResult,
+    EvidenceContext,
+    EvidenceGatherer,
+    EvidenceResult,
+    Verdict,
+} from './cognition/index.js';
+
 // ── Distillation ──────────────────────────────────────────────────────────────
 export { DistillationEngine } from './distillation/DistillationEngine.js';
 export type {
