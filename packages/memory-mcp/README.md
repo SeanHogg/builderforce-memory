@@ -67,7 +67,7 @@ for await (const msg of query({
 
 The local backend defaults to **lexical (Jaccard)** recall. For SSM-embedding
 cosine recall, pass an SSM runtime — e.g. reuse the agent-runtime's already-loaded
-hippocampus instead of standing up a second model:
+Evermind runtime instead of standing up a second model:
 
 ```ts
 const backend = await createLocalMemoryStoreBackend({ runtime: ssmMemoryService.runtime });

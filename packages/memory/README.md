@@ -438,7 +438,7 @@ No logic changes are required, only the import path.
 
 ## BuilderForce Agents Integration
 
-@seanhogg/builderforce-memory serves as the **hippocampus** layer of [BuilderForce Agents](https://builderforce.ai)'s gateway — a persistent semantic memory and local inference engine running alongside the frontier LLM (Claude/GPT) cortex.
+@seanhogg/builderforce-memory is the runtime behind **Evermind** in [BuilderForce Agents](https://builderforce.ai)'s gateway. It runs the SSM as a full generative model — not memory-only: a request pinned to a published Evermind model is served here, on-device, instead of being forwarded to an external frontier vendor. It also provides the write-through knowledge memory and recall that ride alongside generation, so a corrected fact stays corrected across sessions. External frontier models (Claude/GPT) remain routable when you want them, but they are no longer the required cortex.
 
 The `SsmMemoryService` class in BuilderForce Agents's `src/infra/ssm-memory-service.ts` wraps an `SSMRuntime` + `SSMAgent` + `MemoryStore` triplet:
 

@@ -81,7 +81,7 @@ export interface LocalBackendOptions {
     /**
      * Optional SSMRuntime for embedding-based recall. Omit for lexical (Jaccard)
      * recall. In the agent-runtime, pass `ssmMemoryService.runtime` here to reuse
-     * the already-loaded hippocampus instead of standing up a second model.
+     * the already-loaded Evermind runtime instead of standing up a second model.
      */
     runtime?: unknown;
     /**
