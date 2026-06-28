@@ -26,16 +26,44 @@ export const AGENTIC_SEVEN_LAYER: WorkflowConfig = {
   ],
 };
 
-/** Create your own LLM: train a tokenizer + model on a corpus, evaluate, package. */
+/**
+ * Generic default corpus so "Create an LLM" runs out-of-the-box. A real run
+ * passes the user's own text as the `corpus` param on the train steps — the
+ * pipeline is domain-agnostic (resume tailoring, support replies, code, prose…).
+ * Distinct sentences keep the dataset-quality duplicate-ratio gate happy.
+ */
+const DEFAULT_CORPUS = [
+  "BuilderForce orchestrates many agents through a planning loop.",
+  "The memory layer stores facts as SSM embeddings for fast recall.",
+  "Deployment runs on Cloudflare Workers and Durable Objects.",
+  "Tools are gated by a capability registry the planner consults.",
+  "Write-through cognition replaces a fact instead of appending a new copy.",
+  "Retrieval fuses BM25 keyword search with dense semantic scoring.",
+  "The runtime distills a frontier teacher into the on-device student.",
+  "A workflow compiles into runnable steps and emits an execution timeline.",
+  "Observability captures a span for every step so failures are localized.",
+  "A trained model packages into a portable evermind artifact for serving.",
+].join(" ");
+
+/**
+ * Create your own LLM — the GENERIC foundation pipeline (domain-agnostic).
+ * Train a tokenizer + model on any corpus, with the full diagnostic gates:
+ * dataset quality → train → convergence → evaluate → generation/determinism →
+ * deploy round-trip (packages the trained model and proves the served copy
+ * regenerates identical output). Pass your own text via the `corpus` param.
+ */
 export const TRAIN_LLM: WorkflowConfig = {
   id: "train-llm",
   name: "Create an LLM",
-  description: "Train a custom EvermindLM on your corpus and package it as a portable .evermind artifact.",
+  description: "Train a custom EvermindLM on your corpus, validate it end to end, and package it as a portable .evermind artifact.",
   steps: [
-    { id: "tok", type: "train-tokenizer", params: { numMerges: 80 } },
-    { id: "model", type: "train-model", params: { epochs: 40, dModel: 16, numLayers: 2 } },
+    { id: "tok", type: "train-tokenizer", params: { corpus: DEFAULT_CORPUS, numMerges: 120 } },
+    { id: "data", type: "dataset-quality" },
+    { id: "model", type: "train-model", params: { corpus: DEFAULT_CORPUS, epochs: 50, dModel: 24, numLayers: 2, hiddenDim: 32 } },
+    { id: "converge", type: "convergence" },
     { id: "eval", type: "evaluate" },
-    { id: "pkg", type: "package", params: { name: "my-llm" } },
+    { id: "gen", type: "generate-check" },
+    { id: "pkg", type: "roundtrip", params: { name: "my-llm" } },
   ],
 };
 

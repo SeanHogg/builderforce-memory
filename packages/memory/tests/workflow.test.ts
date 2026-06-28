@@ -26,9 +26,14 @@ describe("workflow — templates + registry", () => {
     expect(getTemplate("nope")).toBeUndefined();
   });
 
-  test("the registry exposes a step-type palette for a builder", () => {
+  test("the registry exposes a step-type palette for a builder (incl. the new diagnostics)", () => {
     const types = defaultStepRegistry.types().map((t) => t.type);
-    expect(types).toEqual(expect.arrayContaining(["foundation", "rag", "train-tokenizer", "train-model", "package"]));
+    expect(types).toEqual(
+      expect.arrayContaining([
+        "foundation", "rag", "train-tokenizer", "train-model", "package",
+        "dataset-quality", "convergence", "generate-check", "roundtrip",
+      ]),
+    );
   });
 
   test("validateWorkflow flags unknown types, duplicate ids, and empty workflows", () => {
@@ -63,13 +68,19 @@ describe("workflow — running", () => {
     expect(r.firstFailure?.error).toMatch(/unknown step type/);
   });
 
-  test("Create-an-LLM workflow trains + packages a deployable model (text I/O)", async () => {
-    const r = await runWorkflow(TRAIN_LLM, {
-      // keep the test quick
-      registry: defaultStepRegistry,
-    });
+  test("Create-an-LLM runs the full generic diagnostic pipeline and ships a deployable model", async () => {
+    const r = await runWorkflow(TRAIN_LLM, { registry: defaultStepRegistry });
     if (!r.ok) throw new Error(`broke at step ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
-    expect(r.steps.map((s) => s.id)).toEqual(["tok", "model", "eval", "pkg"]);
+    // Generic foundation: dataset gate → train → convergence → eval → generation → deploy round-trip.
+    expect(r.steps.map((s) => s.id)).toEqual(["tok", "data", "model", "converge", "eval", "gen", "pkg"]);
+    expect(r.steps.every((s) => s.status === "pass")).toBe(true);
+
+    // The new diagnostics actually asserted something meaningful:
+    const byId = Object.fromEntries(r.steps.map((s) => [s.id, s]));
+    expect(byId.data!.detail).toMatch(/words/);          // dataset quality measured the corpus
+    expect(byId.converge!.detail).toMatch(/→/);          // convergence saw loss drop
+    expect(byId.gen!.detail).toMatch(/deterministic/);   // generation reproducible
+    expect(byId.pkg!.detail).toMatch(/matches/);         // served == trained (deploy round-trip)
 
     // The workflow OUTPUT is a portable .evermind artifact + its tokenizer.
     const blob = r.artifacts.evermind as ArrayBuffer;
@@ -78,12 +89,36 @@ describe("workflow — running", () => {
     expect(tokDesc.vocab).toBeDefined();
 
     // "Deploy" the created LLM: reconstruct model + tokenizer and generate text.
-    const model = EvermindModelPackage.fromBlob(blob).loadLM();
+    const served = EvermindModelPackage.fromBlob(blob);
+    expect(served.validate().ok).toBe(true);
+    const model = served.loadLM();
     const tok = new BPETokenizer();
     tok.loadFromObjects(tokDesc.vocab, tokDesc.merges);
-    const text = model.generateText("The", tok, { maxNewTokens: 4, temperature: 0 });
-    expect(typeof text).toBe("string");
-  }, 20000);
+    expect(typeof model.generateText("The", tok, { maxNewTokens: 4, temperature: 0 })).toBe("string");
+  }, 30000);
+
+  test("dataset-quality GATE rejects a degenerate corpus before wasting epochs", async () => {
+    const r = await runWorkflow({
+      id: "tiny", name: "tiny",
+      steps: [
+        { id: "tok", type: "train-tokenizer", params: { corpus: "a. a.", numMerges: 5 } },
+        { id: "data", type: "dataset-quality" },
+        { id: "model", type: "train-model" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.firstFailure?.id).toBe("data");
+    expect(r.firstFailure?.error).toMatch(/too small|too few|repetitive/);
+  });
+
+  test("convergence diagnostic guards a missing training history", async () => {
+    const r = await runWorkflow({
+      id: "noconv", name: "noconv",
+      steps: [{ id: "converge", type: "convergence" }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.firstFailure?.error).toMatch(/no training history/);
+  });
 
   test("a CUSTOM workflow (cloned + edited) trains a model with custom params", async () => {
     const custom = cloneTemplate("train-llm", {

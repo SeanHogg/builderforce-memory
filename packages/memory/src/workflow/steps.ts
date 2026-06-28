@@ -193,6 +193,9 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         const epochs = pNum(cfg, "epochs", 40);
         const history = new EvermindLMTrainer(model, { lr: pNum(cfg, "lr", 0.03), epochs }).fit(sequences);
         ctx.bag.model = model;
+        // Surface the loss curve so a `convergence` diagnostic / observability can
+        // assert training actually worked (it was previously discarded).
+        ctx.bag.trainingHistory = history;
         const last = history.at(-1) ?? 0;
         return `trained ${epochs} epochs over ${sequences.length} seqs, loss ${last.toFixed(3)}`;
       }),
@@ -209,6 +212,94 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         if (typeof out !== "string") throw new Error("evaluation generation failed");
         ctx.bag.sample = out;
         return `sample: "${out.slice(0, 40)}"`;
+      }),
+  },
+  "dataset-quality": {
+    info: { type: "dataset-quality", layer: "BUILD", label: "Dataset quality", description: "Validate the corpus is trainable before spending epochs (params: minSequences, minWords, maxDuplicateRatio)" },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Dataset quality gate", async (ctx) => {
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        if (!tok) throw new Error("no tokenizer — add a 'train-tokenizer' step first");
+        const corpus = pStr(cfg, "corpus", (ctx.bag.corpus as string) ?? "");
+        const words = corpus.trim().split(/\s+/).filter(Boolean).length;
+        const sequences = corpusToSequences(corpus, tok);
+        const seqLens = sequences.map((s) => s.length);
+        const avgSeqLen = seqLens.length ? seqLens.reduce((a, b) => a + b, 0) / seqLens.length : 0;
+        const uniqueSeqs = new Set(sequences.map((s) => s.join(","))).size;
+        const duplicateRatio = sequences.length ? 1 - uniqueSeqs / sequences.length : 1;
+
+        const minSequences = pNum(cfg, "minSequences", 3);
+        const minWords = pNum(cfg, "minWords", 20);
+        const maxDuplicateRatio = pNum(cfg, "maxDuplicateRatio", 0.7);
+
+        const metrics = { words, sequences: sequences.length, avgSeqLen: Number(avgSeqLen.toFixed(1)), duplicateRatio: Number(duplicateRatio.toFixed(2)) };
+        ctx.bag.datasetMetrics = metrics;
+
+        if (words < minWords) throw new Error(`corpus too small: ${words} words < ${minWords}`);
+        if (sequences.length < minSequences) throw new Error(`too few trainable sequences: ${sequences.length} < ${minSequences} (need more sentences)`);
+        if (duplicateRatio > maxDuplicateRatio) throw new Error(`corpus too repetitive: ${(duplicateRatio * 100) | 0}% duplicate sequences > ${(maxDuplicateRatio * 100) | 0}%`);
+        return `${words} words, ${sequences.length} seqs (avg ${metrics.avgSeqLen} tok), ${(duplicateRatio * 100) | 0}% dup`;
+      }),
+  },
+  convergence: {
+    info: { type: "convergence", layer: "BUILD", label: "Convergence", description: "Assert the model actually learned — training loss decreased (params: minDrop)" },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Training convergence", async (ctx) => {
+        const history = ctx.bag.trainingHistory as number[] | undefined;
+        if (!history || history.length === 0) throw new Error("no training history — run 'train-model' first");
+        const first = history[0]!;
+        const last = history.at(-1)!;
+        if (!Number.isFinite(first) || !Number.isFinite(last)) throw new Error(`loss is not finite (first=${first}, last=${last}) — training diverged`);
+        const minDrop = pNum(cfg, "minDrop", 0); // require at least this absolute loss drop
+        if (last >= first - minDrop) throw new Error(`loss did not decrease: ${first.toFixed(3)} → ${last.toFixed(3)} (model did not learn — raise epochs/lr)`);
+        ctx.bag.converged = true;
+        return `loss ${first.toFixed(3)} → ${last.toFixed(3)} (−${(first - last).toFixed(3)})`;
+      }),
+  },
+  "generate-check": {
+    info: { type: "generate-check", layer: "BUILD", label: "Generation check", description: "Validate the model generates non-empty, reproducible text (params: prompt, seed, temperature)" },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Generation quality + determinism", async (ctx) => {
+        const model = ctx.bag.model as EvermindLM | undefined;
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        if (!model || !tok) throw new Error("no trained model — add 'train-model' first");
+        const prompt = pStr(cfg, "prompt", "The");
+        const maxNewTokens = pNum(cfg, "maxNewTokens", 8);
+        const seed = pNum(cfg, "seed", 1234);
+        const temperature = pNum(cfg, "temperature", 0.8);
+        // Same seed + temperature MUST reproduce — serving relies on it.
+        const a = model.generateText(prompt, tok, { maxNewTokens, temperature, seed });
+        const b = model.generateText(prompt, tok, { maxNewTokens, temperature, seed });
+        if (a !== b) throw new Error("sampling is non-deterministic for a fixed seed — serving would be unreproducible");
+        const greedy = model.generateText(prompt, tok, { maxNewTokens, temperature: 0 });
+        if (typeof greedy !== "string" || greedy.trim().length === 0) throw new Error("model produced empty output");
+        ctx.bag.sample = greedy;
+        return `deterministic@seed ${seed}; sample "${greedy.slice(0, 40)}"`;
+      }),
+  },
+  roundtrip: {
+    info: { type: "roundtrip", layer: "BUILD", label: "Deploy round-trip", description: "Package the TRAINED model → load → generate; output must match (the real serve smoke test)" },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Deploy round-trip (.evermind)", async (ctx) => {
+        const model = ctx.bag.model as EvermindLM | undefined;
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        if (!model || !tok) throw new Error("no trained model — add 'train-model' first");
+        const prompt = pStr(cfg, "prompt", "The");
+        const maxNewTokens = pNum(cfg, "maxNewTokens", 6);
+        const before = model.generateText(prompt, tok, { maxNewTokens, temperature: 0 });
+        const blob = EvermindModelPackage.fromLM(model, {
+          name: pStr(cfg, "name", "custom-evermind"),
+          version: pStr(cfg, "version", "1.0.0"),
+          card: { description: pStr(cfg, "description", "round-trip validated model") },
+        }).toBlob();
+        const pkg = EvermindModelPackage.fromBlob(blob);
+        const v = pkg.validate();
+        if (!v.ok) throw new Error(`packaged artifact failed validation: ${v.errors.join("; ")}`);
+        const after = pkg.loadLM().generateText(prompt, tok, { maxNewTokens, temperature: 0 });
+        if (after !== before) throw new Error("served model produced different output than the trained model");
+        ctx.artifacts.evermind = blob;
+        ctx.artifacts.tokenizer = { vocab: Object.fromEntries(tok.vocab), merges: [...tok.merges.keys()] };
+        return `artifact ${blob.byteLength} bytes; trained vs served output matches`;
       }),
   },
   package: {
