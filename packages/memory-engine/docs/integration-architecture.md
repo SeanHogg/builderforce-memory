@@ -339,7 +339,7 @@ const outputIds      = await model.generate(promptIds, maxTokens);
 
 ## 6. Integration Patterns
 
-### A. Agent Systems (e.g., CoderClaw)
+### A. Agent Systems (e.g., BuilderForce)
 
 Mamba serves as the reasoning core of a software agent. Because the model's state persists across agent steps, it retains the full execution history without injecting transcripts into a prompt.
 

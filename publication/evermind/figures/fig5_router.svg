@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 520" font-family="Georgia, 'Times New Roman', serif">
+  <defs>
+    <marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#222"/></marker>
+  </defs>
+  <rect x="0" y="0" width="820" height="520" fill="#ffffff"/>
+  <text x="410" y="28" font-size="18" text-anchor="middle" font-weight="bold">Cortex / Hippocampus inference router (cheapest-first cascade)</text>
+
+  <!-- input -->
+  <rect x="330" y="50" width="160" height="40" rx="6" fill="#eef2f7" stroke="#222"/>
+  <text x="410" y="75" font-size="13" text-anchor="middle" font-weight="bold">input x</text>
+
+  <!-- decision diamonds helper via polygons -->
+  <!-- D1 no bridge -->
+  <polygon points="410,110 530,150 410,190 290,150" fill="#fde8d6" stroke="#9c4a13"/>
+  <text x="410" y="146" font-size="11.5" text-anchor="middle">bridge</text>
+  <text x="410" y="162" font-size="11.5" text-anchor="middle">available?</text>
+  <line x1="410" y1="90" x2="410" y2="108" stroke="#222" stroke-width="1.6" marker-end="url(#a5)"/>
+
+  <!-- D2 fixed strategy -->
+  <polygon points="410,210 530,250 410,290 290,250" fill="#fde8d6" stroke="#9c4a13"/>
+  <text x="410" y="246" font-size="11.5" text-anchor="middle">fixed</text>
+  <text x="410" y="262" font-size="11.5" text-anchor="middle">strategy?</text>
+  <line x1="410" y1="190" x2="410" y2="208" stroke="#222" stroke-width="1.6" marker-end="url(#a5)"/>
+  <text x="424" y="204" font-size="10" fill="#555">no (auto)</text>
+
+  <!-- D3 complexity -->
+  <polygon points="410,310 540,352 410,394 280,352" fill="#fde8d6" stroke="#9c4a13"/>
+  <text x="410" y="344" font-size="11" text-anchor="middle">complexity pattern</text>
+  <text x="410" y="360" font-size="9.5" text-anchor="middle">"analyze","compare",</text>
+  <text x="410" y="374" font-size="9.5" text-anchor="middle">"step by step" …?</text>
+  <line x1="410" y1="290" x2="410" y2="308" stroke="#222" stroke-width="1.6" marker-end="url(#a5)"/>
+
+  <!-- D4 length -->
+  <polygon points="410,414 530,452 410,490 290,452" fill="#fde8d6" stroke="#9c4a13"/>
+  <text x="410" y="448" font-size="11" text-anchor="middle">|x| &gt; 1200 chars</text>
+  <text x="410" y="464" font-size="9.5" text-anchor="middle">or perplexity &gt; 80?</text>
+  <line x1="410" y1="394" x2="410" y2="412" stroke="#222" stroke-width="1.6" marker-end="url(#a5)"/>
+
+  <!-- SSM terminal -->
+  <rect x="40" y="432" width="190" height="64" rx="8" fill="#e9f6ec" stroke="#1e7a3c" stroke-width="1.6"/>
+  <text x="135" y="458" font-size="14" text-anchor="middle" font-weight="bold" fill="#1e7a3c">→ Hippocampus / SSM</text>
+  <text x="135" y="478" font-size="10" text-anchor="middle">on-device, $0-token</text>
+  <line x1="410" y1="490" x2="232" y2="475" stroke="#1e7a3c" stroke-width="1.5" marker-end="url(#a5)"/>
+  <text x="320" y="498" font-size="10" fill="#1e7a3c">no</text>
+
+  <!-- Transformer terminal -->
+  <rect x="590" y="120" width="200" height="70" rx="8" fill="#e8f0fb" stroke="#1f4e79" stroke-width="1.6"/>
+  <text x="690" y="148" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f4e79">→ Cortex escalation</text>
+  <text x="690" y="168" font-size="10" text-anchor="middle">frontier bridge (Claude/GPT)</text>
+  <text x="690" y="182" font-size="9.5" text-anchor="middle">confidence ∈ [0.85, 0.95]</text>
+
+  <!-- yes edges to transformer -->
+  <g stroke="#1f4e79" stroke-width="1.4" fill="none">
+    <path d="M530,150 L590,150" marker-end="url(#a5)"/>
+    <path d="M530,250 L690,250 L690,192" marker-end="url(#a5)"/>
+    <path d="M540,352 L740,352 L740,192" marker-end="url(#a5)"/>
+    <path d="M530,452 L770,452 L770,192" marker-end="url(#a5)"/>
+  </g>
+  <g font-size="10" fill="#1f4e79">
+    <text x="556" y="144">no bridge → SSM</text>
+    <text x="548" y="244">transformer</text>
+    <text x="560" y="346">yes</text>
+    <text x="560" y="446">yes</text>
+  </g>
+  <!-- correction: no-bridge actually routes SSM; relabel -->
+  <rect x="540" y="132" width="44" height="16" fill="#ffffff"/>
+  <text x="562" y="144" font-size="10" fill="#1e7a3c" text-anchor="middle">no → SSM</text>
+  <path d="M410,130 L150,130 L150,430" stroke="#1e7a3c" stroke-width="1.4" fill="none" marker-end="url(#a5)"/>
+
+  <text x="410" y="512" font-size="10.5" text-anchor="middle" fill="#444">InferenceRouter._decide() · confidence scales with the perplexity margin: min(0.95, 0.5 + (ppl−80)/200)</text>
+</svg>

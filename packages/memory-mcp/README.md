@@ -7,7 +7,7 @@ tool core over a pluggable `MemoryBackend`, three transports:
 |---|---|---|---|
 | **In-process (Claude Agent SDK)** | `createMemoryMcpServer(backend)` | the returned `type:"sdk"` object | the consuming product is TS and runs `@anthropic-ai/claude-agent-sdk` in-process — lowest latency |
 | **stdio** | `runStdio(backend)` / `npx @seanhogg/builderforce-memory-mcp` | `{ type:"stdio", command, args }` | any language / separate process; decouples the SSM+IndexedDB deps from the consumer |
-| **HTTP (Streamable)** | `createMemoryHttpHandler(backend, { authToken })` | `{ type:"http", url, headers }` | multi-tenant / networked (builderforce.ai hosting, remote claws) |
+| **HTTP (Streamable)** | `createMemoryHttpHandler(backend, { authToken })` | `{ type:"http", url, headers }` | multi-tenant / networked (builderforce.ai hosting, remote agents) |
 
 ## Why this saves tokens
 

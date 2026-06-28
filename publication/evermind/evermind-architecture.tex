@@ -1,0 +1,721 @@
+%% Evermind: A Self-Updating On-Device Cognitive Architecture
+%% IEEE Transactions-style manuscript (IEEEtran).
+%% Compile on Overleaf (recommended) or locally with:
+%%   latexmk -pdf evermind-architecture.tex
+%% Figures are supplied as vector SVG in ./figures and included via the `svg`
+%% package (Overleaf runs Inkscape automatically). If your toolchain lacks
+%% Inkscape, convert once:  for f in figures/*.svg; do inkscape "$f" --export-filename="${f%.svg}.pdf"; done
+%% and replace \includesvg{...} with \includegraphics{...}.
+
+\documentclass[journal,onecolumn,11pt]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{svg}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{textcomp}
+
+\setsvg{inkscapepath=svgsubdir}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+
+\DeclareMathOperator{\softplus}{softplus}
+\DeclareMathOperator{\silu}{SiLU}
+\DeclareMathOperator{\rmsnorm}{RMSNorm}
+\DeclareMathOperator{\sgn}{sgn}
+\newcommand{\Abar}{\bar{A}}
+\newcommand{\Bbar}{\bar{B}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\C}{\mathbb{C}}
+
+\begin{document}
+
+\title{Evermind: A Self-Updating, On-Device Cognitive Architecture\\
+Unifying Selective State-Space Generation, Write-Through\\
+Knowledge, and Trainable Affect}
+
+\author{Sean~Hogg%
+\thanks{Manuscript prepared 2026. The author is with Builderforce.ai.
+Correspondence: \texttt{seanhogg@gmail.com}.}%
+\thanks{Reference implementation: the open \texttt{builderforce-memory} package
+family (\texttt{memory-engine}, \texttt{memory}, \texttt{memory-mcp}),
+version~2026.6.32. All equations in this paper are grounded in that source;
+file/line citations are given inline.}}
+
+\markboth{Manuscript --- Builderforce.ai Technical Report, 2026}%
+{Hogg: Evermind --- A Self-Updating On-Device Cognitive Architecture}
+
+\maketitle
+
+\begin{abstract}
+Frontier large language models (LLMs) are \emph{frozen}: their parametric
+knowledge is fixed at a training cutoff, updates require an expensive retrain
+cycle, and bolt-on retrieval grows an append-only store in which stale and
+current facts accumulate under distinct keys until reconciled by hand. We
+present \textbf{Evermind}, a cognitive architecture that treats currency, not
+scale, as the primary design axis. Evermind is organized as three cooperating
+layers that deliberately mirror a coarse neuro-functional decomposition: a
+\emph{cortex} --- a shared-expert hybrid selective state-space model (SSM) that
+performs language generation with linear-time recurrence and supports on-device
+gradient updates; a \emph{hippocampus} --- a write-through knowledge memory
+governed by a reconciliation operator that \emph{replaces beliefs on write}
+rather than appending them; and a \emph{limbic} layer --- a small trainable
+recurrent affect head that modulates generation. We formalize each layer.
+For the cortex we give the selective-scan recurrence, its zero-order-hold and
+exponential-trapezoidal discretizations, and the structured-state-space-duality
+and complex-valued variants, and we prove that the recurrence is a monoid scan
+admitting an $O(L\log L)$-span parallel evaluation. For the hippocampus we define
+\emph{Write-Through Cognition}, prove that it maintains a single-incumbent
+invariant (no reconciliation backlog), and show that a version-token recall
+cache yields $O(1)$ global invalidation on every belief replacement. The system
+runs entirely on WebGPU with zero runtime dependencies and exports to portable
+formats (safetensors, ONNX, GGUF, Hugging Face). We are explicit about
+validation status: the architecture, kernels, reconciliation algorithm, and
+export pipeline are implemented and tested (ONNX logit parity $<\!10^{-5}$
+against the reference forward pass); the comparative \emph{currency},
+\emph{footprint}, and \emph{ownership} theses against frozen LLMs are stated as
+falsifiable hypotheses together with a measurement protocol, and are not yet
+empirically established. We invite replication and adversarial review.
+\end{abstract}
+
+\begin{IEEEkeywords}
+State-space models, Mamba, selective scan, continual learning, retrieval-augmented
+generation, write-through cache, on-device inference, WebGPU, knowledge editing,
+affective computing.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{T}{he} dominant paradigm in language modeling couples a very large
+Transformer~\cite{vaswani2017} with a fixed training corpus. This design buys
+breadth of capability at the cost of \emph{temporal rigidity}: the model's beliefs
+are crystallized at a cutoff date, and the only sanctioned route to a new belief
+is a new training run. Retrieval-augmented generation (RAG)~\cite{lewis2020}
+mitigates the symptom by attaching an external store, but conventional stores are
+\emph{append-only}: a corrected fact is added \emph{alongside} the fact it
+corrects, and the contradiction is deferred to retrieval-time ranking or to a
+manual reconciliation job. The model therefore never truly \emph{learns}; it
+accumulates.
+
+This paper asks a different question. Instead of ``how do we make the largest
+possible frozen model?'', we ask ``what is the smallest coherent system whose
+\emph{knowledge is always current by construction}, that \emph{owns} its own
+generation, and that \emph{fits} inside the runtime where the work happens?''
+Our answer, \textbf{Evermind}, is built on three commitments:
+
+\begin{enumerate}
+\item \textbf{Linear-time, trainable generation.} The generator is a selective
+state-space model~\cite{gu2023mamba,dao2024mamba2}, not an attention stack. Its
+recurrence is linear in sequence length and --- crucially --- it is cheap enough
+to update \emph{online}, on the same device that serves it.
+\item \textbf{Write-through knowledge.} Knowledge update is defined as
+\emph{replacement}, not accumulation. A belief is keyed by a stable subject
+identifier; a new belief about the same subject reconciles against the incumbent
+and supersedes it, so reads are always current and there is no reconciliation
+backlog.
+\item \textbf{On-device, dependency-free execution.} The entire stack runs on
+WebGPU in the browser, on a workstation, or embedded inside an agent, with zero
+runtime dependencies, and exports to portable interchange formats.
+\end{enumerate}
+
+We deliberately frame Evermind as a \emph{systems and architecture} contribution.
+The thesis that an always-current small model can \emph{outperform} a frozen
+frontier model on knowledge-sensitive tasks is attractive but, as of this
+writing, unproven; Section~\ref{sec:eval} states it as a hypothesis and supplies
+a protocol to test it rather than reporting a result we have not earned. What we
+\emph{do} claim, and substantiate, is that the architecture is well-defined,
+internally consistent, implemented, and that its core algorithms have the formal
+properties we prove.
+
+\textbf{Contributions.}
+(i)~A formal specification of a three-layer cognitive architecture
+(Fig.~\ref{fig:arch}) and its inter-layer contracts.
+(ii)~A consolidated mathematical treatment of the hybrid selective-scan cortex
+(S6, SSD, and complex-valued exponential-trapezoidal variants) as implemented,
+with a proof that the recurrence is a monoid scan
+(Proposition~\ref{prop:monoid}).
+(iii)~\emph{Write-Through Cognition}: a formal belief-reconciliation operator,
+a single-incumbent invariant (Theorem~\ref{thm:invariant}), and an $O(1)$
+version-token cache-invalidation scheme (Proposition~\ref{prop:invalidate}).
+(iv)~A perplexity-aware inference router that decides between on-device SSM
+generation and optional frontier escalation, and an online distillation loop
+that uses the frontier model as a teacher.
+(v)~An honest validation account separating what is tested from what is
+hypothesized, with a reproducible evaluation protocol.
+
+\section{Related Work}
+\textbf{State-space sequence models.} Linear state-space layers~\cite{gu2022s4}
+gave $O(L)$ sequence modeling via structured $A$ matrices; Mamba~\cite{gu2023mamba}
+made the dynamics \emph{input-selective} (S6) and introduced a hardware-aware
+parallel scan; Mamba-2~\cite{dao2024mamba2} recast the selective scan as
+structured state-space duality (SSD), exposing a matrix-multiply form. Evermind's
+cortex implements S6, SSD, and a complex-valued MIMO variant with
+exponential-trapezoidal discretization, plus optional attention
+layers~\cite{vaswani2017} in a hybrid schedule akin to Jamba/Zamba.
+
+\textbf{Continual learning and knowledge editing.} Continual learning fights
+catastrophic forgetting~\cite{kirkpatrick2017ewc}; knowledge-editing methods such
+as ROME~\cite{meng2022rome} perform localized parametric edits. Evermind differs
+in \emph{where} currency lives: factual currency is delegated to a write-through
+symbolic memory with explicit replacement semantics, while the parametric cortex
+adapts slowly via selective online distillation, sidestepping the credit-
+assignment fragility of editing weights for every fact.
+
+\textbf{Retrieval augmentation.} RAG~\cite{lewis2020} and dense
+retrieval~\cite{karpukhin2020dpr} attach an external corpus; hybrid lexical/dense
+fusion and rank fusion (RRF)~\cite{cormack2009rrf} and diversity reranking
+(MMR)~\cite{carbonell1998mmr} are standard. Evermind uses these for recall but
+adds the missing \emph{write} discipline: its store is reconciled, not appended.
+
+\textbf{On-device and affective modeling.} WebGPU enables in-browser
+acceleration; we are, to our knowledge, unusual in running SSM training (not just
+inference) on WebGPU with no ML framework dependency. The limbic layer relates to
+affective computing~\cite{picard1997affective}: personality is encoded as fixed
+setpoints and the limbic cell supplies bounded moment-to-moment dynamics.
+
+\section{System Overview}
+\label{sec:overview}
+Fig.~\ref{fig:arch} shows the architecture. A request $x$ enters an
+\emph{inference router} (Section~\ref{sec:router}) that decides whether to serve
+$x$ from the on-device cortex or to escalate to an optional frontier bridge. The
+cortex (Section~\ref{sec:cortex}) generates language; before and during
+generation it \emph{recalls} from and \emph{writes through} to the hippocampus
+(Section~\ref{sec:hippocampus}); the limbic layer (Section~\ref{sec:limbic})
+modulates the response. All three layers are differentiable and trainable on the
+serving device.
+
+\begin{figure*}[t]
+\centering
+\includesvg[width=0.92\textwidth]{figures/fig1_architecture}
+\caption{Evermind's three-layer architecture. The cortex (shared-expert hybrid
+SSM) generates; the hippocampus (write-through memory) supplies and absorbs
+knowledge; the limbic layer modulates affect. The frontier bridge is an optional
+routing target and a distillation teacher, not a runtime dependency.}
+\label{fig:arch}
+\end{figure*}
+
+\textit{Notation.} $d$ is the model width (\texttt{dModel}); $D=ed$ the expanded
+inner width with expansion $e$; $N$ the SSM state dimension (\texttt{dState});
+$L$ the sequence length; $H$ the number of SSM heads; $K$ the causal convolution
+width. Default reference configuration:
+$d{=}512,\ e{=}2\Rightarrow D{=}1024,\ N{=}16,\ K{=}4,\ H{=}4,\ L_{\text{layers}}{=}8$.
+
+\section{The Cortex: A Hybrid Selective State-Space Generator}
+\label{sec:cortex}
+
+\subsection{Selective scan (S6)}
+A single SSM channel maintains a hidden state $h_t\in\R^{N}$ evolving under an
+input-dependent linear recurrence. The continuous-time system
+$\dot h(\tau)=A\,h(\tau)+B\,x(\tau),\ y=C\,h$ is discretized per token with a
+selective step size $\Delta_t$. For numerical stability $A$ is stored in
+log-space as $a=\log(-A)$ so that $A_{\text{cont}}=-\exp(a)<0$. The zero-order-hold
+(ZOH) discretization gives, elementwise,
+\begin{align}
+\Delta_t &= \softplus(\delta_t)=\log\!\big(1+e^{\delta_t}\big),\label{eq:delta}\\
+\Abar_t &= \exp\!\big(\Delta_t\,A_{\text{cont}}\big),\label{eq:Abar}\\
+\Bbar_t &= \frac{\Abar_t-1}{A_{\text{cont}}}\,B_t,\label{eq:Bbar}
+\end{align}
+and the discrete recurrence and readout are
+\begin{align}
+h_t &= \Abar_t\odot h_{t-1} + \Bbar_t\,x_t,\label{eq:rec}\\
+y_t &= C_t^{\top} h_t + D\,x_t,\label{eq:out}
+\end{align}
+where $\odot$ is elementwise (Hadamard) product and $D$ is a learned skip.
+\emph{Selectivity} is that $\Delta_t,B_t,C_t$ are produced from $x_t$ by a
+projection, so the dynamics depend on content. Equations
+\eqref{eq:delta}--\eqref{eq:out} are exactly the kernel in
+\texttt{memory-engine/src/kernels/selective\_scan.ts:5--71}.
+
+\subsection{The block}
+Fig.~\ref{fig:block} gives the block. With input $u\in\R^{d}$ and residual
+stream:
+\begin{align}
+\tilde u &= \rmsnorm(u),\qquad \rmsnorm(u)=\frac{u}{\sqrt{\tfrac1d\sum_i u_i^2+\epsilon}}\odot\gamma,\\
+[x,z] &= W_{\text{in}}\tilde u,\quad x\in\R^{D},\ z\in\R^{D},\\
+x' &= \silu(\mathrm{Conv1d}_K(x)),\quad \silu(v)=v\,\sigma(v),\\
+[\Delta,B,C] &= W_{x}\,x',\quad \Delta=\mathrm{dt\_proj}(\Delta),\\
+y &= \mathrm{SelectiveScan}(x',\Delta,B,C,D)\ \text{via \eqref{eq:rec}--\eqref{eq:out}},\\
+o &= W_{\text{out}}\big(y\odot \silu(z)\big),\qquad u' = u + o.
+\end{align}
+The gate $\silu(z)$ is the standard gated-SSM nonlinearity; $\rmsnorm$ uses no
+mean subtraction. Per-layer parameter tensors and shapes follow
+\texttt{mamba1\_block.ts:125--144}.
+
+\begin{figure*}[t]
+\centering
+\includesvg[width=0.96\textwidth]{figures/fig2_block}
+\caption{Hybrid SSM block (S6). The selective projection produces the
+input-dependent $(\Delta,B,C)$ that drive the scan; $A$ is stored as $\log(-A)$.
+A gated branch $\silu(z)$ modulates the scan output before down-projection and a
+residual add.}
+\label{fig:block}
+\end{figure*}
+
+\subsection{Structured state-space duality (Mamba-2)}
+The SSD variant collapses $A$ to one scalar \emph{per head} and applies a
+chunked scan. With $\Delta_t=\softplus(\delta_t+\delta_{\text{bias}})$ and a
+per-head log rate $A_{\log}$,
+\begin{equation}
+\Abar_t=\exp\!\big(-\softplus(A_{\log})\,\Delta_t\big),\qquad
+h_t=\Abar_t h_{t-1}+B_t x_t,
+\label{eq:ssd}
+\end{equation}
+with readout \eqref{eq:out}. Because $\Abar_t$ is a scalar gate, a length-$L$
+chunk admits the dual matrix form $Y=(\,\mathcal{L}\odot(C B^{\top})\,)X$ where
+$\mathcal{L}_{ij}=\prod_{k=j+1}^{i}\Abar_k$ for $i\ge j$ and $0$ otherwise
+(\texttt{kernels/ssd.ts:80,114}). Grouping of $B,C$ into $G$ groups (default
+$G{=}1$) trades expressivity for memory.
+
+\subsection{Complex-valued MIMO with ET discretization (Mamba-3)}
+The Mamba-3 layer carries a complex state $h_t\in\C^{N/2}$ (stored as
+interleaved real/imaginary pairs), with $A$ parameterized by a log-magnitude and
+a phase, $A=\exp(\rho+i\theta)$. The exponential-trapezoidal (ET) discretization
+uses the exact complex update
+\begin{align}
+\Abar_t&=\exp(\Delta_t\rho)\big(\cos(\Delta_t\theta)+i\sin(\Delta_t\theta)\big),\\
+\Bbar_t&=(\Abar_t-1)\,A^{-1}B_t,\qquad y_t=\Re\!\big(C_t^{\top}h_t\big),
+\label{eq:complex}
+\end{align}
+giving oscillatory eigenmodes (rotations on the unit circle scaled by
+$e^{\Delta\rho}$) that a real diagonal $A$ cannot represent
+(\texttt{kernels/complex\_ssd.ts:70--85}). The output takes the real part.
+
+\subsection{The recurrence is a parallelizable monoid scan}
+Linearity of \eqref{eq:rec} makes the per-channel recurrence an associative
+scan, which is what permits GPU evaluation.
+
+\begin{proposition}[Monoid scan]
+\label{prop:monoid}
+Define on pairs $(a,b)\in\R\times\R$ the operator
+$(a_1,b_1)\circ(a_2,b_2)=(a_1a_2,\ a_1 b_2+b_1)$. Then $\circ$ is associative
+with identity $(1,0)$, and the prefix
+$\big(\,\cdot\,,\,h_t\big)=(a_1,b_1)\circ\cdots\circ(a_t,b_t)$ with
+$a_t=\Abar_t,\ b_t=\Bbar_t x_t$ and $h_0=0$ satisfies \eqref{eq:rec}.
+\end{proposition}
+\begin{proof}
+Associativity: for three pairs, both bracketings give first component
+$a_1a_2a_3$ and second component $a_1a_2b_3+a_1b_2+b_1$; identity is immediate.
+For the prefix, induct on $t$: the partial product up to $t$ equals
+$(\prod_{k\le t}a_k,\ \sum_{k\le t}(\prod_{j>k}a_j)b_k)$, whose second component
+is $a_t\!\sum_{k<t}(\prod_{t>j>k}a_j)b_k+b_t=a_t h_{t-1}+b_t=h_t$.
+\end{proof}
+
+\begin{proposition}[Span--work of evaluation]
+\label{prop:span}
+The states $\{h_t\}_{t=1}^{L}$ can be computed by a Kogge--Stone inclusive scan in
+$\lceil\log_2 L\rceil$ parallel steps (span $O(\log L)$) and $O(L)$ work per
+$(\text{channel},\text{state})$ pair.
+\end{proposition}
+\begin{proof}
+Immediate from Proposition~\ref{prop:monoid} and the standard parallel-prefix
+result for associative operators. The implementation tiles the time axis into
+64-lane workgroups and dispatches over
+$(\lceil D/8\rceil,\lceil N/8\rceil,\text{batch})$
+(\texttt{selective\_scan.ts:74--146}).
+\end{proof}
+Fig.~\ref{fig:scan} depicts the sweep. On commodity GPUs this realizes the
+$O(L)$-work, $O(\log L)$-span profile characteristic of selective SSMs, in
+contrast to the $O(L^2)$ work of dense attention.
+
+\begin{figure}[t]
+\centering
+\includesvg[width=0.48\textwidth]{figures/fig3_scan}
+\caption{The selective recurrence as an associative prefix over pairs $(a,b)$.
+$\lceil\log_2 L\rceil$ sweeps yield all prefix states.}
+\label{fig:scan}
+\end{figure}
+
+\subsection{On-device training and selective fast-adaptation}
+The engine ships a tape-based reverse-mode autograd
+(\texttt{training/autograd.ts}); each forward op records a closure that is
+replayed in reverse to accumulate gradients. The loss is token cross-entropy,
+\begin{equation}
+\mathcal{L}=\frac1L\sum_{t}\Big(\log\textstyle\sum_v e^{z_{t,v}}-z_{t,y_t}\Big),
+\label{eq:ce}
+\end{equation}
+optimized with decoupled-weight-decay AdamW~\cite{loshchilov2019adamw} on the GPU
+(\texttt{kernels/weight\_update.ts}):
+\begin{align}
+m_t&=\beta_1 m_{t-1}+(1-\beta_1)g_t,\;
+v_t=\beta_2 v_{t-1}+(1-\beta_2)g_t^2,\\
+\theta_t&=\theta_{t-1}(1-\eta\lambda)-\eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon},
+\end{align}
+with bias-corrected $\hat m_t,\hat v_t$, defaults
+$\eta{=}10^{-4},\beta_1{=}0.9,\beta_2{=}0.999,\lambda{=}0.01$ and global-norm
+clipping at $1.0$. \textbf{Weight-Selective Layer Adaptation (WSLA)} restricts
+online updates to the selective-projection rows that emit $B$ and $C$, i.e.\ the
+$2GN$ rows of $W_{\text{in}}$ that determine \emph{routing} of content into
+state, freezing the bulk representation (\texttt{mamba2\_block.ts:299--309}).
+This is the mechanism that makes the distillation loop
+(Section~\ref{sec:distill}) cheap enough to run in a few epochs on-device.
+
+\section{The Hippocampus: Write-Through Cognition}
+\label{sec:hippocampus}
+Caching keeps \emph{answers} fresh; Evermind's hippocampus keeps \emph{knowledge}
+fresh. We formalize it as a write-through cache with an explicit conflict
+resolver over beliefs.
+
+\subsection{Beliefs, keys, and the store}
+\begin{definition}[Belief and store]
+A \emph{belief} is a pair $b=(k,c)$ with stable subject key $k\in\mathcal{K}$
+(produced by a canonicalizer, not a per-write identifier) and content
+$c\in\mathcal{C}$, carrying an importance $\iota(b)\in[0,1]$. A \emph{store}
+$\Sigma:\mathcal{K}\rightharpoonup\mathcal{C}$ is a partial map holding at most
+one incumbent content per key.
+\end{definition}
+
+\subsection{The reconciliation operator}
+Every candidate belief passes through one pipeline
+(Fig.~\ref{fig:writethrough}): \emph{canonicalize} $\to$ \emph{recall incumbent}
+$\to$ \emph{evaluate evidence} $\to$ \emph{reconcile} $\to$ \emph{write-through}.
+Let $\sigma=\Sigma(k)$ be the incumbent (possibly $\bot$) and let
+$\varepsilon\in\{\textsc{supportsNew},\neg\textsc{supportsNew}\}$ be an evidence
+verdict from an optional gatherer. The reconciliation operator
+$V$ returns a verdict and the post-state $\Sigma'$:
+\begin{equation}
+V(k,c,\sigma,\varepsilon)=
+\begin{cases}
+\textsf{augment}, & \sigma=\bot,\ \iota\!\leftarrow\!0.6\\[2pt]
+\textsf{confirm}, & \sigma=c,\ \iota\!\leftarrow\!\min(1,\iota{+}0.1)\\[2pt]
+\textsf{supersede}, & \sigma\neq c,\ \varepsilon{=}\textsc{supportsNew},\\
+ & \quad \iota\!\leftarrow\!\max(0.9,\iota)\\[2pt]
+\textsf{reject}, & \sigma\neq c,\ \varepsilon{=}\neg\textsc{supportsNew}
+\end{cases}
+\label{eq:verdict}
+\end{equation}
+The write rule is
+\begin{equation}
+\Sigma'(k)=
+\begin{cases}
+c, & V\in\{\textsf{augment},\textsf{supersede}\}\\
+\sigma, & V\in\{\textsf{confirm},\textsf{reject}\}
+\end{cases}
+\label{eq:writerule}
+\end{equation}
+This is \texttt{EvermindCognition.commit()}
+(\texttt{memory/src/cognition/EvermindCognition.ts:80--116}).
+
+\begin{figure*}[t]
+\centering
+\includesvg[width=0.92\textwidth]{figures/fig4_writethrough}
+\caption{Write-Through Cognition. Each candidate fact is canonicalized to a
+stable subject key, reconciled against the single incumbent, and written through;
+\textsf{augment} and \textsf{supersede} bump a global version token that
+invalidates the recall cache in $O(1)$.}
+\label{fig:writethrough}
+\end{figure*}
+
+\subsection{Single-incumbent invariant}
+\begin{theorem}[No reconciliation backlog]
+\label{thm:invariant}
+For any finite sequence of commits applied to an initially empty store via
+\eqref{eq:verdict}--\eqref{eq:writerule}, at every step $\Sigma$ holds at most one
+content per key, and for each key $k$ the retained content is that of the most
+recent \textsf{augment}/\textsf{supersede} on $k$ (or $\bot$ if none).
+Consequently no two contents are ever simultaneously held under the same key.
+\end{theorem}
+\begin{proof}
+$\Sigma$ is a partial \emph{function}, so by construction it maps each $k$ to at
+most one content. The retained-content claim is an induction on commits: the
+empty store satisfies it vacuously; \eqref{eq:writerule} only ever overwrites
+$\Sigma(k)$ (on \textsf{augment}/\textsf{supersede}) or leaves it unchanged (on
+\textsf{confirm}/\textsf{reject}), so after each step $\Sigma(k)$ equals the
+content of the last overwriting commit on $k$. No append operation exists in
+\eqref{eq:writerule}, hence two contents never co-exist under one key.
+\end{proof}
+Theorem~\ref{thm:invariant} is the precise sense in which Evermind ``corrects in
+place'': unlike an append-only RAG store, a superseded fact is \emph{gone}, not
+merely outranked, so retrieval cannot resurface it.
+
+\subsection{Version-token recall cache}
+Reads are served through a read-through cache keyed by a monotone version token.
+\begin{proposition}[$O(1)$ global invalidation]
+\label{prop:invalidate}
+Let the recall cache key be $\kappa=\langle \nu \parallel \text{topK} \parallel
+q\rangle$ where $\nu\in\mathbb{N}$ is a global version counter incremented on
+every \textsf{augment}/\textsf{supersede}. Then a single increment
+$\nu\leftarrow\nu+1$ invalidates \emph{all} previously cached recalls in $O(1)$
+time and $O(1)$ additional space, with no per-entry traversal.
+\end{proposition}
+\begin{proof}
+After the increment, every previously stored key embeds the stale token
+$\nu-1\neq\nu$, so no subsequent lookup (which embeds $\nu$) can match a stale
+entry; stale entries are never read again and are reclaimed lazily. The counter
+update is constant-time.
+\end{proof}
+This is \texttt{\_bumpVersion()} /\ the namespaced \texttt{recall()} cache
+(\texttt{EvermindCognition.ts:54--145}). The cache thus never serves a recall
+that predates the most recent belief replacement: \emph{reads are always
+current}.
+
+\subsection{Hybrid recall}
+\label{sec:recall}
+Retrieval (Fig.~\ref{fig:retrieval}) fuses a dense and a sparse ranker. Dense
+similarity is cosine over $L_2$-normalized SSM embeddings,
+\begin{equation}
+\mathrm{sim}(q,d)=\frac{\langle q,d\rangle}{\lVert q\rVert\,\lVert d\rVert}\in[-1,1],
+\label{eq:cos}
+\end{equation}
+(\texttt{similarity/index.ts:32--42}; a Jaccard token-overlap fallback is used
+when embeddings are unavailable). Sparse ranking is Okapi BM25,
+\begin{equation}
+\mathrm{BM25}(q,d)=\sum_{t\in q}\mathrm{idf}(t)\,
+\frac{f_{t,d}(k_1{+}1)}{f_{t,d}+k_1\!\big(1-b+b\frac{|d|}{\overline{|d|}}\big)},
+\label{eq:bm25}
+\end{equation}
+$\mathrm{idf}(t)=\log\!\big(1+\frac{N-n_t+0.5}{n_t+0.5}\big)$, with
+$k_1{=}1.5,\ b{=}0.75$ (\texttt{retrieval/bm25.ts}). The two rankings are merged by
+reciprocal rank fusion,
+\begin{equation}
+\mathrm{RRF}(d)=\sum_{\ell}\frac{w_\ell}{k+\mathrm{rank}_\ell(d)},\quad k=60,
+\label{eq:rrf}
+\end{equation}
+and the top candidates are diversified by maximal marginal relevance,
+\begin{equation}
+\mathrm{MMR}(d)=\lambda\,\mathrm{sim}(q,d)-(1-\lambda)\max_{s\in S}\mathrm{sim}(d,s),
+\quad \lambda=0.7,
+\label{eq:mmr}
+\end{equation}
+(\texttt{retrieval/fusion.ts}). Recall returns a hard-capped top-$K$ (default
+$5$) with truncated content, so memory \emph{lowers} rather than inflates prompt
+size --- a deliberate token-economy property of the MCP surface.
+
+\begin{figure}[t]
+\centering
+\includesvg[width=0.48\textwidth]{figures/fig6_retrieval}
+\caption{Hybrid recall: cosine dense ranking \eqref{eq:cos} and BM25 sparse
+ranking \eqref{eq:bm25} fused by RRF \eqref{eq:rrf} and diversified by MMR
+\eqref{eq:mmr}.}
+\label{fig:retrieval}
+\end{figure}
+
+\section{The Limbic Layer}
+\label{sec:limbic}
+The limbic head (Fig.~\ref{fig:limbic}) is a small gated recurrent cell that maps
+an experience embedding $x\in\R^{32}$ and an affective state $s\in\R^{8}$ to a
+bounded affect delta and a scalar reward estimate. With hidden $h\in\R^{16}$ and
+per-channel gate $a=\sigma(A)$,
+\begin{align}
+\text{pre}&=W_x x + W_s s,\\
+h' &= a\odot h + (1-a)\odot\tanh(\text{pre}),\label{eq:limrec}\\
+\Delta s &= \tanh(W_o h' + b_o)\in(-1,1)^8,\quad
+\hat r = w_r^\top h' + b_r.
+\end{align}
+Equation~\eqref{eq:limrec} is a gated leaky integrator: $a$ controls how much
+prior affect persists versus how much new experience is admitted
+(\texttt{memory-engine/src/limbic/limbic\_model.ts:14--18}). \emph{Personality}
+is encoded as fixed setpoints (the persona's baseline $s$); the limbic cell
+supplies the dynamics \emph{around} those setpoints. Training minimizes a mean
+squared error on observed $(\Delta s,r)$ targets with truncated BPTT(1) and AdamW
+($\eta{=}0.05$) (\texttt{limbic\_trainer.ts:107--150}).
+
+\begin{figure}[t]
+\centering
+\includesvg[width=0.48\textwidth]{figures/fig7_limbic}
+\caption{The limbic recurrent affect cell: a gated leaky integrator producing a
+bounded affect delta and a reward estimate.}
+\label{fig:limbic}
+\end{figure}
+
+\section{Inference Routing}
+\label{sec:router}
+The router (Fig.~\ref{fig:router}) decides between on-device SSM generation and
+optional frontier escalation by a cheapest-first cascade
+(\texttt{router/InferenceRouter.ts:149--200}): (1) if no bridge is configured,
+serve from the SSM with confidence $1$; (2) honor a fixed strategy if set;
+otherwise (3) escalate on a syntactic complexity pattern (e.g.\ ``analyze'',
+``compare'', ``step by step'') with confidence $0.9$; (4) escalate if
+$|x|>1200$ characters (confidence $0.85$); (5) run an optional perplexity probe
+and escalate if SSM perplexity exceeds a threshold $\tau{=}80$, with confidence
+\begin{equation}
+\min\!\big(0.95,\ 0.5+(\mathrm{ppl}-\tau)/200\big).
+\label{eq:routerconf}
+\end{equation}
+The default terminal is the SSM. Because the most expensive test (the perplexity
+probe) runs last and only when the cheap syntactic tests are inconclusive, the
+expected routing cost is dominated by string predicates. Note that $\tau$ is a
+\emph{tuning} threshold, not a measured benchmark.
+
+\begin{figure}[t]
+\centering
+\includesvg[width=0.46\textwidth]{figures/fig5_router}
+\caption{The cheapest-first routing cascade. The SSM is the default terminal;
+the frontier bridge is reached only when cheap predicates or a perplexity probe
+indicate the on-device model is out of distribution.}
+\label{fig:router}
+\end{figure}
+
+\section{Online Distillation}
+\label{sec:distill}
+When the router escalates, the frontier response is not merely returned --- it is
+treated as a teacher signal that adapts the cortex
+(\texttt{distillation/DistillationEngine.ts:117--209}). Given prompt $x$ and
+teacher output $\hat y=\mathrm{Teacher}(x)$, the student trains on the
+concatenation $x\Vert\hat y$ under the language-model objective \eqref{eq:ce},
+with WSLA enabled and a few epochs (default $3$). Two quality gates protect the
+update: a minimum-length gate (skip degenerate teacher output) and a
+\emph{maxPerplexity} gate that skips training when the SSM's perplexity on
+$\hat y$ is already below threshold --- i.e.\ when the student has \emph{already
+learned} the pattern. The adapted weights persist to disk/IndexedDB checkpoints,
+closing an online learning loop without a separate retrain stage. We emphasize
+that convergence behavior of this loop is characterized qualitatively here;
+quantitative learning curves are future work (Section~\ref{sec:eval}).
+
+\section{Implementation and Portability}
+\label{sec:impl}
+The engine (\texttt{@seanhogg/builderforce-memory-engine}) is TypeScript + WGSL
+with \emph{zero runtime dependencies}; kernels are compute shaders dispatched
+over storage buffers in row-major layout with 64--256-lane workgroups. The
+runtime (\texttt{@seanhogg/builderforce-memory}) adds session management,
+routing, distillation, and the memory store; an MCP package exposes the runtime
+to any client over in-process, stdio, or HTTP transports. Checkpoints use a
+compact binary container (magic \texttt{0x4D424A53}, versioned, per-layer type
+tags, then concatenated \texttt{float32}/\texttt{float16} tensors). The model
+exports to safetensors, ONNX, GGUF, and a complete Hugging Face repo bundle
+(\texttt{memory-engine/src/export}). ONNX numerical parity against the reference
+forward pass is verified separately to $<\!10^{-5}$ in logits; format round-trips
+(named-tensor extraction, header/offset integrity, tokenizer mirror) are covered
+by unit tests.
+
+\section{Validation Status and Evaluation Protocol}
+\label{sec:eval}
+We separate, deliberately and explicitly, \emph{what is implemented and tested}
+from \emph{what is hypothesized}. Conflating the two is the failure mode this
+section exists to prevent.
+
+\subsection{What is established}
+Table~\ref{tab:status} summarizes. The architecture, the three SSM kernel
+families, the autograd/optimizer, the reconciliation operator with its proven
+invariants (Theorems/Propositions above), the routing cascade, the distillation
+loop, and the export pipeline are implemented and unit-tested; ONNX export
+matches the reference forward to $<\!10^{-5}$.
+
+\begin{table}[t]
+\caption{Validation status of Evermind components.}
+\label{tab:status}
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Component & Status & Evidence \\
+\midrule
+S6 / SSD / complex kernels & implemented & forward/backward + ONNX parity $<10^{-5}$\\
+Autograd + AdamW + WSLA & implemented & training tests \\
+Write-Through reconciliation & implemented + proven & Thm.~\ref{thm:invariant}, Prop.~\ref{prop:invalidate} \\
+Hybrid recall (cos/BM25/RRF/MMR) & implemented & retrieval tests \\
+Limbic cell & implemented & MSE training harness \\
+Router cascade & implemented & unit tests \\
+Online distillation loop & implemented & integration path \\
+Export (safetensors/ONNX/GGUF/HF) & implemented + tested & round-trip tests \\
+\midrule
+Currency vs.\ frozen LLM & \textbf{hypothesis} & protocol \S\ref{sec:protocol} \\
+Quality/perplexity vs.\ frontier & \textbf{hypothesis} & protocol \S\ref{sec:protocol} \\
+Distillation convergence curves & \textbf{future work} & --- \\
+Affective-behavior validity & \textbf{future work} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Falsifiable hypotheses}
+\begin{itemize}
+\item[\textbf{H1} (Currency).] On a stream of time-stamped factual updates, an
+Evermind hippocampus answers post-update queries with strictly lower staleness
+(fraction of answers reflecting superseded facts) than an append-only RAG
+baseline of equal retrieval budget, and than a frozen LLM.
+\item[\textbf{H2} (Footprint).] The end-to-end stack sustains interactive
+generation on commodity WebGPU hardware within a memory budget an order of
+magnitude below a frontier-class served model, at a stated quality operating
+point.
+\item[\textbf{H3} (Adaptation).] The WSLA online-distillation loop reduces SSM
+perplexity on teacher-distribution prompts monotonically over epochs without
+catastrophic degradation on a held-out general set.
+\end{itemize}
+
+\subsection{Measurement protocol}
+\label{sec:protocol}
+\textbf{H1}: construct a temporal knowledge benchmark of $(k, c_{\text{old}}\!\to
+c_{\text{new}}, t)$ edits; after applying each edit, query both the subject and
+$m$ paraphrases; report \emph{staleness rate}, \emph{contradiction rate} (two
+live answers disagree), and \emph{edit latency}. Compare Evermind write-through,
+append-only dense RAG, and a frozen LLM. Theorem~\ref{thm:invariant} predicts an
+Evermind contradiction rate of $0$ by construction --- a directly falsifiable
+claim. \textbf{H2}: report peak GPU memory, tokens/s, and time-to-first-token at
+matched perplexity on WikiText-style held-out text across model widths
+$d\in\{256,512,768\}$. \textbf{H3}: report per-epoch teacher-prompt perplexity
+and held-out general perplexity for WSLA vs.\ full fine-tune. All three are
+reproducible from the open packages; we release the harness skeleton with this
+report and invite independent replication. Until these are run, H1--H3 remain
+\emph{conjectures}, and we make no comparative performance claim.
+
+\section{Discussion, Limitations, and Threats to Validity}
+The most important limitation is the one Section~\ref{sec:eval} foregrounds: the
+comparative advantages that motivate Evermind are \emph{architecturally
+plausible and partly provable} (the zero-contradiction property follows from
+Theorem~\ref{thm:invariant}) but \emph{not yet empirically measured at scale}.
+Specific threats: (i)~recall quality depends on embedding quality, and the
+headless path currently falls back to lexical overlap when SSM embeddings are
+absent; (ii)~the canonicalizer that produces subject keys is itself a model and a
+source of error --- a mis-canonicalization splits or merges subjects and can
+defeat the single-incumbent invariant at the \emph{key-assignment} boundary even
+though the store-level invariant holds; (iii)~WSLA's restriction to selective-
+projection rows trades adaptation capacity for speed, and its sufficiency is an
+empirical question; (iv)~WebGPU availability and driver variance bound
+portability in practice. We regard these as the agenda, not as objections to the
+architecture's coherence.
+
+\section{Conclusion}
+We presented Evermind, a three-layer cognitive architecture in which a linear-time
+selective state-space cortex generates, a write-through hippocampus keeps
+knowledge current by construction, and a trainable limbic layer modulates affect,
+all on-device with zero runtime dependencies. We gave a unified mathematical
+account of the SSM cortex, proved that its recurrence is a parallelizable monoid
+scan, and formalized Write-Through Cognition with a single-incumbent invariant
+and $O(1)$ cache invalidation. We have been deliberate in separating proven and
+implemented properties from the performance hypotheses that remain to be tested,
+and we supply a protocol to test them. We hope the formalization and the open
+implementation make Evermind a useful object of study --- and an easy target for
+falsification --- for the community.
+
+\section*{Reproducibility}
+All equations cite source files in the open \texttt{builderforce-memory}
+package family (engine/runtime/MCP), version 2026.6.32. Figures are provided as
+vector SVG. The evaluation-protocol skeleton (\S\ref{sec:protocol}) accompanies
+this report.
+
+\begin{thebibliography}{99}
+\bibitem{vaswani2017} A.~Vaswani \emph{et al.}, ``Attention is all you need,''
+\emph{NeurIPS}, 2017.
+\bibitem{lewis2020} P.~Lewis \emph{et al.}, ``Retrieval-augmented generation for
+knowledge-intensive NLP tasks,'' \emph{NeurIPS}, 2020.
+\bibitem{gu2022s4} A.~Gu, K.~Goel, and C.~R\'e, ``Efficiently modeling long
+sequences with structured state spaces,'' \emph{ICLR}, 2022.
+\bibitem{gu2023mamba} A.~Gu and T.~Dao, ``Mamba: Linear-time sequence modeling
+with selective state spaces,'' \emph{arXiv:2312.00752}, 2023.
+\bibitem{dao2024mamba2} T.~Dao and A.~Gu, ``Transformers are SSMs: Generalized
+models and efficient algorithms through structured state space duality,''
+\emph{ICML}, 2024.
+\bibitem{kirkpatrick2017ewc} J.~Kirkpatrick \emph{et al.}, ``Overcoming
+catastrophic forgetting in neural networks,'' \emph{PNAS}, 2017.
+\bibitem{meng2022rome} K.~Meng \emph{et al.}, ``Locating and editing factual
+associations in GPT,'' \emph{NeurIPS}, 2022.
+\bibitem{karpukhin2020dpr} V.~Karpukhin \emph{et al.}, ``Dense passage retrieval
+for open-domain question answering,'' \emph{EMNLP}, 2020.
+\bibitem{cormack2009rrf} G.~V.~Cormack, C.~L.~A.~Clarke, and S.~B\"uttcher,
+``Reciprocal rank fusion outperforms Condorcet and individual rank learning
+methods,'' \emph{SIGIR}, 2009.
+\bibitem{carbonell1998mmr} J.~Carbonell and J.~Goldstein, ``The use of MMR,
+diversity-based reranking for reordering documents and producing summaries,''
+\emph{SIGIR}, 1998.
+\bibitem{picard1997affective} R.~W.~Picard, \emph{Affective Computing}. MIT
+Press, 1997.
+\bibitem{loshchilov2019adamw} I.~Loshchilov and F.~Hutter, ``Decoupled weight
+decay regularization,'' \emph{ICLR}, 2019.
+\end{thebibliography}
+
+\end{document}
