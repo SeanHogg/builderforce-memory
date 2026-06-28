@@ -35,6 +35,34 @@ The layered stack:
 | Online distillation          | ✅     |
 | Persistent semantic memory   | ✅     |
 | Agent workflows              | ✅     |
+| Create-an-LLM pipeline + diagnostics | ✅ |
+
+---
+
+## Create an LLM (workflow + diagnostics)
+
+The `TRAIN_LLM` workflow trains a custom `EvermindLM` on **any** corpus and packages
+it as a portable `.evermind` artifact — domain-agnostic (resume tailoring, support
+replies, code, prose). Every run is gated by built-in diagnostics so a broken model
+never ships:
+
+```ts
+import { runWorkflow, TRAIN_LLM } from '@seanhogg/builderforce-memory';
+
+const r = await runWorkflow(TRAIN_LLM); // or cloneTemplate('train-llm', { steps: [...] })
+const artifact = r.artifacts.evermind;  // ArrayBuffer → ship + serve
+```
+
+Generic build step types (compose your own pipeline via the step registry):
+
+| Step | What it validates |
+|------|-------------------|
+| `train-tokenizer` | Learns a BPE vocab from your corpus |
+| `dataset-quality` | Gates corpus size / sequence count / duplicate ratio **before** spending epochs |
+| `train-model` | Trains the `EvermindLM` (exposes the loss curve on `ctx.bag.trainingHistory`) |
+| `convergence` | Asserts training loss actually decreased (the model learned) |
+| `evaluate` / `generate-check` | Output is non-empty **and** seed-reproducible |
+| `roundtrip` | Packages the trained model → loads → generates; served output must match trained |
 
 ---
 
