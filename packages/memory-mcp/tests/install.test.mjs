@@ -2,7 +2,7 @@
 // HostEnv so nothing touches a real machine. Run with `node --test` against dist.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { installMemoryServer, HOSTS } from "../dist/index.js";
+import { installMemoryServer, HOSTS, installClaudeCombo, bfmemHookSource } from "../dist/index.js";
 
 /**
  * Minimal in-memory filesystem implementing the installer's FsLike seam.
@@ -103,6 +103,46 @@ test("preserves existing servers in a host config", () => {
 
 test("unknown host id throws", () => {
     assert.throws(() => installMemoryServer({ hosts: ["nope"], fs: memFs(), hostEnv: linuxEnv }));
+});
+
+test("claude combo: writes hook + skill and registers all four hooks (idempotent)", () => {
+    const fs = memFs();
+    const r = installClaudeCombo({ fs, claudeDir: "/home/u/.claude", memoryFile: "/home/u/.builderforce-memory/memory.json" });
+    assert.deepEqual(r.addedHooks, ["SessionStart", "PreCompact", "UserPromptSubmit", "Stop"]);
+
+    // Hook script written with all four modes baked in.
+    const hook = fs.get("/home/u/.claude/builderforce-memory/bfmem-hook.mjs");
+    for (const mode of ["--session", "--precompact", "--recall", "--capture"]) assert.ok(hook.includes(mode), `hook missing ${mode}`);
+    // Companion skill written.
+    assert.ok(fs.get("/home/u/.claude/skills/builderforce-memory/SKILL.md").includes("builderforce-memory"));
+
+    // settings.json registers each event pointing at the hook script.
+    const settings = JSON.parse(fs.get("/home/u/.claude/settings.json"));
+    for (const ev of ["SessionStart", "PreCompact", "UserPromptSubmit", "Stop"]) {
+        const cmd = settings.hooks[ev][0].hooks[0].command;
+        assert.ok(cmd.includes("bfmem-hook.mjs"), `${ev} not wired`);
+    }
+    assert.ok(settings.hooks.UserPromptSubmit[0].hooks[0].command.includes("--recall"));
+    assert.ok(settings.hooks.Stop[0].hooks[0].command.includes("--capture"));
+
+    // Re-run: idempotent — no duplicate hook groups, nothing newly added.
+    const again = installClaudeCombo({ fs, claudeDir: "/home/u/.claude", memoryFile: "/home/u/.builderforce-memory/memory.json" });
+    assert.deepEqual(again.addedHooks, []);
+    assert.equal(JSON.parse(fs.get("/home/u/.claude/settings.json")).hooks.Stop.length, 1);
+});
+
+test("claude combo: preserves pre-existing unrelated hooks", () => {
+    const fs = memFs({
+        "/home/u/.claude/settings.json": JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "echo hi" }] }] } }),
+    });
+    installClaudeCombo({ fs, claudeDir: "/home/u/.claude", memoryFile: "/m.json" });
+    const ups = JSON.parse(fs.get("/home/u/.claude/settings.json")).hooks.UserPromptSubmit;
+    assert.ok(ups.some((g) => g.hooks[0].command === "echo hi"), "existing hook must survive");
+    assert.ok(ups.some((g) => g.hooks[0].command.includes("--recall")), "recall hook added alongside");
+});
+
+test("bfmemHookSource bakes the memory file path in", () => {
+    assert.ok(bfmemHookSource("/x/mem.json").includes('"/x/mem.json"'));
 });
 
 test("windows wraps npx through cmd", () => {

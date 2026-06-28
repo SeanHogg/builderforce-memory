@@ -37,3 +37,7 @@ export { installMemoryServer } from "./install/install.js";
 export type { InstallOptions, InstallResult, InstallStatus, HostSelector, FsLike } from "./install/install.js";
 export { HOSTS, SERVER_KEY, findHost } from "./install/hosts.js";
 export type { HostAdapter, HostEnv, ConfigFormat } from "./install/hosts.js";
+// Claude Code "memory combo" — hooks (SessionStart/PreCompact/UserPromptSubmit/Stop)
+// + companion skill that make memory self-driving (contextual recall + autonomous capture).
+export { installClaudeCombo, bfmemHookSource, companionSkillMd, claudeComboPaths } from "./install/claude-hooks.js";
+export type { ClaudeComboPaths } from "./install/claude-hooks.js";

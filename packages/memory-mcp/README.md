@@ -95,6 +95,24 @@ write tools; `--local=<dist/bin/stdio.js>` runs a checkout for development.
 The same launch spec is exported for programmatic use:
 `buildServerSpec()` / `installMemoryServer()` (see `src/install/`).
 
+### Claude Code: the self-driving "memory combo"
+
+Registering the server gives Claude Code the memory *tools*. For Claude Code the
+installer ALSO wires hooks so memory is **self-driving instead of advisory** (skip
+with `--no-hooks`):
+
+| Hook | Behaviour |
+|------|-----------|
+| `SessionStart` | Inject a digest of the top durable memories. |
+| `PreCompact` | Flush durable learnings before the window is summarised. |
+| `UserPromptSubmit` | **Contextual recall** — score memories against the prompt and inject the relevant ones, so a stored fact is retrieved at the *decision point*, not only at session start. |
+| `Stop` | **Autonomous capture** — if the user's last message was a durable instruction/correction and it wasn't consolidated this turn, BLOCK the stop with a directive to `memory_remember`. Capture flows through the MCP write path (never racing the snapshot); a `stop_hook_active` guard means at most one nudge per turn. |
+
+All four point at one generated, dependency-free hook script
+(`~/.claude/builderforce-memory/bfmem-hook.mjs`, four modes) plus a companion
+skill. Idempotent + `.bak`-safe. Source of truth: `src/install/claude-hooks.ts`
+(`installClaudeCombo` / `bfmemHookSource`).
+
 ## Quick start — stdio (any process / language)
 
 ```bash

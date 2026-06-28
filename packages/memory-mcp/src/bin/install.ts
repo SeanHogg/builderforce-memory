@@ -18,8 +18,10 @@
 
 import os from "node:os";
 import path from "node:path";
+import nodeFs from "node:fs";
 import { HOSTS } from "../install/hosts.js";
 import { installMemoryServer, type HostSelector } from "../install/install.js";
+import { installClaudeCombo } from "../install/claude-hooks.js";
 
 function argValue(name: string): string | undefined {
     const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -81,6 +83,26 @@ for (const r of results) {
     const why = r.detail ? `  (${r.detail})` : "";
     process.stdout.write(`${icon[r.status] ?? "?"} ${r.label}: ${r.status}${why}${where}\n`);
     if (r.status === "installed" || r.status === "updated") wrote += 1;
+}
+
+// ── Claude Code memory combo (hooks + companion skill) ───────────────────────
+// Registering the server above gives Claude Code the TOOLS; this adds the
+// self-driving behaviour (SessionStart digest, contextual recall, autonomous Stop
+// capture). Only for Claude Code, only when present, and skippable via --no-hooks.
+const claudeResult = results.find((r) => r.host === "claude-code");
+const claudePresent = claudeResult && claudeResult.status !== "unsupported" && claudeResult.status !== "error";
+if (claudePresent && !hasFlag("no-hooks")) {
+    try {
+        const combo = installClaudeCombo({
+            fs: nodeFs,
+            claudeDir: path.join(os.homedir(), ".claude"),
+            memoryFile,
+        });
+        const what = combo.addedHooks.length ? `added ${combo.addedHooks.join(", ")}` : "already current";
+        process.stdout.write(`✓ Claude Code memory combo: hooks ${what}; recall + autonomous capture wired\n`);
+    } catch (err) {
+        process.stderr.write(`✗ Claude Code hooks: ${String((err as Error).message ?? err)}\n`);
+    }
 }
 
 if (results.length === 0) {
