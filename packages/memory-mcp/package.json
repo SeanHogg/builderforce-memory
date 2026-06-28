@@ -25,9 +25,10 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test tests/install.test.mjs",
+    "test": "tsc && node --test tests/install.test.mjs tests/tools.test.mjs",
     "lint": "eslint src/",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "typecheck:native": "tsgo --noEmit"
   },
   "keywords": [
     "mcp",
@@ -78,7 +79,8 @@
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.57.0",
     "fake-indexeddb": "^6.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3",
+    "@typescript/native-preview": "7.0.0-dev.20260627.2"
   },
   "engines": {
     "node": ">=18.0.0"

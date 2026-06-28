@@ -9,6 +9,8 @@
  *   BUILDERFORCE_MEMORY_TOKEN     Bearer token required on every request (recommended).
  *   BUILDERFORCE_MEMORY_DB        IndexedDB database name.
  *   BUILDERFORCE_MEMORY_READONLY  '1' to disable remember/forget tools.
+ *   BUILDERFORCE_GATEWAY_URL      Gateway base URL (default https://api.builderforce.ai).
+ *   BUILDERFORCE_API_KEY          `bfk_*` tenant key. When set, exposes the cost tools.
  */
 
 import http from "node:http";
@@ -22,6 +24,10 @@ const backend = await createLocalMemoryStoreBackend({
 const handler = createMemoryHttpHandler(backend, {
     authToken: process.env["BUILDERFORCE_MEMORY_TOKEN"],
     writable: process.env["BUILDERFORCE_MEMORY_READONLY"] !== "1",
+    // Optional gateway-backed cost tools (token_usage, model_efficiency). Only
+    // exposed when an API key is present; URL defaults to the public gateway.
+    gatewayUrl: process.env["BUILDERFORCE_GATEWAY_URL"] ?? "https://api.builderforce.ai",
+    gatewayApiKey: process.env["BUILDERFORCE_API_KEY"],
 });
 
 const port = Number(process.env["PORT"] ?? 8787);

@@ -9,6 +9,9 @@
  *                                 persists across process restarts — REQUIRED for an
  *                                 MCP client that respawns this server each session
  *                                 (otherwise fake-indexeddb loses everything on exit).
+ *   BUILDERFORCE_GATEWAY_URL      Gateway base URL (default https://api.builderforce.ai).
+ *   BUILDERFORCE_API_KEY          `bfk_*` tenant key. When set, exposes the cost tools
+ *                                 (token_usage, model_efficiency).
  *
  * Recall is lexical (Jaccard) here — this headless binary does not stand up the
  * SSM runtime/GPU. For SSM-embedding recall, embed the package in-process and
@@ -23,4 +26,10 @@ const backend = await createLocalMemoryStoreBackend({
     persistFile: process.env["BUILDERFORCE_MEMORY_FILE"],
 });
 
-await runStdio(backend, { writable: process.env["BUILDERFORCE_MEMORY_READONLY"] !== "1" });
+await runStdio(backend, {
+    writable: process.env["BUILDERFORCE_MEMORY_READONLY"] !== "1",
+    // Optional gateway-backed cost tools (token_usage, model_efficiency). Only
+    // exposed when an API key is present; URL defaults to the public gateway.
+    gatewayUrl: process.env["BUILDERFORCE_GATEWAY_URL"] ?? "https://api.builderforce.ai",
+    gatewayApiKey: process.env["BUILDERFORCE_API_KEY"],
+});
