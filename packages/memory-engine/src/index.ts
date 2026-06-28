@@ -61,6 +61,35 @@ export {
 
 export { BPETokenizer } from './tokenizer/bpe.js';
 
+// ── Model export (the publishing step: ONNX / safetensors / GGUF / HF repo) ─────
+
+export {
+    exportEvermind,
+    EXPORT_FORMATS,
+    exportSafetensors,
+    tensorsToSafetensors,
+    exportOnnx,
+    exportGguf,
+    configJson,
+    generationConfigJson,
+    tokenizerJson,
+    modelCardMarkdown,
+    namedTensors,
+    evermindTensorSpec,
+    archOf,
+    paramCount,
+} from './export/index.js';
+export type {
+    ExportFormat,
+    ExportFile,
+    ExportResult,
+    ExportOptions,
+    HfMeta,
+    NamedTensor,
+    EvermindArch,
+    TensorSpec,
+} from './export/index.js';
+
 // ── Seeded RNG (reproducible weight init) ─────────────────────────────────────
 
 export { SeededRng, setInitSeed, randn, gaussianArray } from './utils/rng.js';

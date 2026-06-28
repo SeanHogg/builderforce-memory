@@ -218,6 +218,10 @@ export type {
     RunWorkflowOptions,
 } from './workflow/index.js';
 
+// ── Publish (ship an engine model export to HF / local folder) ──────────────────
+export { publishToHuggingFace, writeExportToDir } from './publish/index.js';
+export type { HuggingFaceTarget, PublishOutcome, HubClient, FsLike } from './publish/index.js';
+
 // ── Distillation ──────────────────────────────────────────────────────────────
 export { DistillationEngine } from './distillation/DistillationEngine.js';
 export type {

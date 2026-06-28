@@ -15,6 +15,8 @@ import {
   EvermindLMTrainer,
   BPETokenizer,
   EvermindModelPackage,
+  exportEvermind,
+  type ExportFormat,
 } from "@seanhogg/builderforce-memory-engine";
 import { EvermindCognition } from "../cognition/index.js";
 import { hybridRetrieve, chunkText } from "../retrieval/index.js";
@@ -38,6 +40,15 @@ function pStr(cfg: WorkflowStepConfig, key: string, def: string): string {
 function pNum(cfg: WorkflowStepConfig, key: string, def: number): number {
   const v = cfg.params?.[key];
   return typeof v === "number" && Number.isFinite(v) ? v : def;
+}
+function pBool(cfg: WorkflowStepConfig, key: string, def: boolean): boolean {
+  const v = cfg.params?.[key];
+  return typeof v === "boolean" ? v : def;
+}
+
+/** Byte length of an emitted export file (text or binary). */
+function fileBytes(data: Uint8Array | string): number {
+  return typeof data === "string" ? new TextEncoder().encode(data).length : data.length;
 }
 
 function mkStep(cfg: WorkflowStepConfig, layer: string, defaultLabel: string, run: StackStep["run"]): StackStep {
@@ -320,6 +331,42 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
           ctx.artifacts.tokenizer = { vocab: Object.fromEntries(tok.vocab), merges: [...tok.merges.keys()] };
         }
         return `packaged ${blob.byteLength} bytes${tok ? " + tokenizer" : ""}`;
+      }),
+  },
+  export: {
+    info: {
+      type: "export",
+      layer: "BUILD",
+      label: "Export",
+      description:
+        "Export the trained model to a publishable format (params: format=huggingface|onnx|safetensors|gguf, name, version, license, fp16)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Export model (publishable)", async (ctx) => {
+        const model = ctx.bag.model as EvermindLM | undefined;
+        if (!model) throw new Error("no trained model — add 'train-model' first");
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        const format = pStr(cfg, "format", "huggingface") as ExportFormat;
+        if (format === "huggingface" && !tok) {
+          throw new Error("huggingface export needs a tokenizer — add 'train-tokenizer' first");
+        }
+        const result = exportEvermind(
+          model,
+          format,
+          {
+            name: pStr(cfg, "name", "Evermind"),
+            version: pStr(cfg, "version", "1.0.0"),
+            license: pStr(cfg, "license", "mit"),
+            author: pStr(cfg, "author", ""),
+            description: pStr(cfg, "description", "workflow-built Evermind model"),
+            fp16: pBool(cfg, "fp16", false),
+          },
+          tok,
+        );
+        const total = result.files.reduce((n, f) => n + fileBytes(f.data), 0);
+        // Land the file set as a workflow OUTPUT so a publish step / portal can ship it.
+        ctx.artifacts.export = { format, files: result.files, paramCount: result.paramCount };
+        return `exported ${format}: ${result.files.length} file(s), ${total} bytes, ${result.paramCount} params`;
       }),
   },
 };

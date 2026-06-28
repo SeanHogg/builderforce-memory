@@ -55,7 +55,7 @@ const DEFAULT_CORPUS = [
 export const TRAIN_LLM: WorkflowConfig = {
   id: "train-llm",
   name: "Create an LLM",
-  description: "Train a custom EvermindLM on your corpus, validate it end to end, and package it as a portable .evermind artifact.",
+  description: "Train a custom EvermindLM on your corpus, validate it end to end, package it as a portable .evermind artifact, and export a publishable Hugging Face repo (safetensors + ONNX + GGUF).",
   steps: [
     { id: "tok", type: "train-tokenizer", params: { corpus: DEFAULT_CORPUS, numMerges: 120 } },
     { id: "data", type: "dataset-quality" },
@@ -64,6 +64,7 @@ export const TRAIN_LLM: WorkflowConfig = {
     { id: "eval", type: "evaluate" },
     { id: "gen", type: "generate-check" },
     { id: "pkg", type: "roundtrip", params: { name: "my-llm" } },
+    { id: "export", type: "export", params: { format: "huggingface", name: "my-llm", version: "1.0.0" } },
   ],
 };
 
