@@ -10,7 +10,7 @@
 
 import { SSMError } from '../errors/SSMError.js';
 import { tokenize, jaccardSimilarity } from '../similarity/index.js';
-import { hybridRetrieve, denseSearch, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
+import { hybridRetrieve, denseSearch, HnswIndex, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
 
 export type FactType = 'text' | 'json' | 'number' | 'boolean';
 
@@ -116,6 +116,20 @@ export class MemoryStore {
     private _sweepTimer: ReturnType<typeof setInterval> | null = null;
     /** Content → L2-normalised embedding cache, used by recallSimilar. */
     private readonly _embedCache = new Map<string, Float32Array>();
+    /** Runtime whose embeddings populate `_embedCache`; a change invalidates it. */
+    private _embedRuntime: unknown = null;
+
+    // ── Persistent dense index (EVM-1b) ────────────────────────────────────────
+    // Fact embeddings keyed by `${key}@${seq}` so an EDIT (seq bump) is a new key
+    // and an unchanged fact is never re-embedded. The HNSW index is derived from
+    // these vectors and reused across recalls until the fact set changes — so
+    // steady-state recall is O(1) query-embed + O(log N) search, not O(N) embed.
+    private readonly _denseVectors = new Map<string, Float32Array>();
+    private _denseIndex: HnswIndex | null = null;
+    /** Signature of the fact set the current index was built from. */
+    private _denseSig = '';
+    /** Identity of the runtime whose embeddings populated the vectors. */
+    private _denseRuntime: unknown = null;
 
     constructor(opts: MemoryStoreOptions = {}) {
         this._dbName     = opts.dbName     ?? 'ssmjs';
@@ -321,19 +335,16 @@ export class MemoryStore {
         if (runtime != null && typeof runtime.embed === 'function') {
             const queryVec = await this._embedWithCache(runtime, query);
             if (queryVec) {
-                const items: Array<{ id: string; vector: Float32Array }> = [];
-                const byKey = new Map<string, MemoryEntry>();
-                let embeddedAll = true;
-                for (const entry of all) {
-                    const entryVec = await this._embedWithCache(runtime, entry.content);
-                    if (!entryVec) { embeddedAll = false; break; }
-                    items.push({ id: entry.key, vector: entryVec });
-                    byKey.set(entry.key, entry);
-                }
-                if (embeddedAll) {
-                    // EVM-1: exact scan under the threshold, HNSW ANN above it.
-                    const hits = denseSearch(queryVec, items, topK, this._annThreshold);
-                    return hits.map(h => byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
+                // EVM-1b: sync the persistent vector store + index (embeds only the
+                // delta), then query it — no per-call re-embed of every fact.
+                const synced = await this._syncDense(runtime, all);
+                if (synced) {
+                    const hits = synced.index
+                        // EVM-1: above the threshold, query the persistent HNSW (O(log N)).
+                        ? synced.index.search(queryVec, topK)
+                        // Below it, an exact scan over the (already-embedded) vectors.
+                        : denseSearch(queryVec, synced.items, topK, this._annThreshold);
+                    return hits.map(h => synced.byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
                 }
             }
             // Any failure falls through to the Jaccard path below.
@@ -392,6 +403,12 @@ export class MemoryStore {
      * unavailable so callers can fall back to lexical similarity.
      */
     private async _embedWithCache(runtime: SSMRuntimeRef, text: string): Promise<Float32Array | null> {
+        // Embeddings are model-specific: if the runtime instance changed, the cached
+        // vectors are from a different model and must be dropped. (EVM-1b)
+        if (runtime !== this._embedRuntime) {
+            this._embedCache.clear();
+            this._embedRuntime = runtime;
+        }
         const cached = this._embedCache.get(text);
         if (cached) {
             // LRU touch: re-insert so this entry becomes most-recently-used. (EVM-8)
@@ -416,6 +433,68 @@ export class MemoryStore {
             // Embedding unavailable (no GPU, destroyed runtime, etc.) — signal fallback.
         }
         return null;
+    }
+
+    /**
+     * Synchronise the persistent dense vector store + HNSW index to `all` (EVM-1b).
+     * Embeds ONLY new/changed facts (keyed by `key@seq`), prunes removed ones, and
+     * rebuilds the index only when the fact set actually changed — so a read-heavy
+     * workload reuses both the embeddings and the index across recalls. Returns
+     * `null` (caller falls back to lexical) if any embedding is unavailable, or
+     * resets everything when the runtime identity changes (embeddings are
+     * model-specific).
+     */
+    private async _syncDense(
+        runtime: SSMRuntimeRef,
+        all: MemoryEntry[],
+    ): Promise<{ byKey: Map<string, MemoryEntry>; items: Array<{ id: string; vector: Float32Array }>; index: HnswIndex | null } | null> {
+        if (runtime !== this._denseRuntime) {
+            this._denseVectors.clear();
+            this._denseIndex = null;
+            this._denseSig = '';
+            this._denseRuntime = runtime;
+        }
+
+        const vkeyOf = (e: MemoryEntry): string => `${e.key}@${e.seq ?? 0}`;
+        const currentVkeys = new Set<string>();
+        let sig = `${all.length}`;
+        for (const e of all) { const k = vkeyOf(e); currentVkeys.add(k); sig += '|' + k; }
+
+        const byKey = new Map<string, MemoryEntry>();
+        const items: Array<{ id: string; vector: Float32Array }> = [];
+        for (const entry of all) {
+            const vk = vkeyOf(entry);
+            let vec = this._denseVectors.get(vk);
+            if (!vec) {
+                const v = await this._embedWithCache(runtime, entry.content);
+                if (!v) return null; // embedding failed → lexical fallback
+                vec = v;
+                this._denseVectors.set(vk, vec);
+            }
+            items.push({ id: entry.key, vector: vec });
+            byKey.set(entry.key, entry);
+        }
+
+        // Drop vectors for facts that are gone or were edited (stale vkeys).
+        if (this._denseVectors.size > currentVkeys.size) {
+            for (const k of this._denseVectors.keys()) {
+                if (!currentVkeys.has(k)) this._denseVectors.delete(k);
+            }
+        }
+
+        // Maintain the ANN index only above the threshold; (re)build it only when
+        // the fact set changed (no embedding involved — purely in-memory).
+        if (all.length >= this._annThreshold) {
+            if (sig !== this._denseSig || this._denseIndex === null) {
+                const index = new HnswIndex();
+                for (const it of items) index.add(it.id, it.vector);
+                this._denseIndex = index;
+            }
+        } else {
+            this._denseIndex = null;
+        }
+        this._denseSig = sig;
+        return { byKey, items, index: this._denseIndex };
     }
 
     /**
@@ -451,6 +530,11 @@ export class MemoryStore {
     /** Deletes all facts. Does not affect saved weights. */
     async clear(): Promise<void> {
         const db = await this._open();
+        // Drop the persistent dense index/vectors too (EVM-1b) — they describe a
+        // fact set that no longer exists.
+        this._denseVectors.clear();
+        this._denseIndex = null;
+        this._denseSig = '';
 
         const tx = db.transaction(FACTS_STORE, 'readwrite');
         return requestToPromise(tx.objectStore(FACTS_STORE).clear(), 'Failed to clear facts', () => undefined);

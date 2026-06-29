@@ -7,6 +7,8 @@ import {
     applyRowDelta,
     serializeRowDelta,
     deserializeRowDelta,
+    diffCheckpoints,
+    applyCheckpointDiff,
 } from '../src/utils/delta';
 import { EvermindLM, EvermindLMTrainer } from '../src/lm/evermind_lm';
 
@@ -89,5 +91,43 @@ describe('EvermindLM delta checkpoints (EVM-6)', () => {
         const a = model.generateText('a', codec, { maxNewTokens: 4, temperature: 0 });
         const b = restored.generateText('a', codec, { maxNewTokens: 4, temperature: 0 });
         expect(b).toBe(a);
+    });
+});
+
+describe('checkpoint diff (EVM-6b — GPU adapt() save path)', () => {
+    const CFG = { vocabSize: 40, dModel: 8, numLayers: 1, hiddenDim: 12, seed: 9 };
+
+    it('diff + apply reconstructs the current checkpoint byte-for-byte', () => {
+        const model = new EvermindLM(CFG);
+        const base = model.exportWeights({ fp16: false });
+        new EvermindLMTrainer(model, { lr: 0.05, epochs: 4 }).fit([[1, 2, 3], [3, 4, 5]]);
+        const current = model.exportWeights({ fp16: false });
+
+        const diff = diffCheckpoints(base, current);
+        const restored = applyCheckpointDiff(base, diff);
+        expect(new Uint8Array(restored)).toEqual(new Uint8Array(current));
+    });
+
+    it('an unchanged model yields a tiny diff vs the full checkpoint', () => {
+        const model = new EvermindLM(CFG);
+        const base = model.exportWeights({ fp16: false });
+        const diff = diffCheckpoints(base, model.exportWeights({ fp16: false }));
+        expect(diff.byteLength).toBeLessThan(base.byteLength);
+    });
+
+    it('rejects diffing checkpoints of different shapes', () => {
+        const a = new EvermindLM(CFG).exportWeights({ fp16: false });
+        const b = new EvermindLM({ ...CFG, dModel: 16 }).exportWeights({ fp16: false });
+        expect(() => diffCheckpoints(a, b)).toThrow(/shape mismatch/);
+    });
+
+    it('a reconstructed checkpoint loads cleanly into a fresh model', () => {
+        const model = new EvermindLM(CFG);
+        const base = model.exportWeights({ fp16: false });
+        new EvermindLMTrainer(model, { lr: 0.05, epochs: 3 }).fit([[2, 3, 4]]);
+        const diff = diffCheckpoints(base, model.exportWeights({ fp16: false }));
+        const restored = applyCheckpointDiff(base, diff);
+        const fresh = new EvermindLM(CFG);
+        expect(() => fresh.loadWeights(restored)).not.toThrow();
     });
 });
