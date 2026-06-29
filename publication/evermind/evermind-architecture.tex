@@ -46,7 +46,7 @@ Knowledge, and Trainable Affect}
 Correspondence: \texttt{seanhogg@gmail.com}.}%
 \thanks{Reference implementation: the open \texttt{builderforce-memory} package
 family (\texttt{memory-engine}, \texttt{memory}, \texttt{memory-mcp}),
-version~2026.6.32. All equations in this paper are grounded in that source;
+version~2026.6.35. All equations in this paper are grounded in that source;
 file/line citations are given inline.}}
 
 \markboth{Manuscript --- Builderforce.ai Technical Report, 2026}%
@@ -77,12 +77,16 @@ invariant (no reconciliation backlog), and show that a version-token recall
 cache yields $O(1)$ global invalidation on every belief replacement. The system
 runs entirely on WebGPU with zero runtime dependencies and exports to portable
 formats (safetensors, ONNX, GGUF, Hugging Face). We are explicit about
-validation status: the architecture, kernels, reconciliation algorithm, and
-export pipeline are implemented and tested (ONNX logit parity $<\!10^{-5}$
-against the reference forward pass); the comparative \emph{currency},
-\emph{footprint}, and \emph{ownership} theses against frozen LLMs are stated as
-falsifiable hypotheses together with a measurement protocol, and are not yet
-empirically established. We invite replication and adversarial review.
+validation status: the architecture, kernels, reconciliation algorithm,
+benchmarking harness, and export pipeline are implemented and tested (ONNX logit
+parity $<\!10^{-5}$ against the reference forward pass); the comparative
+\emph{currency}, \emph{footprint}, and \emph{ownership} theses against frozen
+LLMs are stated as falsifiable hypotheses together with a measurement protocol
+whose language-model metrics --- held-out perplexity, bits-per-token,
+next-token accuracy, throughput, and pairwise model A/B --- are now computed by
+a shipped, on-device benchmarking harness; the comparative results themselves
+are not yet empirically established. We invite replication and adversarial
+review.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -147,7 +151,8 @@ version-token cache-invalidation scheme (Proposition~\ref{prop:invalidate}).
 generation and optional frontier escalation, and an online distillation loop
 that uses the frontier model as a teacher.
 (v)~An honest validation account separating what is tested from what is
-hypothesized, with a reproducible evaluation protocol.
+hypothesized, with a reproducible evaluation protocol and a shipped, on-device
+benchmarking harness that implements its language-model metrics.
 
 \section{Related Work}
 \textbf{State-space sequence models.} Linear state-space layers~\cite{gu2022s4}
@@ -565,7 +570,8 @@ $\hat y$ is already below threshold --- i.e.\ when the student has \emph{already
 learned} the pattern. The adapted weights persist to disk/IndexedDB checkpoints,
 closing an online learning loop without a separate retrain stage. We emphasize
 that convergence behavior of this loop is characterized qualitatively here;
-quantitative learning curves are future work (Section~\ref{sec:eval}).
+quantitative learning curves are directly measurable with the benchmarking
+harness (Section~\ref{sec:eval}, H3) but are not reported at scale here.
 
 \section{Implementation and Portability}
 \label{sec:impl}
@@ -593,8 +599,19 @@ section exists to prevent.
 Table~\ref{tab:status} summarizes. The architecture, the three SSM kernel
 families, the autograd/optimizer, the reconciliation operator with its proven
 invariants (Theorems/Propositions above), the routing cascade, the distillation
-loop, and the export pipeline are implemented and unit-tested; ONNX export
-matches the reference forward to $<\!10^{-5}$.
+loop, the export pipeline, \emph{and the benchmarking harness} are implemented
+and unit-tested; ONNX export matches the reference forward to $<\!10^{-5}$. The
+benchmarking harness (\texttt{memory-engine/src/bench}) scores any model that
+emits per-position logits over held-out token sequences --- reporting
+cross-entropy, perplexity, bits-per-token, top-1/top-$k$ next-token accuracy,
+and forward throughput --- and A/Bs two models with a perplexity-ranked verdict
+(\texttt{compareModels}); a one-call \texttt{trainAndBenchmark} path builds a
+fresh model, reserves an enforced held-out split, trains, and scores it. This
+harness is exercised by 14 unit tests and is surfaced on-device in the
+Builderforce Studio as a build $\to$ train $\to$ benchmark $\to$ publish step.
+It is the measurement instrument for hypotheses \textbf{H2} and \textbf{H3}
+below; what remains hypothesized is the comparison \emph{itself} against a
+frozen frontier baseline, not the means of measuring it.
 
 \begin{table}[t]
 \caption{Validation status of Evermind components.}
@@ -613,6 +630,7 @@ Limbic cell & implemented & MSE training harness \\
 Router cascade & implemented & unit tests \\
 Online distillation loop & implemented & integration path \\
 Export (safetensors/ONNX/GGUF/HF) & implemented + tested & round-trip tests \\
+Benchmarking harness (ppl/bpt/acc/throughput, A/B) & implemented + tested & 14 bench tests; Studio scorecard \\
 \midrule
 Currency vs.\ frozen LLM & \textbf{hypothesis} & protocol \S\ref{sec:protocol} \\
 Quality/perplexity vs.\ frontier & \textbf{hypothesis} & protocol \S\ref{sec:protocol} \\
@@ -647,11 +665,19 @@ append-only dense RAG, and a frozen LLM. Theorem~\ref{thm:invariant} predicts an
 Evermind contradiction rate of $0$ by construction --- a directly falsifiable
 claim. \textbf{H2}: report peak GPU memory, tokens/s, and time-to-first-token at
 matched perplexity on WikiText-style held-out text across model widths
-$d\in\{256,512,768\}$. \textbf{H3}: report per-epoch teacher-prompt perplexity
-and held-out general perplexity for WSLA vs.\ full fine-tune. All three are
-reproducible from the open packages; we release the harness skeleton with this
-report and invite independent replication. Until these are run, H1--H3 remain
-\emph{conjectures}, and we make no comparative performance claim.
+$d\in\{256,512,768\}$ --- the perplexity and throughput terms are produced by
+the shipped harness (\texttt{benchmarkModel}; \texttt{tokensPerSecond}),
+leaving only the memory probe to instrument. \textbf{H3}: report per-epoch
+teacher-prompt perplexity and held-out general perplexity for WSLA vs.\ full
+fine-tune --- both perplexities are direct \texttt{benchmarkModel} /
+\texttt{compareModels} outputs on the WSLA-adapted and fully-fine-tuned
+checkpoints. All three are reproducible from the open packages: the
+language-model benchmarking harness now ships in \texttt{memory-engine} and
+on-device in the Studio, so H2 and H3 reduce to running it at scale; only H1's
+temporal-edit driver (the $(k,c_{\text{old}}\!\to c_{\text{new}},t)$ stream and
+staleness/contradiction scoring) remains to be assembled around the existing
+recall API. Until the comparisons are run, H1--H3 remain \emph{conjectures},
+and we make no comparative performance claim.
 
 \section{Discussion, Limitations, and Threats to Validity}
 The most important limitation is the one Section~\ref{sec:eval} foregrounds: the
@@ -684,9 +710,10 @@ falsification --- for the community.
 
 \section*{Reproducibility}
 All equations cite source files in the open \texttt{builderforce-memory}
-package family (engine/runtime/MCP), version 2026.6.32. Figures are provided as
-vector SVG. The evaluation-protocol skeleton (\S\ref{sec:protocol}) accompanies
-this report.
+package family (engine/runtime/MCP), version 2026.6.35. Figures are provided as
+vector SVG. The benchmarking harness implementing the language-model metrics of
+the evaluation protocol (\S\ref{sec:protocol}) ships in that package family
+(\texttt{memory-engine/src/bench}) and accompanies this report.
 
 \begin{thebibliography}{99}
 \bibitem{vaswani2017} A.~Vaswani \emph{et al.}, ``Attention is all you need,''

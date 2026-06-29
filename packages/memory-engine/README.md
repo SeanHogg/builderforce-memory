@@ -7,7 +7,7 @@
 
 `@seanhogg/builderforce-memory-engine` is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. It ships **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints. It is the zero-runtime-dep engine consumed by [`@seanhogg/builderforce-memory`](../memory) (the runtime layer).
 
-> **Technical report & peer review.** The kernels and discretisations here are specified mathematically in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) flags engine-level items worth knowing before depending on them at scale: the "parallel" selective scan walks tiles sequentially, `softplus` is the unstable `log(1+exp(v))` form, int8 quantisation uses a single per-tensor scale (weights only), and GPU buffers are allocated per call (no pool). Tracked as `EVM-1/EVM-8`.
+> **Technical report & peer review.** The kernels and discretisations here are specified mathematically in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) flags engine-level items worth knowing before depending on them at scale: the "parallel" selective scan walks tiles sequentially, `softplus` is the unstable `log(1+exp(v))` form, int8 quantisation uses a single per-tensor scale (weights only), and GPU buffers are allocated per call (no pool). Tracked as `EVM-1/EVM-8`. Several of these were addressed in the v2026.6.33–v2026.6.35 hardening (e.g. stable softplus); the engine also now ships a benchmarking harness (`src/bench/`). See the resolution addendum in [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md).
 
 ---
 
@@ -38,6 +38,30 @@
 | **Quantization** | FP16 weights, Int8 activations |
 | **Tokenizer** | Browser-side BPE (Qwen2.5-Coder compatible) |
 | **WSLA mode** | Fast-adapt: trains only the selective projection rows |
+| **Benchmarking** | Held-out perplexity, bits-per-token, top-1/top-k accuracy, throughput + model A/B |
+
+---
+
+## Benchmarking
+
+`src/bench/` measures a trained model on held-out data — the question the "beats a frozen LLM" thesis rests on: *how good is this model?* It scores any object exposing `forward(tokens) => { logits }` (the engine's `EvermindLM` satisfies it directly), and is dependency-free.
+
+```ts
+import { benchmarkModel, compareModels, trainAndBenchmark } from '@seanhogg/builderforce-memory-engine';
+
+// Score a model on held-out token sequences
+const report = benchmarkModel(model, heldOutSequences);
+// → { perplexity, bitsPerToken, top1Accuracy, topKAccuracy, tokensPerSecond, ... }
+
+// A/B two checkpoints (lower perplexity wins)
+const cmp = compareModels(candidate, baseline, heldOutSequences);
+console.log(cmp.summary); // "Candidate wins: 8.3% lower perplexity (…)"
+
+// One-call build + score from raw text (enforced held-out split)
+const result = trainAndBenchmark(corpus, { epochs: 30, heldOutRatio: 0.25 });
+```
+
+Metrics: held-out perplexity, bits-per-token, top-1/top-k next-token accuracy, and forward throughput. 14 unit tests in `tests/bench.test.ts`. This is the measurement instrument behind the Evermind technical report's H2/H3 hypotheses, and it drives the Studio's on-device benchmark scorecard.
 
 ---
 
@@ -199,6 +223,9 @@ src/
 ├── training/
 │   ├── autograd.ts                  ← Tape-based AD + loss helpers
 │   └── trainer.ts                   ← MambaTrainer (AdamW, WSLA)
+├── bench/
+│   ├── metrics.ts                   ← perplexity, bits-per-token, top-1/top-k accuracy
+│   └── harness.ts                   ← benchmarkModel / compareModels / trainAndBenchmark
 ├── tokenizer/
 │   └── bpe.ts                       ← Browser-side BPE tokenizer
 └── utils/
@@ -214,7 +241,8 @@ tests/
 ├── kernels.test.ts
 ├── autograd.test.ts
 ├── bpe.test.ts
-└── quantization.test.ts
+├── quantization.test.ts
+└── bench.test.ts
 
 docs/
 ├── getting-started.md

@@ -7,7 +7,7 @@
 
 `@seanhogg/builderforce-memory` is the **runtime layer** of BuilderForce Agent Memory — a complete, self-contained AI runtime built directly on top of [`@seanhogg/builderforce-memory-engine`](https://www.npmjs.com/package/@seanhogg/builderforce-memory-engine). It includes the full session layer (previously `@seanhogg/mambakit`) as an internal layer, so you only need one package. *(Formerly published as `@seanhogg/ssmjs`.)*
 
-> **Technical report & peer review.** The runtime's design — Write-Through Cognition, hybrid recall, the inference router, and online distillation — is specified in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) is candid about runtime-level gaps to weigh before production: recall is an `O(N)` scan with no ANN index and frequently uses the lexical (Jaccard) fallback rather than dense embeddings; the "stable subject key" is **caller-supplied and not yet canonicalized** (so the single-incumbent guarantee rests on an unenforced precondition); recalled facts are injected unsanitized (memory-poisoning surface); and the online loop has no catastrophic-forgetting guard. Tracked as `EVM-1…EVM-8`.
+> **Technical report & peer review.** The runtime's design — Write-Through Cognition, hybrid recall, the inference router, and online distillation — is specified in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) is candid about runtime-level gaps to weigh before production: recall is an `O(N)` scan with no ANN index and frequently uses the lexical (Jaccard) fallback rather than dense embeddings; the "stable subject key" is **caller-supplied and not yet canonicalized** (so the single-incumbent guarantee rests on an unenforced precondition); recalled facts are injected unsanitized (memory-poisoning surface); and the online loop has no catastrophic-forgetting guard. Tracked as `EVM-1…EVM-8`. These have since been resolved in the v2026.6.34 hardening — an HNSW ANN index (`src/retrieval/hnsw.ts`) gates the exact scan, a subject-key canonicalizer (`src/cognition/canonicalize.ts`) runs inside `commit()`, recall is fenced, and the online loop has a forgetting guard — and the engine now ships a benchmarking harness for measured quality. See the resolution addendum in [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md).
 
 ---
 
@@ -65,6 +65,7 @@ Generic build step types (compose your own pipeline via the step registry):
 | `convergence` | Asserts training loss actually decreased (the model learned) |
 | `evaluate` / `generate-check` | Output is non-empty **and** seed-reproducible |
 | `roundtrip` | Packages the trained model → loads → generates; served output must match trained |
+| `benchmark` | Scores the trained model on a held-out corpus (perplexity, bits-per-token, top-1/top-k accuracy, throughput); optional maxPerplexity / minTop1 gates fail the run |
 
 ---
 
@@ -214,7 +215,7 @@ const recent = await memory.recallRecent(10);
 // Filter by tag
 const techFacts = await memory.recallByTag('tech');
 
-// Semantic similarity search (Jaccard word-overlap; SSM embeddings in future)
+// Semantic similarity search (SSM-embedding cosine via HNSW ANN index, lexical fallback)
 const similar = await memory.recallSimilar('who built this?', 5, runtime);
 
 // Purge expired entries from storage
@@ -475,7 +476,7 @@ GPU init is optional: if `@webgpu/node` is unavailable, the service starts in me
 - `SSMAgent`: fact injection sorted by `importance` descending
 
 ### Phase 2 — Semantic Memory
-- `MemoryStore.recallSimilar(query, topK, runtime)` — Jaccard similarity; SSM embedding-based search in future
+- `MemoryStore.recallSimilar(query, topK, runtime)` — SSM-embedding cosine recall via an HNSW ANN index (lexical fallback when embeddings are unavailable)
 - `MemoryStore.recallByTag(tag)` — tag-based filtering
 - `MemoryStore.exportAll()` / `importAll(entries, strategy)` — cross-session merge
 

@@ -6,6 +6,17 @@
 
 ---
 
+> ## ✅ Resolution addendum (2026-06-29, v2026.6.35)
+>
+> This review is preserved verbatim as the **point-in-time referee report at v2026.6.32**. The findings drove a hardening pass that has since shipped; the state of the code below is no longer current:
+>
+> - **Benchmarking shipped (the §IX gap this review pre-dates).** The "make embedding/recall quality a *measured* quantity" thread (§4.2) and the manuscript's evaluation protocol now have a real instrument: a language-model **benchmarking harness** (`memory-engine/src/bench` — held-out perplexity, bits-per-token, top-1/top-k accuracy, throughput, `compareModels` A/B, `trainAndBenchmark`), 14 unit tests, surfaced on-device in the Studio. Shipped in **v2026.6.33**.
+> - **Major items M1–M5 resolved as `EVM-1…EVM-8` (v2026.6.34).** M1 → pure-TS **HNSW ANN index** (`memory/src/retrieval/hnsw.ts`) gating the exact scan; M2 → **subject-key canonicalizer** (`memory/src/cognition/canonicalize.ts`, NFC + case-fold + alias) inside `commit()`, restoring the premise of Theorem 1; M3 → constant-time auth + per-tenant namespace isolation on the MCP HTTP surface; M4 → recalled facts fenced/provenance-tagged; M5 → forgetting guard on the online loop. Plus the P2 items (checkpoint CRC, active TTL sweeper, stable softplus).
+>
+> The two verdicts the review states remain the right frame; what changed is that the *production-readiness* objections it raised are now largely closed, and the *measurement* it called for now exists. Items not yet closed stay tracked in the Builderforce.ai Consolidated Gap Register. See the resolution map below in the manuscript history and the `EVM-*` register entries for evidence.
+
+---
+
 ## 1. Summary judgement
 
 This is a coherent, unusually honest architecture paper. The two genuine contributions — (a) the formalization of the SSM cortex as a monoid scan with a clean span/work result, and (b) *Write-Through Cognition* with its single-incumbent invariant and `O(1)` invalidation — are correct and worth publishing. The decision to state the comparative claims as falsifiable hypotheses rather than fabricated benchmarks is the right call and should be preserved.
@@ -145,4 +156,4 @@ The single most important manuscript revision: **Theorem 1's zero-contradiction 
 
 ---
 
-*All file:line references are to `builderforce-memory` v2026.6.32. This review evaluates the architecture as presented and the implementation as shipped; the two verdicts (accept the paper / not-yet-production the system) are deliberately separate.*
+*All file:line references are to `builderforce-memory` v2026.6.32 (the version reviewed). This review evaluates the architecture as presented and the implementation as shipped **at that version**; the two verdicts (accept the paper / not-yet-production the system) are deliberately separate. See the **Resolution addendum** at the top: the Major items and the benchmarking gap were addressed in v2026.6.33–v2026.6.35.*
