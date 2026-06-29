@@ -9,6 +9,8 @@ tool core over a pluggable `MemoryBackend`, three transports:
 | **stdio** | `runStdio(backend)` / `npx @seanhogg/builderforce-memory-mcp` | `{ type:"stdio", command, args }` | any language / separate process; decouples the SSM+IndexedDB deps from the consumer |
 | **HTTP (Streamable)** | `createMemoryHttpHandler(backend, { authToken })` | `{ type:"http", url, headers }` | multi-tenant / networked (builderforce.ai hosting, remote agents) |
 
+> **Technical report & peer review.** This transport is reviewed in the Evermind technical report's adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md). Note before exposing the HTTP handler publicly: the `authToken` check is a **non-constant-time** string compare (timing channel) and the handler shares **one `backend` with no per-tenant isolation** — a single token reads every tenant's facts. Despite the "multi-tenant" note above, real isolation (token→namespace mapping, constant-time compare, rate limiting) is **not yet implemented**. Tracked as `EVM-3` in the Builderforce.ai Consolidated Gap Register.
+
 ## Why this saves tokens
 
 The point of an external memory store is **fetch-on-demand** instead of pinning

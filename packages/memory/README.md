@@ -7,6 +7,8 @@
 
 `@seanhogg/builderforce-memory` is the **runtime layer** of BuilderForce Agent Memory — a complete, self-contained AI runtime built directly on top of [`@seanhogg/builderforce-memory-engine`](https://www.npmjs.com/package/@seanhogg/builderforce-memory-engine). It includes the full session layer (previously `@seanhogg/mambakit`) as an internal layer, so you only need one package. *(Formerly published as `@seanhogg/ssmjs`.)*
 
+> **Technical report & peer review.** The runtime's design — Write-Through Cognition, hybrid recall, the inference router, and online distillation — is specified in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) is candid about runtime-level gaps to weigh before production: recall is an `O(N)` scan with no ANN index and frequently uses the lexical (Jaccard) fallback rather than dense embeddings; the "stable subject key" is **caller-supplied and not yet canonicalized** (so the single-incumbent guarantee rests on an unenforced precondition); recalled facts are injected unsanitized (memory-poisoning surface); and the online loop has no catastrophic-forgetting guard. Tracked as `EVM-1…EVM-8`.
+
 ---
 
 ## Overview

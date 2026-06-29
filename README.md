@@ -81,6 +81,16 @@ const r = await cog.commit(
 
 `EvermindCognition` is store- and surface-agnostic — the `CognitionFactStore` interface is satisfied structurally by `MemoryStore` (no adapter) — so the same loop runs in the IDE, on-prem, cloud, and the browser.
 
+## Technical report & peer review
+
+The architecture is written up as a formal, peer-review-grade technical report, with the SSM cortex, Write-Through Cognition, and the limbic layer specified mathematically (including a monoid-scan proof and the single-incumbent invariant). It lives in [`publication/evermind/`](publication/evermind):
+
+- **[`evermind-architecture.pdf`](publication/evermind/evermind-architecture.pdf)** (source: [`.tex`](publication/evermind/evermind-architecture.tex), readable [`.html`](publication/evermind/evermind-architecture.html)) — the manuscript. It deliberately scopes the "beats a frozen frontier model" advantages as **falsifiable hypotheses with a measurement protocol**, not as benchmark results.
+- **[`PEER-REVIEW.md`](publication/evermind/PEER-REVIEW.md)** — an adversarial scientific referee report on both the paper *and this implementation*, grounded in `file:line` evidence. It is candid about where the shipped code is first-generation: notably that recall is an `O(N)` scan with no ANN index, that the "stable subject key" above is **caller-supplied and not yet canonicalized** (so the single-incumbent guarantee currently rests on an unenforced precondition), and that the MCP HTTP surface lacks tenant isolation. These findings are tracked as `EVM-1…EVM-8` in the Builderforce.ai roadmap's Consolidated Gap Register.
+- **[`SUBMISSION.md`](publication/evermind/SUBMISSION.md)** — venue guide and the TechRxiv/arXiv submission kit.
+
+Read the review before depending on any single guarantee in the report at production scale.
+
 ## Develop
 
 ```bash

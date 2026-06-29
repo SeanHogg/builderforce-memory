@@ -7,6 +7,8 @@
 
 `@seanhogg/builderforce-memory-engine` is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. It ships **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints. It is the zero-runtime-dep engine consumed by [`@seanhogg/builderforce-memory`](../memory) (the runtime layer).
 
+> **Technical report & peer review.** The kernels and discretisations here are specified mathematically in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) flags engine-level items worth knowing before depending on them at scale: the "parallel" selective scan walks tiles sequentially, `softplus` is the unstable `log(1+exp(v))` form, int8 quantisation uses a single per-tensor scale (weights only), and GPU buffers are allocated per call (no pool). Tracked as `EVM-1/EVM-8`.
+
 ---
 
 ## What's New in v2.0.0

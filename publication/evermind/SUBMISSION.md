@@ -10,7 +10,18 @@ This folder is a complete, submission-ready manuscript package.
 | `evermind-architecture.html` | Self-contained render (MathJax + SVG). Open in any browser; re-print to PDF at any DPI. |
 | `evermind-architecture.tex` | **The submission master** — IEEEtran LaTeX. Compiles on Overleaf as-is. |
 | `figures/*.svg` | 7 vector figures (infinite resolution). |
+| `evermind-techrxiv-supplementary.zip` | **TechRxiv upload bundle** — PDF + `.tex` + HTML + figures, ready to attach as supplementary material. |
+| `PEER-REVIEW.md` | Adversarial scientific referee report on the architecture + implementation (findings logged to the Gap Register). |
 | `SUBMISSION.md` | This file. |
+
+## How to post to TechRxiv (the step only you can do)
+1. Sign in / create an account at **https://www.techrxiv.org** (needs your ORCID).
+2. *Submit* → upload **`evermind-architecture.pdf`** as the main manuscript.
+3. Attach **`evermind-techrxiv-supplementary.zip`** as supplementary files.
+4. Paste the **title, authors, abstract, and category** from the metadata block below; paste the cover letter if prompted.
+5. Affirm authorship + that it is not under review elsewhere → **Submit for moderation** (TechRxiv posts within ~1–2 business days and mints a DOI).
+
+I cannot perform steps 1–5 for you: TechRxiv has no public submission API, and posting requires your authenticated account, ORCID, and a personal authorship attestation that I must not make on your behalf.
 
 To regenerate the PDF from source: open `.tex` on [Overleaf](https://overleaf.com) (it auto-converts the SVGs via the `svg` package), or print `.html` to PDF from a browser.
 
