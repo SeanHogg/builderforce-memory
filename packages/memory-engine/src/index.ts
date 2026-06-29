@@ -116,6 +116,13 @@ export type {
     TrainAndBenchmarkResult,
 } from './bench/index.js';
 
+// ── Checkpoint integrity (CRC-32 + trailer) ───────────────────────────────────
+
+export { crc32, appendCrcTrailer, verifyCrcTrailer, CRC_TRAILER_MAGIC } from './utils/crc32.js';
+export type { CrcCheck } from './utils/crc32.js';
+export { computeRowDelta, applyRowDelta, serializeRowDelta, deserializeRowDelta } from './utils/delta.js';
+export type { RowDelta } from './utils/delta.js';
+
 // ── Seeded RNG (reproducible weight init) ─────────────────────────────────────
 
 export { SeededRng, setInitSeed, randn, gaussianArray } from './utils/rng.js';
@@ -149,6 +156,7 @@ export {
     readBuffer,
     uploadBuffer,
     cdiv,
+    BufferPool,
 } from './utils/gpu_utils.js';
 
 // ── Quantization ──────────────────────────────────────────────────────────────

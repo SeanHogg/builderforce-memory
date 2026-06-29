@@ -14,9 +14,9 @@
  * candidate vectors → BM25-only; no overlap → dense-only.
  */
 
-import { cosineSimilarity } from '../similarity/index.js';
 import { bm25Search, type Bm25Options } from './bm25.js';
 import { reciprocalRankFusion, maximalMarginalRelevance, type MmrCandidate } from './fusion.js';
+import { denseSearch } from './hnsw.js';
 
 export interface RetrievalCandidate {
     id: string;
@@ -46,6 +46,11 @@ export interface HybridRetrieveOptions {
     mmrLambda?: number;
     /** BM25 tuning. */
     bm25?: Bm25Options;
+    /**
+     * Candidate count at/above which the dense pass uses an HNSW ANN index
+     * instead of an exact cosine scan (O(log N) vs O(N)). Default 256.
+     */
+    annThreshold?: number;
 }
 
 export interface HybridHit {
@@ -70,14 +75,16 @@ export function hybridRetrieve(
 
     const byId = new Map(candidates.map(c => [c.id, c]));
 
-    // ── Dense ranking (cosine) ────────────────────────────────────────────────
+    // ── Dense ranking (cosine, ANN-accelerated above the threshold) ────────────
     let denseIds: string[] = [];
     if (query.vector) {
-        denseIds = candidates
-            .filter(c => c.vector && c.vector.length > 0)
-            .map(c => ({ id: c.id, score: cosineSimilarity(query.vector!, c.vector!) }))
-            .sort((a, b) => b.score - a.score)
-            .map(h => h.id);
+        const vectored = candidates
+            .filter((c): c is RetrievalCandidate & { vector: Float32Array } => !!c.vector && c.vector.length > 0)
+            .map(c => ({ id: c.id, vector: c.vector }));
+        // Rank the full vectored set (k = all) so fusion sees the complete dense
+        // ordering; denseSearch uses an exact scan under the threshold and HNSW
+        // above it, so behaviour is identical for small stores.
+        denseIds = denseSearch(query.vector, vectored, vectored.length, opts.annThreshold ?? 256).map(h => h.id);
     }
 
     // ── Sparse ranking (BM25) ─────────────────────────────────────────────────

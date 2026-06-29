@@ -9,8 +9,8 @@
  */
 
 import { SSMError } from '../errors/SSMError.js';
-import { tokenize, jaccardSimilarity, cosineSimilarity } from '../similarity/index.js';
-import { hybridRetrieve, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
+import { tokenize, jaccardSimilarity } from '../similarity/index.js';
+import { hybridRetrieve, denseSearch, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
 
 export type FactType = 'text' | 'json' | 'number' | 'boolean';
 
@@ -61,6 +61,23 @@ export interface MemoryStoreOptions {
      * Entries with an expired TTL are filtered from recallAll() and related methods.
      */
     defaultTtlMs? : number;
+    /**
+     * Fact count at/above which semantic recall switches from an exact O(N)
+     * cosine scan to an O(log N) HNSW ANN index. Default 256 — small stores stay
+     * exact (simpler + faster), large stores stay fast. (EVM-1)
+     */
+    annThreshold? : number;
+    /**
+     * Hard cap on stored facts. When set, each write evicts the lowest-value
+     * entries (expired first, then lowest importance, then oldest) so the store
+     * stays bounded. Unset = unbounded (legacy). (EVM-7)
+     */
+    maxEntries?   : number;
+    /**
+     * Max content→embedding vectors held in the LRU recall cache. Default 2000.
+     * (EVM-8 — bounded LRU instead of clear-on-overflow.)
+     */
+    embedCacheMax?: number;
 }
 
 const FACTS_STORE   = 'facts';
@@ -84,7 +101,7 @@ interface SaveLoadRuntime {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SSMRuntimeRef = any;
 
-/** Max number of cached content→embedding vectors retained in memory. */
+/** Max content→embedding vectors retained (LRU-evicted past this). (EVM-8) */
 const EMBED_CACHE_MAX = 2000;
 
 export class MemoryStore {
@@ -92,7 +109,11 @@ export class MemoryStore {
     private readonly _weightsKey : string;
     private readonly _idb        : IDBFactory | undefined;
     private readonly _defaultTtl : number | undefined;
+    private readonly _annThreshold : number;
+    private readonly _maxEntries : number | undefined;
+    private readonly _embedCacheMax : number;
     private _db: IDBDatabase | null = null;
+    private _sweepTimer: ReturnType<typeof setInterval> | null = null;
     /** Content → L2-normalised embedding cache, used by recallSimilar. */
     private readonly _embedCache = new Map<string, Float32Array>();
 
@@ -101,6 +122,9 @@ export class MemoryStore {
         this._weightsKey = opts.weightsKey ?? 'ssmjs-weights';
         this._idb        = opts.idbFactory;
         this._defaultTtl = opts.defaultTtlMs;
+        this._annThreshold = opts.annThreshold ?? 256;
+        this._maxEntries = opts.maxEntries;
+        this._embedCacheMax = opts.embedCacheMax ?? EMBED_CACHE_MAX;
     }
 
     // ── Internal DB open ──────────────────────────────────────────────────────
@@ -167,7 +191,65 @@ export class MemoryStore {
         };
 
         const tx = db.transaction(FACTS_STORE, 'readwrite');
-        return requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to store fact "${key}"`, () => undefined);
+        await requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to store fact "${key}"`, () => undefined);
+        // EVM-7: keep the store bounded — evict lowest-value entries past the cap.
+        if (this._maxEntries != null) await this._enforceCap();
+    }
+
+    /**
+     * Evicts the lowest-value entries until at most `maxEntries` remain. Eviction
+     * priority (removed first): expired → lowest importance → oldest. No-op when
+     * no cap is set or the store is under it. (EVM-7)
+     */
+    private async _enforceCap(): Promise<void> {
+        if (this._maxEntries == null) return;
+        const db = await this._open();
+        const tx = db.transaction(FACTS_STORE, 'readonly');
+        const all = await requestToPromise(
+            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
+            'Failed to scan facts for cap',
+            (r) => r,
+        );
+        if (all.length <= this._maxEntries) return;
+
+        // Ascending sort = worst first: expired (0) before live (1), then lower
+        // importance, then older timestamp, then lower write sequence.
+        const rank = (e: MemoryEntry): [number, number, number, number] =>
+            [this._isExpired(e) ? 0 : 1, e.importance ?? 0.5, e.timestamp, e.seq ?? 0];
+        const sorted = [...all].sort((a, b) => {
+            const ra = rank(a), rb = rank(b);
+            for (let i = 0; i < ra.length; i++) {
+                if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
+            }
+            return 0;
+        });
+        const victims = sorted.slice(0, all.length - this._maxEntries);
+        await Promise.all(victims.map((e) => this.forget(e.key)));
+    }
+
+    /**
+     * Starts a background timer that periodically hard-deletes expired entries —
+     * TTL is otherwise only evaluated lazily on read, so an idle store would keep
+     * dead entries forever. Idempotent; pair with {@link stopTtlSweeper}. (EVM-7)
+     */
+    startTtlSweeper(intervalMs: number): void {
+        if (this._sweepTimer) return;
+        const timer = setInterval(() => { void this.purgeExpired(); }, intervalMs);
+        // Don't keep a Node process alive just for the sweeper.
+        const maybeUnref = timer as unknown as { unref?: () => void };
+        /* istanbul ignore else -- unref exists in Node; absent in the browser */
+        if (typeof maybeUnref.unref === 'function') {
+            maybeUnref.unref();
+        }
+        this._sweepTimer = timer;
+    }
+
+    /** Stops the background TTL sweeper started by {@link startTtlSweeper}. */
+    stopTtlSweeper(): void {
+        if (this._sweepTimer) {
+            clearInterval(this._sweepTimer);
+            this._sweepTimer = null;
+        }
     }
 
     /**
@@ -239,16 +321,19 @@ export class MemoryStore {
         if (runtime != null && typeof runtime.embed === 'function') {
             const queryVec = await this._embedWithCache(runtime, query);
             if (queryVec) {
-                const scored: { entry: MemoryEntry; score: number }[] = [];
+                const items: Array<{ id: string; vector: Float32Array }> = [];
+                const byKey = new Map<string, MemoryEntry>();
                 let embeddedAll = true;
                 for (const entry of all) {
                     const entryVec = await this._embedWithCache(runtime, entry.content);
                     if (!entryVec) { embeddedAll = false; break; }
-                    scored.push({ entry, score: cosineSimilarity(queryVec, entryVec) });
+                    items.push({ id: entry.key, vector: entryVec });
+                    byKey.set(entry.key, entry);
                 }
                 if (embeddedAll) {
-                    scored.sort((a, b) => b.score - a.score);
-                    return scored.slice(0, topK).map(s => s.entry);
+                    // EVM-1: exact scan under the threshold, HNSW ANN above it.
+                    const hits = denseSearch(queryVec, items, topK, this._annThreshold);
+                    return hits.map(h => byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
                 }
             }
             // Any failure falls through to the Jaccard path below.
@@ -296,7 +381,7 @@ export class MemoryStore {
             candidates.push({ id: entry.key, text: entry.content, vector });
         }
 
-        const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, ...opts });
+        const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, annThreshold: this._annThreshold, ...opts });
         const byKey = new Map(all.map(e => [e.key, e]));
         return hits.map(h => byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
     }
@@ -308,12 +393,22 @@ export class MemoryStore {
      */
     private async _embedWithCache(runtime: SSMRuntimeRef, text: string): Promise<Float32Array | null> {
         const cached = this._embedCache.get(text);
-        if (cached) return cached;
+        if (cached) {
+            // LRU touch: re-insert so this entry becomes most-recently-used. (EVM-8)
+            this._embedCache.delete(text);
+            this._embedCache.set(text, cached);
+            return cached;
+        }
         try {
             const vec = await runtime.embed(text);
             if (vec instanceof Float32Array && vec.length > 0) {
-                // Bound cache growth — simplest eviction is a full clear.
-                if (this._embedCache.size >= EMBED_CACHE_MAX) this._embedCache.clear();
+                // EVM-8: bound cache growth by evicting the LEAST-recently-used entry
+                // (Map keeps insertion order; the first key is the LRU), instead of
+                // dumping the whole cache on every overflow.
+                if (this._embedCache.size >= this._embedCacheMax) {
+                    const lru = this._embedCache.keys().next().value;
+                    if (lru !== undefined) this._embedCache.delete(lru);
+                }
                 this._embedCache.set(text, vec);
                 return vec;
             }

@@ -97,6 +97,21 @@ test('recallSimilar uses SSM embeddings when the runtime exposes embed()', async
     expect(runtime.embed.mock.calls.length).toBe(callsAfterFirst); // fully cached
 });
 
+test('recallSimilar uses the HNSW ANN path once the fact count crosses annThreshold (EVM-1)', async () => {
+    // annThreshold 4 → 6 facts triggers the ANN path instead of the exact scan.
+    const store = freshStore({ annThreshold: 4 });
+    // Distinct unit directions; the query matches "f0" exactly.
+    const dirs: Record<string, [number, number]> = {
+        query: [1, 0], f0: [1, 0], f1: [0.92, 0.39], f2: [0.71, 0.71],
+        f3: [0.39, 0.92], f4: [0, 1], f5: [-0.71, 0.71],
+    };
+    for (const k of ['f0', 'f1', 'f2', 'f3', 'f4', 'f5']) await store.remember(k, k);
+    const runtime = { embed: jest.fn<any>(async (t: string) => new Float32Array(dirs[t] ?? [0, 0])) };
+
+    const [top] = await store.recallSimilar('query', 1, runtime);
+    expect(top.key).toBe('f0'); // ANN still returns the true nearest neighbour
+});
+
 test('recallSimilar falls back to Jaccard when embed() returns an unusable vector', async () => {
     const store = freshStore();
     await store.remember('k1', 'alpha beta gamma');

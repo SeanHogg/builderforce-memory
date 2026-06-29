@@ -53,6 +53,22 @@ export interface DistillOptions {
     qualityGate? : QualityGate;
 }
 
+/**
+ * Catastrophic-forgetting guard (EVM-5). Online WSLA adapts a narrow set of
+ * weights toward the newest exemplar, which can erode previously-learned
+ * knowledge. A rehearsal (experience-replay) buffer mitigates this: each adapt
+ * also trains on a sample of past exemplars, so old knowledge is continually
+ * reinforced instead of overwritten.
+ */
+export interface RehearsalOptions {
+    /** Ring-buffer capacity of past exemplars. 0 disables rehearsal. Default 0. */
+    bufferSize?: number;
+    /** How many past exemplars to mix into each adapt pass. Default 2. */
+    sampleK?: number;
+    /** Deterministic sampling seed. Default 1. */
+    seed?: number;
+}
+
 export interface DistillResult {
     /** The input prompt that was distilled. */
     input        : string;
@@ -64,6 +80,8 @@ export interface DistillResult {
     skipped?     : boolean;
     /** Reason adaptation was skipped, if applicable. */
     skipReason?  : string;
+    /** Number of past exemplars rehearsed alongside this one (EVM-5). */
+    rehearsed?   : number;
 }
 
 export interface DistillBatchResult {
@@ -94,14 +112,56 @@ export class DistillationEngine {
     private readonly _bridge   : TransformerBridge;
     private readonly _log      : DistillationLog[] = [];
 
+    // ── Rehearsal buffer (EVM-5 catastrophic-forgetting guard) ─────────────────
+    private readonly _rehearsalSize : number;
+    private readonly _rehearsalK    : number;
+    private readonly _rehearsal     : Array<{ input: string; teacherOutput: string }> = [];
+    private _rehearsalState         : number;
+
     /**
      * @param runtime The SSMRuntime whose SSM will be trained as the student.
      * @param bridge  The transformer bridge acting as teacher.
      *                A bridge must be provided — distillation requires one.
+     * @param rehearsal Optional experience-replay config (EVM-5). When
+     *                `bufferSize > 0`, each adapt also trains on a sample of past
+     *                exemplars to guard against catastrophic forgetting.
      */
-    constructor(runtime: SSMRuntime, bridge: TransformerBridge) {
+    constructor(runtime: SSMRuntime, bridge: TransformerBridge, rehearsal: RehearsalOptions = {}) {
         this._runtime = runtime;
         this._bridge  = bridge;
+        this._rehearsalSize = Math.max(0, rehearsal.bufferSize ?? 0);
+        this._rehearsalK    = Math.max(0, rehearsal.sampleK ?? 2);
+        this._rehearsalState = (rehearsal.seed ?? 1) >>> 0 || 1;
+    }
+
+    /** Current number of exemplars held in the rehearsal buffer (EVM-5). */
+    getRehearsalBufferSize(): number {
+        return this._rehearsal.length;
+    }
+
+    /** Deterministic [0,1) draw for reproducible rehearsal sampling. */
+    private _rand(): number {
+        this._rehearsalState = (Math.imul(1664525, this._rehearsalState) + 1013904223) >>> 0;
+        return this._rehearsalState / 0x1_0000_0000;
+    }
+
+    /** Sample up to `_rehearsalK` distinct past exemplars (reservoir-free, by index). */
+    private _sampleRehearsal(): Array<{ input: string; teacherOutput: string }> {
+        if (this._rehearsalSize === 0 || this._rehearsal.length === 0 || this._rehearsalK === 0) return [];
+        const k = Math.min(this._rehearsalK, this._rehearsal.length);
+        const idxs = this._rehearsal.map((_, i) => i);
+        // Partial Fisher–Yates to pick k distinct indices deterministically.
+        for (let i = 0; i < k; i++) {
+            const j = i + Math.floor(this._rand() * (idxs.length - i));
+            const tmp = idxs[i]!; idxs[i] = idxs[j]!; idxs[j] = tmp;
+        }
+        return idxs.slice(0, k).map((i) => this._rehearsal[i]!);
+    }
+
+    private _pushRehearsal(input: string, teacherOutput: string): void {
+        if (this._rehearsalSize === 0) return;
+        this._rehearsal.push({ input, teacherOutput });
+        if (this._rehearsal.length > this._rehearsalSize) this._rehearsal.shift();
     }
 
     /**
@@ -182,9 +242,13 @@ export class DistillationEngine {
             }
         }
 
-        // Train the SSM on the teacher's output.
-        // Prepend the input so the model learns the (prompt → response) mapping.
-        const trainingText = `${input}\n${teacherOutput}`;
+        // Train the SSM on the teacher's output, prepending the input so the model
+        // learns the (prompt → response) mapping. EVM-5: interleave a sample of
+        // past exemplars (experience replay) so this adapt reinforces prior
+        // knowledge instead of overwriting it (catastrophic-forgetting guard).
+        const rehearsed = this._sampleRehearsal();
+        const pairs = [...rehearsed, { input, teacherOutput }].map((p) => `${p.input}\n${p.teacherOutput}`);
+        const trainingText = pairs.join('\n\n');
 
         let adaptResult: AdaptResult;
         try {
@@ -197,6 +261,9 @@ export class DistillationEngine {
             );
         }
 
+        // Record the new exemplar for future rehearsal.
+        this._pushRehearsal(input, teacherOutput);
+
         this._appendLog({
             input,
             teacherOutputLength: teacherOutput.length,
@@ -205,7 +272,7 @@ export class DistillationEngine {
             epochs     : adaptResult.epochCount,
         });
 
-        return { input, teacherOutput, adaptResult, skipped: false };
+        return { input, teacherOutput, adaptResult, skipped: false, rehearsed: rehearsed.length };
     }
 
     /**
