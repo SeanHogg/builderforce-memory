@@ -16,7 +16,9 @@ import {
   BPETokenizer,
   EvermindModelPackage,
   exportEvermind,
+  benchmarkText,
   type ExportFormat,
+  type BenchmarkReport,
 } from "@seanhogg/builderforce-memory-engine";
 import { EvermindCognition } from "../cognition/index.js";
 import { hybridRetrieve, chunkText } from "../retrieval/index.js";
@@ -223,6 +225,50 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         if (typeof out !== "string") throw new Error("evaluation generation failed");
         ctx.bag.sample = out;
         return `sample: "${out.slice(0, 40)}"`;
+      }),
+  },
+  benchmark: {
+    info: {
+      type: "benchmark",
+      layer: "BUILD",
+      label: "Benchmark",
+      description:
+        "Score the trained model on held-out text — perplexity, bits/token, top-1/top-k accuracy, throughput (params: evalCorpus, topK, maxPerplexity, minTop1)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Benchmark model (held-out)", async (ctx) => {
+        const model = ctx.bag.model as EvermindLM | undefined;
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        if (!model || !tok) throw new Error("no trained model — add 'train-model' first");
+        // Score on held-out text: the eval corpus must be text the model did not
+        // train on, otherwise perplexity is meaningless. Default to a small
+        // held-out probe distinct from the training KNOWLEDGE corpus.
+        const evalCorpus = pStr(
+          cfg,
+          "evalCorpus",
+          "Agents recall facts and act on them. The planning loop retrieves context before generating.",
+        );
+        const topK = pNum(cfg, "topK", 5);
+        const report: BenchmarkReport = benchmarkText(model, tok, evalCorpus, { topK });
+        if (report.tokens === 0) {
+          throw new Error("eval corpus produced no scorable tokens — provide longer held-out text");
+        }
+        ctx.bag.benchmark = report;
+
+        // Optional quality gates — only enforced when a threshold is configured.
+        const maxPerplexity = pNum(cfg, "maxPerplexity", 0);
+        if (maxPerplexity > 0 && report.perplexity > maxPerplexity) {
+          throw new Error(
+            `perplexity ${report.perplexity.toFixed(2)} exceeds max ${maxPerplexity} (model underfit — raise epochs/lr or enlarge the corpus)`,
+          );
+        }
+        const minTop1 = pNum(cfg, "minTop1", 0);
+        if (minTop1 > 0 && report.top1Accuracy < minTop1) {
+          throw new Error(
+            `top-1 accuracy ${(report.top1Accuracy * 100).toFixed(1)}% below min ${(minTop1 * 100).toFixed(0)}%`,
+          );
+        }
+        return `ppl ${report.perplexity.toFixed(2)}, ${report.bitsPerToken.toFixed(2)} bits/tok, top1 ${(report.top1Accuracy * 100).toFixed(0)}%, top${report.topK} ${(report.topKAccuracy * 100).toFixed(0)}% over ${report.tokens} tok`;
       }),
   },
   "dataset-quality": {

@@ -72,7 +72,7 @@ describe("workflow — running", () => {
     const r = await runWorkflow(TRAIN_LLM, { registry: defaultStepRegistry });
     if (!r.ok) throw new Error(`broke at step ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
     // Generic foundation: dataset gate → train → convergence → eval → generation → deploy round-trip.
-    expect(r.steps.map((s) => s.id)).toEqual(["tok", "data", "model", "converge", "eval", "gen", "pkg"]);
+    expect(r.steps.map((s) => s.id)).toEqual(["tok", "data", "model", "converge", "eval", "gen", "bench", "pkg", "export"]);
     expect(r.steps.every((s) => s.status === "pass")).toBe(true);
 
     // The new diagnostics actually asserted something meaningful:
@@ -80,6 +80,7 @@ describe("workflow — running", () => {
     expect(byId.data!.detail).toMatch(/words/);          // dataset quality measured the corpus
     expect(byId.converge!.detail).toMatch(/→/);          // convergence saw loss drop
     expect(byId.gen!.detail).toMatch(/deterministic/);   // generation reproducible
+    expect(byId.bench!.detail).toMatch(/ppl .*bits\/tok.*top1/); // benchmark scored held-out text
     expect(byId.pkg!.detail).toMatch(/matches/);         // served == trained (deploy round-trip)
 
     // The workflow OUTPUT is a portable .evermind artifact + its tokenizer.
@@ -119,6 +120,55 @@ describe("workflow — running", () => {
     expect(r.ok).toBe(false);
     expect(r.firstFailure?.error).toMatch(/no training history/);
   });
+
+  test("benchmark step requires a trained model", async () => {
+    const r = await runWorkflow({
+      id: "nobench", name: "nobench",
+      steps: [{ id: "bench", type: "benchmark" }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.firstFailure?.error).toMatch(/no trained model/);
+  });
+
+  test("benchmark step scores a trained model and its perplexity gate can fail a bad model", async () => {
+    const steps = [
+      { id: "tok", type: "train-tokenizer", params: { corpus: "alpha beta gamma. beta gamma delta. gamma delta alpha. delta alpha beta.", numMerges: 30 } },
+      { id: "model", type: "train-model", params: { epochs: 15, dModel: 12, numLayers: 1 } },
+    ];
+    // No gate → passes and reports a scorecard.
+    const ok = await runWorkflow({ id: "b1", name: "b1", steps: [...steps, { id: "bench", type: "benchmark" }] });
+    if (!ok.ok) throw new Error(`broke at ${ok.firstFailure?.id}: ${ok.firstFailure?.error}`);
+    const bench = ok.steps.find((s) => s.id === "bench")!;
+    expect(bench.status).toBe("pass");
+    expect(bench.detail).toMatch(/ppl .*bits\/tok.*top1.*top5/);
+
+    // An impossible perplexity gate fails the step.
+    const gated = await runWorkflow({
+      id: "b2", name: "b2",
+      steps: [...steps, { id: "bench", type: "benchmark", params: { maxPerplexity: 1.0 } }],
+    });
+    expect(gated.ok).toBe(false);
+    expect(gated.firstFailure?.id).toBe("bench");
+    expect(gated.firstFailure?.error).toMatch(/perplexity .* exceeds max/);
+
+    // An impossible top-1 accuracy gate also fails the step.
+    const top1 = await runWorkflow({
+      id: "b3", name: "b3",
+      steps: [...steps, { id: "bench", type: "benchmark", params: { minTop1: 0.999 } }],
+    });
+    expect(top1.ok).toBe(false);
+    expect(top1.firstFailure?.id).toBe("bench");
+    expect(top1.firstFailure?.error).toMatch(/top-1 accuracy .* below min/);
+
+    // An eval corpus that yields no scorable tokens fails clearly.
+    const empty = await runWorkflow({
+      id: "b4", name: "b4",
+      steps: [...steps, { id: "bench", type: "benchmark", params: { evalCorpus: "" } }],
+    });
+    expect(empty.ok).toBe(false);
+    expect(empty.firstFailure?.id).toBe("bench");
+    expect(empty.firstFailure?.error).toMatch(/no scorable tokens/);
+  }, 30000);
 
   test("a CUSTOM workflow (cloned + edited) trains a model with custom params", async () => {
     const custom = cloneTemplate("train-llm", {

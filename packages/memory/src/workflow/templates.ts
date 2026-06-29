@@ -63,6 +63,7 @@ export const TRAIN_LLM: WorkflowConfig = {
     { id: "converge", type: "convergence" },
     { id: "eval", type: "evaluate" },
     { id: "gen", type: "generate-check" },
+    { id: "bench", type: "benchmark" },
     { id: "pkg", type: "roundtrip", params: { name: "my-llm" } },
     { id: "export", type: "export", params: { format: "huggingface", name: "my-llm", version: "1.0.0" } },
   ],

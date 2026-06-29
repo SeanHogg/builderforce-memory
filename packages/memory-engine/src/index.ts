@@ -90,6 +90,32 @@ export type {
     TensorSpec,
 } from './export/index.js';
 
+// ── Benchmarking (held-out perplexity / accuracy / throughput + A/B) ──────────
+
+export {
+    benchmarkModel,
+    benchmarkModelAsync,
+    benchmarkText,
+    compareModels,
+    compareReports,
+    corpusToSequences,
+    trainAndBenchmark,
+    argmax as benchArgmax,
+    topKIndices,
+    perplexity,
+    bitsPerToken,
+    LN2,
+} from './bench/index.js';
+export type {
+    LogitsModel,
+    AsyncLogitsModel,
+    BenchmarkOptions,
+    BenchmarkReport,
+    ComparisonReport,
+    TrainAndBenchmarkOptions,
+    TrainAndBenchmarkResult,
+} from './bench/index.js';
+
 // ── Seeded RNG (reproducible weight init) ─────────────────────────────────────
 
 export { SeededRng, setInitSeed, randn, gaussianArray } from './utils/rng.js';
