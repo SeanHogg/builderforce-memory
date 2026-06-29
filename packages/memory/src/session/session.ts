@@ -12,6 +12,8 @@ import {
     BPETokenizer,
     HybridMambaModel,
     MambaTrainer,
+    diffCheckpoints,
+    applyCheckpointDiff,
     type HybridMambaModelConfig,
     type LayerSpec,
     type LayerType,
@@ -172,12 +174,21 @@ export interface SaveOptions {
     storage?  : StorageTarget;  // Default: 'indexedDB'
     filename? : string;         // Used by 'download' and 'fileSystem'. Default: '<name>.bin'
     key?      : string;         // IndexedDB key override. Default: session name
+    /**
+     * Base checkpoint to diff against (EVM-6b). When provided, save persists only
+     * a sparse DELTA vs this base (online adapt() I/O win) instead of the full
+     * model. Reload with `load({ deltaBase })`. Must be an f32 checkpoint of the
+     * same config (e.g. a prior `await session.export()` / saved buffer).
+     */
+    deltaBase?: ArrayBuffer;
 }
 
 export interface LoadOptions {
     storage?  : StorageTarget;  // Default: 'indexedDB'
     url?      : string;         // Used when storage is 'url'
     key?      : string;         // IndexedDB key override. Default: session name
+    /** Base checkpoint to reconstruct a delta saved with `save({ deltaBase })`. (EVM-6b) */
+    deltaBase?: ArrayBuffer;
 }
 
 export type CreateStage = 'gpu' | 'tokenizer' | 'model' | 'weights';
@@ -552,7 +563,12 @@ export class MambaSession {
         const key      = options.key      ?? this._name;
         const filename = options.filename ?? `${this._name}.bin`;
 
-        const buffer = await this._model.exportWeights();
+        // EVM-6b: when a base is supplied, persist only the sparse delta vs it
+        // (f32 both sides) — an online adapt() then writes kilobytes, not the
+        // whole model. Otherwise write the full checkpoint as before.
+        const buffer = options.deltaBase
+            ? diffCheckpoints(options.deltaBase, await this._model.exportWeights({ fp16: false }))
+            : await this._model.exportWeights();
 
         switch (storage) {
             case 'indexedDB':
@@ -607,6 +623,12 @@ export class MambaSession {
         }
 
         if (buffer == null) return false;
+
+        // EVM-6b: a delta saved with `save({ deltaBase })` is reconstructed against
+        // the same base before loading.
+        if (options.deltaBase) {
+            buffer = applyCheckpointDiff(options.deltaBase, buffer);
+        }
 
         try {
             await this._model.loadWeights(buffer);

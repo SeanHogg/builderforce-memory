@@ -120,7 +120,14 @@ export type {
 
 export { crc32, appendCrcTrailer, verifyCrcTrailer, CRC_TRAILER_MAGIC } from './utils/crc32.js';
 export type { CrcCheck } from './utils/crc32.js';
-export { computeRowDelta, applyRowDelta, serializeRowDelta, deserializeRowDelta } from './utils/delta.js';
+export {
+    computeRowDelta,
+    applyRowDelta,
+    serializeRowDelta,
+    deserializeRowDelta,
+    diffCheckpoints,
+    applyCheckpointDiff,
+} from './utils/delta.js';
 export type { RowDelta } from './utils/delta.js';
 
 // ── Seeded RNG (reproducible weight init) ─────────────────────────────────────

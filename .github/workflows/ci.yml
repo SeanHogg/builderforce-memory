@@ -29,3 +29,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Enforce the coverage ratchet (memory package). The floor is set in
+      # packages/memory/package.json#jest.coverageThreshold and only goes up.
+      - name: Coverage
+        run: pnpm test:coverage

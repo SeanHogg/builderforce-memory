@@ -96,6 +96,45 @@ export function serializeRowDelta(delta: RowDelta): ArrayBuffer {
     return appendCrcTrailer(buf);
 }
 
+/**
+ * Diff two whole checkpoint buffers of IDENTICAL structure (same model/config,
+ * f32 data) into a sparse delta — the online-save win for `adapt()` (EVM-6b).
+ * Both buffers are produced by the same `exportWeights()` so their headers are
+ * byte-identical; only the weights the adapt actually changed appear in the
+ * delta. Operates on the raw bytes (header rows diff to nothing), so it needs no
+ * knowledge of the header layout and is GPU-free / unit-testable.
+ *
+ * Element-granular (each changed f32 stored as index+value) so a WSLA update
+ * that touches a few rows persists kilobytes, not the whole model.
+ */
+export function diffCheckpoints(base: ArrayBuffer, current: ArrayBuffer): ArrayBuffer {
+    const b = verifyCrcTrailer(base);
+    if (b.hasTrailer && !b.ok) throw new Error('diffCheckpoints: base failed CRC integrity check');
+    const c = verifyCrcTrailer(current);
+    if (c.hasTrailer && !c.ok) throw new Error('diffCheckpoints: current failed CRC integrity check');
+    if (b.body.byteLength !== c.body.byteLength) {
+        throw new Error(`diffCheckpoints: shape mismatch (base ${b.body.byteLength}B, current ${c.body.byteLength}B) — only same-config checkpoints can be diffed`);
+    }
+    if (b.body.byteLength % 4 !== 0) {
+        throw new Error('diffCheckpoints: checkpoint body is not 4-byte aligned (not an f32 checkpoint)');
+    }
+    return serializeRowDelta(computeRowDelta(new Float32Array(b.body), new Float32Array(c.body), 1));
+}
+
+/**
+ * Reconstruct the `current` checkpoint from `base` + a diff produced by
+ * {@link diffCheckpoints}. Returns a CRC-trailed buffer byte-identical to the
+ * original current checkpoint, ready for `loadWeights`.
+ */
+export function applyCheckpointDiff(base: ArrayBuffer, diff: ArrayBuffer): ArrayBuffer {
+    const b = verifyCrcTrailer(base);
+    if (b.hasTrailer && !b.ok) throw new Error('applyCheckpointDiff: base failed CRC integrity check');
+    const patched = applyRowDelta(new Float32Array(b.body), deserializeRowDelta(diff));
+    const out = new ArrayBuffer(patched.byteLength);
+    new Float32Array(out).set(patched);
+    return appendCrcTrailer(out);
+}
+
 /** Parse a binary produced by {@link serializeRowDelta}; verifies CRC + magic. */
 export function deserializeRowDelta(buffer: ArrayBuffer): RowDelta {
     const crc = verifyCrcTrailer(buffer);
