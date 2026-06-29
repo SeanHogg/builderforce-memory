@@ -26,6 +26,8 @@ import { crossEntropyLoss, crossEntropyGrad } from "../training/autograd.js";
 import { AdamW, type AdamWOptions } from "../optim/adamw.js";
 import { SeededRng } from "../utils/rng.js";
 import { quantizeFp16, dequantizeFp16 } from "../utils/quantization.js";
+import { appendCrcTrailer, verifyCrcTrailer } from "../utils/crc32.js";
+import { computeRowDelta, applyRowDelta, serializeRowDelta, deserializeRowDelta } from "../utils/delta.js";
 
 export interface EvermindLMConfig {
   /** Vocabulary size (the only required field; everything else has a default). */
@@ -434,11 +436,22 @@ export class EvermindLM {
     }
     if (fp16) new Uint16Array(buf, headerBytes, total).set(quantizeFp16(flat));
     else new Float32Array(buf, headerBytes, total).set(flat);
-    return buf;
+    // Append a CRC-32 trailer so a corrupt/truncated checkpoint is caught on load
+    // (backward-compatible: pre-CRC readers ignore the trailing bytes). (EVM-7)
+    return appendCrcTrailer(buf);
   }
 
-  /** Load weights from an "EVL0" binary. Validates magic + dims. */
+  /** Load weights from an "EVL0" binary. Validates CRC (when present), magic + dims. */
   loadWeights(buffer: ArrayBuffer): void {
+    this._setFlat(this._readFlat(buffer));
+  }
+
+  /** Parse + validate an EVL0 checkpoint to a flat f32 param vector (no mutation). */
+  private _readFlat(buffer: ArrayBuffer): Float32Array {
+    const crc = verifyCrcTrailer(buffer);
+    if (crc.hasTrailer && !crc.ok) {
+      throw new Error("EvermindLM.loadWeights: checkpoint failed CRC integrity check (corrupt or truncated)");
+    }
     const head = new Uint32Array(buffer, 0, 9);
     if (head[0] !== MAGIC) throw new Error("EvermindLM.loadWeights: bad magic (not an EVL0 checkpoint)");
     const version = head[1]!;
@@ -453,18 +466,50 @@ export class EvermindLM {
     ) {
       throw new Error("EvermindLM.loadWeights: config mismatch with checkpoint");
     }
+    const total = this.parameters().reduce((n, p) => n + p.data.length, 0);
+    const headerBytes = 36;
+    return version === 2
+      ? dequantizeFp16(new Uint16Array(buffer, headerBytes, total))
+      : new Float32Array(buffer.slice(headerBytes, headerBytes + total * 4));
+  }
+
+  /** Flat concatenation of all params, canonical order (matches checkpoint layout). */
+  private _flat(): Float32Array {
     const params = this.parameters();
     const total = params.reduce((n, p) => n + p.data.length, 0);
-    const headerBytes = 36;
-    const flat =
-      version === 2
-        ? dequantizeFp16(new Uint16Array(buffer, headerBytes, total))
-        : new Float32Array(buffer.slice(headerBytes, headerBytes + total * 4));
+    const flat = new Float32Array(total);
     let o = 0;
-    for (const p of params) {
+    for (const p of params) { flat.set(p.data, o); o += p.data.length; }
+    return flat;
+  }
+
+  /** Distribute a flat param vector back into the model's parameters. */
+  private _setFlat(flat: Float32Array): void {
+    let o = 0;
+    for (const p of this.parameters()) {
       p.data.set(flat.subarray(o, o + p.data.length));
       o += p.data.length;
     }
+  }
+
+  /**
+   * Export a SPARSE DELTA of the current weights against a base EVL0 checkpoint
+   * (EVM-6). Online WSLA updates only a few rows, so a delta persists kilobytes
+   * instead of rewriting the whole model. Reconstruct with {@link loadDelta}.
+   */
+  exportDelta(baseCheckpoint: ArrayBuffer, opts: { eps?: number } = {}): ArrayBuffer {
+    const base = this._readFlat(baseCheckpoint);
+    const current = this._flat();
+    // Row-granular when the param vector tiles evenly by the model width (the
+    // embedding dominates and is dModel-wide); else fall back to per-element.
+    const rowSize = current.length % this.config.dModel === 0 ? this.config.dModel : 1;
+    return serializeRowDelta(computeRowDelta(base, current, rowSize, opts.eps ?? 0));
+  }
+
+  /** Reconstruct weights from a base EVL0 checkpoint + a delta (EVM-6). */
+  loadDelta(baseCheckpoint: ArrayBuffer, delta: ArrayBuffer): void {
+    const base = this._readFlat(baseCheckpoint);
+    this._setFlat(applyRowDelta(base, deserializeRowDelta(delta)));
   }
 }
 

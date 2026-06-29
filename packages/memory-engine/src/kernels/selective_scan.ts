@@ -48,9 +48,11 @@ var<workgroup> wg_bu : array<f32, 256>;   // B*u values
 
 // ---- Helpers ----
 
-// Softplus: numerically stable log(1 + exp(x))
+// Softplus: numerically stable softplus(x) = log(1 + exp(x))
 fn softplus(x: f32) -> f32 {
-    return log(1.0 + exp(x));
+    // Numerically stable: max(x,0) + log1p(exp(-|x|)). The naive log(1+exp(x))
+    // overflows to +Inf for x ≳ 88 (f32 exp range); this form never does. (EVM-8)
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
 }
 
 // ZerO-Order Hold discretisation of continuous A, Δ:
@@ -251,7 +253,9 @@ struct ScanParams {
 @group(0) @binding(12) var<storage, read_write> du       : array<f32>;
 
 fn softplus(x: f32) -> f32 {
-    return log(1.0 + exp(x));
+    // Numerically stable: max(x,0) + log1p(exp(-|x|)). The naive log(1+exp(x))
+    // overflows to +Inf for x ≳ 88 (f32 exp range); this form never does. (EVM-8)
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
 }
 
 fn softplus_grad(x: f32) -> f32 {

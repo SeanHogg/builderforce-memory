@@ -29,6 +29,7 @@ export { runStdio } from "./transports/stdio.js";
 
 export { createMemoryHttpHandler } from "./transports/http.js";
 export type { HttpHandlerOptions } from "./transports/http.js";
+export { hashToken, timingSafeEqualStr, buildTenantIndex, bearerToken, RateLimiter } from "./transports/auth.js";
 
 // ── Multi-host installer (wire the stdio server into any MCP-capable agent) ───
 export { buildServerSpec, MCP_PACKAGE, MCP_BIN, RUNTIME_PEERS } from "./install/server-spec.js";

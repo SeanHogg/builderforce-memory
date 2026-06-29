@@ -36,6 +36,7 @@ import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
 import { gaussianArray, setInitSeed } from '../utils/rng.js';
 import { quantizeFp16, dequantizeFp16 } from '../utils/quantization.js';
+import { appendCrcTrailer, verifyCrcTrailer } from '../utils/crc32.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -485,7 +486,9 @@ export class HybridMambaModel {
             }
         }
 
-        return out;
+        // Append a CRC-32 trailer for integrity-on-load (backward compatible —
+        // length-bounded readers ignore the trailing bytes). (EVM-7)
+        return appendCrcTrailer(out);
     }
 
     /**
@@ -496,6 +499,11 @@ export class HybridMambaModel {
      * v3: identical layout to v2 but the data section is fp16 (dequantised on load).
      */
     async loadWeights(buffer: ArrayBuffer): Promise<void> {
+        // Verify the CRC trailer when present (corrupt/truncated guard, EVM-7).
+        const crc = verifyCrcTrailer(buffer);
+        if (crc.hasTrailer && !crc.ok) {
+            throw new Error('Invalid weight file: failed CRC integrity check (corrupt or truncated).');
+        }
         const view = new DataView(buffer);
         let off    = 0;
 

@@ -169,7 +169,16 @@ export type {
 } from './memory/MemoryStore.js';
 
 // ── Cognition (Evermind — Write-Through Cognition) ────────────────────────────
-export { EvermindCognition, workspacePresenceGatherer } from './cognition/index.js';
+export {
+    EvermindCognition,
+    workspacePresenceGatherer,
+    canonicalizeSubjectKey,
+    normalizeSubjectKey,
+    buildAliasTable,
+    sanitizeRecalledFact,
+    buildRecallContext,
+    trustScore,
+} from './cognition/index.js';
 export type {
     EvermindCognitionOptions,
     WorkspacePresenceRule,
@@ -180,6 +189,9 @@ export type {
     EvidenceGatherer,
     EvidenceResult,
     Verdict,
+    AliasTable,
+    RecalledFact,
+    FactProvenance,
 } from './cognition/index.js';
 
 // ── Diagnostics (execution-output runner) ──────────────────────────────────────
@@ -230,6 +242,7 @@ export type {
     DistillBatchResult,
     DistillationLog,
     QualityGate,
+    RehearsalOptions,
 } from './distillation/DistillationEngine.js';
 
 // ── Agent ─────────────────────────────────────────────────────────────────────

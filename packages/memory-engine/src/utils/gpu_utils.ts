@@ -10,6 +10,60 @@ const COPY_SRC: number = _gpu.GPUBufferUsage?.COPY_SRC ?? 0x04;
 const COPY_DST: number = _gpu.GPUBufferUsage?.COPY_DST ?? 0x08;
 const MAP_READ: number = _gpu.GPUBufferUsage?.MAP_READ ?? 0x01;
 
+/**
+ * Shape-keyed GPUBuffer pool (EVM-8). Hot paths (e.g. `readBuffer` staging)
+ * allocated and destroyed a GPUBuffer on EVERY call — costly under load. The
+ * pool reuses buffers keyed by (byteSize, usage): `acquire` hands back a free
+ * buffer of that shape or creates one; `release` returns it for reuse. Buffers
+ * of one shape are interchangeable, so reuse is always safe.
+ */
+export class BufferPool {
+    private readonly _free = new Map<string, GPUBuffer[]>();
+    constructor(private readonly device: GPUDevice) {}
+
+    private _key(byteSize: number, usage: number): string {
+        return `${byteSize}:${usage}`;
+    }
+
+    /** A free buffer of this shape, or a freshly created one. */
+    acquire(byteSize: number, usage: number): GPUBuffer {
+        const list = this._free.get(this._key(byteSize, usage));
+        const reused = list?.pop();
+        return reused ?? this.device.createBuffer({ size: byteSize, usage });
+    }
+
+    /** Return a buffer to the pool for later reuse (do not destroy it yourself). */
+    release(buffer: GPUBuffer, byteSize: number, usage: number): void {
+        const key = this._key(byteSize, usage);
+        let list = this._free.get(key);
+        if (!list) { list = []; this._free.set(key, list); }
+        list.push(buffer);
+    }
+
+    /** Number of pooled (free) buffers across all shapes. */
+    get freeCount(): number {
+        let n = 0;
+        for (const list of this._free.values()) n += list.length;
+        return n;
+    }
+
+    /** Destroy every pooled buffer and empty the pool. */
+    clear(): void {
+        for (const list of this._free.values()) {
+            for (const b of list) b.destroy();
+        }
+        this._free.clear();
+    }
+}
+
+/** One staging-buffer pool per device, used by {@link readBuffer}. */
+const _stagingPools = new WeakMap<GPUDevice, BufferPool>();
+function stagingPool(device: GPUDevice): BufferPool {
+    let pool = _stagingPools.get(device);
+    if (!pool) { pool = new BufferPool(device); _stagingPools.set(device, pool); }
+    return pool;
+}
+
 export interface InitWebGPUOptions {
   powerPreference?: 'high-performance' | 'low-power';
 }
@@ -93,10 +147,11 @@ export function createUniformBuffer(device: GPUDevice, data: ArrayBuffer | Array
 
 export async function readBuffer(device: GPUDevice, srcBuffer: GPUBuffer, byteSize: number): Promise<Float32Array> {
     const MAP_READ_FLAG: number = _gpu.GPUMapMode?.READ ?? 0x01;
-    const stagingBuffer = device.createBuffer({
-        size  : byteSize,
-        usage : MAP_READ | COPY_DST,
-    });
+    // EVM-8: reuse a pooled staging buffer instead of allocating + destroying one
+    // per call. After unmap a staging buffer is fully reusable for the next read.
+    const stagingUsage = MAP_READ | COPY_DST;
+    const pool = stagingPool(device);
+    const stagingBuffer = pool.acquire(byteSize, stagingUsage);
 
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(srcBuffer, 0, stagingBuffer, 0, byteSize);
@@ -105,7 +160,7 @@ export async function readBuffer(device: GPUDevice, srcBuffer: GPUBuffer, byteSi
     await stagingBuffer.mapAsync(MAP_READ_FLAG);
     const result = new Float32Array(stagingBuffer.getMappedRange().slice(0));
     stagingBuffer.unmap();
-    stagingBuffer.destroy();
+    pool.release(stagingBuffer, byteSize, stagingUsage);
     return result;
 }
 

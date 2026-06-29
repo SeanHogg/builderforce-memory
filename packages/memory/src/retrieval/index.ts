@@ -22,3 +22,6 @@ export type {
     HybridRetrieveOptions,
     HybridHit,
 } from './HybridRetriever.js';
+
+export { HnswIndex, denseSearch } from './hnsw.js';
+export type { HnswOptions, SearchHit } from './hnsw.js';
