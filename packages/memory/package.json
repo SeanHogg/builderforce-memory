@@ -93,6 +93,7 @@
             "strict": false,
             "esModuleInterop": true,
             "skipLibCheck": true,
+            "rootDir": "..",
             "types": [
               "@webgpu/types",
               "jest"

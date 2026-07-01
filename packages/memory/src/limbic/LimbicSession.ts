@@ -83,8 +83,9 @@ export class LimbicSession {
   readonly gpuMode: LimbicGpuMode;
   /** The personality-conditioned resting setpoint (8-dim). NEUTRAL when no
    *  personality was supplied. The homeostatic baseline the learned dynamics
-   *  settle toward — see {@link baselineState}. */
-  readonly setpoint: Float32Array;
+   *  settle toward — see {@link baselineState}. Mutable via {@link setSetpoint} so a
+   *  long-lived service can re-point it when the active personas change. */
+  setpoint: Float32Array;
   private readonly _name: string;
   private readonly _idbFactory: IDBFactory | undefined;
 
@@ -120,6 +121,21 @@ export class LimbicSession {
    */
   baselineState(): Float32Array {
     return Float32Array.from(this.setpoint);
+  }
+
+  /**
+   * Re-point the resting setpoint after construction — e.g. a long-lived service
+   * recomputing it when the active personas change. An explicit 8-dim vector wins;
+   * else the traits are mapped; else neutral. Clamped to bounds.
+   */
+  setSetpoint(traits?: PersonalityTraits, explicit?: ArrayLike<number>): void {
+    if (explicit && explicit.length >= LIMBIC_STATE_DIM) {
+      this.setpoint = clampState(Float32Array.from(explicit));
+    } else if (traits) {
+      this.setpoint = personalitySetpoint(traits);
+    } else {
+      this.setpoint = neutralState();
+    }
   }
 
   static async create(options: LimbicSessionOptions = {}): Promise<LimbicSession> {
