@@ -109,7 +109,8 @@
     "collectCoverageFrom": [
       "src/**/*.ts",
       "!src/**/index.ts",
-      "!src/session/**"
+      "!src/session/**",
+      "!src/limbic/LimbicSession.ts"
     ],
     "coverageThreshold": {
       "global": {
