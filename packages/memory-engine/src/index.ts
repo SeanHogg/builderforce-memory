@@ -231,6 +231,7 @@ export {
     neutralState,
     stateToRecord,
     recordToState,
+    personalitySetpoint,
     LimbicModel,
     DEFAULT_LIMBIC_CONFIG,
     DEFAULT_LIMBIC_SEED,
@@ -239,6 +240,7 @@ export {
 export type {
     Region,
     LimbicDimName,
+    PersonalityTraits,
     LimbicModelConfig,
     LimbicForward,
     LimbicParam,

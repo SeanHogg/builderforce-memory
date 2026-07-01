@@ -6,7 +6,7 @@
 
 export type { WorkflowConfig, WorkflowStepConfig, StepTypeInfo, StepFactory } from "./types.js";
 export { StepTypeRegistry, createDefaultRegistry, defaultStepRegistry } from "./registry.js";
-export { BUILTIN_STEPS } from "./steps.js";
+export { BUILTIN_STEPS, selectBestCandidate, stripCodeFences } from "./steps.js";
 export {
   AGENTIC_SEVEN_LAYER,
   TRAIN_LLM,

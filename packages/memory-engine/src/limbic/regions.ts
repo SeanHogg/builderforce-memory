@@ -139,3 +139,63 @@ export function recordToState(rec: Partial<Record<LimbicDimName, number>>): Floa
   }
   return s;
 }
+
+/**
+ * The static psychometric traits (0..100, 50 = neutral) that pull the resting
+ * affective setpoint away from {@link NEUTRAL_STATE}. A subset of the full
+ * personality vector — only the dimensions that map to a limbic drive. All
+ * optional; an omitted trait is treated as neutral (50).
+ *
+ * Keep the mapping in {@link personalitySetpoint} in sync with the runtime
+ * compiler `deriveLimbicSetpoints` in `@builderforce/agent-tools` so the on-prem
+ * runtime, the cloud engine, and this WebGPU trainer settle on the SAME baseline
+ * for the same personality. The two are coupled only by this mapping.
+ */
+export interface PersonalityTraits {
+  openness?: number;
+  emotionality?: number;
+  conscientiousness?: number;
+  extraversion?: number;
+  /** Regulatory focus: 0 = prevention, 100 = promotion. */
+  regulatoryFocus?: number;
+  riskTolerance?: number;
+  grit?: number;
+  /** Schwartz "stimulation" value. */
+  stimulation?: number;
+}
+
+/** Signed influence of a 0..100 trait around its neutral midpoint → [-1, 1]. */
+function infl(s: number | undefined): number {
+  const v = typeof s === "number" && !Number.isNaN(s) ? Math.max(0, Math.min(100, s)) : 50;
+  return (v - 50) / 50;
+}
+
+/**
+ * Derive the personality-conditioned resting SETPOINT from a trait vector — the
+ * homeostatic target the limbic dynamics relax toward and that the trainable
+ * affect model rides on top of ("personality = setpoints, limbic = dynamics").
+ * Returns a fresh clamped 8-dim state vector. A fully-neutral trait vector yields
+ * {@link NEUTRAL_STATE}. Mirrors `deriveLimbicSetpoints` in `@builderforce/agent-tools`.
+ */
+export function personalitySetpoint(traits: PersonalityTraits | undefined): Float32Array {
+  const s = neutralState();
+  if (!traits) return s;
+  const open = infl(traits.openness);
+  const emo = infl(traits.emotionality);
+  const consc = infl(traits.conscientiousness);
+  const extra = infl(traits.extraversion);
+  const reg = infl(traits.regulatoryFocus);
+  const risk = infl(traits.riskTolerance);
+  const grit = infl(traits.grit);
+  const stim = infl(traits.stimulation);
+
+  s[LIMBIC_DIM.driveCuriosity] = clampDim(LIMBIC_DIM.driveCuriosity, 0.5 + 0.35 * open + 0.15 * stim);
+  s[LIMBIC_DIM.exploration] = clampDim(LIMBIC_DIM.exploration, 0.4 + 0.3 * open + 0.25 * risk + 0.15 * reg);
+  s[LIMBIC_DIM.driveCaution] = clampDim(LIMBIC_DIM.driveCaution, 0.5 + 0.3 * consc - 0.3 * risk - 0.2 * reg + 0.15 * emo);
+  s[LIMBIC_DIM.arousal] = clampDim(LIMBIC_DIM.arousal, 0.2 + 0.2 * emo + 0.1 * extra);
+  s[LIMBIC_DIM.driveSocial] = clampDim(LIMBIC_DIM.driveSocial, 0.5 + 0.35 * extra);
+  s[LIMBIC_DIM.driveEffort] = clampDim(LIMBIC_DIM.driveEffort, 0.8 + 0.15 * grit + 0.1 * consc);
+  s[LIMBIC_DIM.valence] = clampDim(LIMBIC_DIM.valence, 0.0 + 0.1 * reg - 0.1 * emo);
+  s[LIMBIC_DIM.attention] = clampDim(LIMBIC_DIM.attention, 0.7 + 0.1 * consc);
+  return s;
+}

@@ -24,10 +24,15 @@ import {
   createBindGroup,
   dispatchKernel,
   readBuffer,
+  personalitySetpoint,
+  clampState,
+  neutralState,
+  LIMBIC_STATE_DIM,
   type LimbicModelConfig,
   type LimbicForward,
   type LimbicSample,
   type LimbicTrainOptions,
+  type PersonalityTraits,
 } from "@seanhogg/builderforce-memory-engine";
 
 import { saveToIndexedDB, loadFromIndexedDB } from "../session/persistence.js";
@@ -49,6 +54,18 @@ export interface LimbicSessionOptions {
   modelConfig?: Partial<LimbicModelConfig>;
   /** Deterministic init seed. */
   seed?: number;
+  /**
+   * The agent's static personality traits (0..100). Mapped to the resting affective
+   * SETPOINT the learned dynamics ride on top of, so training + relaxation happen
+   * around the personality baseline instead of neutral ("personality = setpoints,
+   * limbic = dynamics"). Ignored when {@link personalitySetpoint} is given.
+   */
+  personalityTraits?: PersonalityTraits;
+  /**
+   * An explicit 8-dim resting setpoint (e.g. one already derived by the runtime's
+   * `deriveLimbicSetpoints`). Overrides {@link personalityTraits}. Clamped to bounds.
+   */
+  personalitySetpoint?: ArrayLike<number>;
 }
 
 interface StepBuffers {
@@ -64,6 +81,10 @@ export class LimbicSession {
   readonly trainer: LimbicTrainer;
   readonly device: GPUDevice | null;
   readonly gpuMode: LimbicGpuMode;
+  /** The personality-conditioned resting setpoint (8-dim). NEUTRAL when no
+   *  personality was supplied. The homeostatic baseline the learned dynamics
+   *  settle toward — see {@link baselineState}. */
+  readonly setpoint: Float32Array;
   private readonly _name: string;
   private readonly _idbFactory: IDBFactory | undefined;
 
@@ -80,6 +101,7 @@ export class LimbicSession {
     gpuMode: LimbicGpuMode,
     name: string,
     idbFactory: IDBFactory | undefined,
+    setpoint: Float32Array,
   ) {
     this.model = model;
     this.trainer = trainer;
@@ -87,6 +109,17 @@ export class LimbicSession {
     this.gpuMode = gpuMode;
     this._name = name;
     this._idbFactory = idbFactory;
+    this.setpoint = setpoint;
+  }
+
+  /**
+   * A fresh copy of the personality-conditioned resting state. Seed training-sample
+   * states and initial affect from this so the learned dynamics move AROUND the
+   * agent's personality baseline rather than a fixed neutral. NEUTRAL when the
+   * session was created with no personality.
+   */
+  baselineState(): Float32Array {
+    return Float32Array.from(this.setpoint);
   }
 
   static async create(options: LimbicSessionOptions = {}): Promise<LimbicSession> {
@@ -129,7 +162,18 @@ export class LimbicSession {
       model.loadWeights(options.checkpointBuffer);
     }
     const trainer = new LimbicTrainer(model, device);
-    return new LimbicSession(model, trainer, device, gpuMode, options.name ?? "limbic-default", options.idbFactory);
+    // Resolve the resting setpoint: an explicit 8-dim vector wins; else map the
+    // personality traits; else neutral. This is where the STATIC personality enters
+    // the (dynamic, trainable) limbic system.
+    let setpoint: Float32Array;
+    if (options.personalitySetpoint && options.personalitySetpoint.length >= LIMBIC_STATE_DIM) {
+      setpoint = clampState(Float32Array.from(options.personalitySetpoint));
+    } else if (options.personalityTraits) {
+      setpoint = personalitySetpoint(options.personalityTraits);
+    } else {
+      setpoint = neutralState();
+    }
+    return new LimbicSession(model, trainer, device, gpuMode, options.name ?? "limbic-default", options.idbFactory, setpoint);
   }
 
   /** One affect step. Uses the GPU kernel when a device is available, else CPU. */

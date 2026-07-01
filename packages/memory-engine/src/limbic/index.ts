@@ -18,8 +18,9 @@ export {
   neutralState,
   stateToRecord,
   recordToState,
+  personalitySetpoint,
 } from "./regions.js";
-export type { Region, LimbicDimName } from "./regions.js";
+export type { Region, LimbicDimName, PersonalityTraits } from "./regions.js";
 
 export { LimbicModel, DEFAULT_LIMBIC_CONFIG, DEFAULT_LIMBIC_SEED } from "./limbic_model.js";
 export type { LimbicModelConfig, LimbicForward, LimbicParam } from "./limbic_model.js";

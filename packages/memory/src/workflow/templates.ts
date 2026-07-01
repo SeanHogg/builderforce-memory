@@ -71,22 +71,33 @@ export const TRAIN_LLM: WorkflowConfig = {
 
 /**
  * Out-of-the-box (prompt → code) exemplars so "Teach Evermind to Code" runs with
- * no network. A real run sets `baseUrl` + `apiKey` + `prompts` on the
- * `distill-corpus` step to distil from a live gateway coder instead.
+ * no network. Each carries execution `cases` so the same best-of-N / exec-filter
+ * path a live run uses is exercised offline (an exemplar whose code fails its
+ * cases is dropped, never trained on).
+ *
+ * A real run instead sets a teacher PANEL on the `distill-corpus` step —
+ * `teachers: [{provider:"anthropic", model:"claude-opus-4-8", apiKey},
+ *             {provider:"openai", baseUrl:<gateway>, model:<coder>, apiKey}]`
+ * (strongest first) — plus `tasks: [{prompt, cases}]`. Per task every teacher is
+ * queried, only completions that PASS the cases survive, and the strongest
+ * correct answer is kept: Opus is the authority, cheaper models contribute only
+ * where they are verifiably right.
  */
 const CODE_DISTILL_PAIRS = [
-  { prompt: "Write a JS function add(a, b) that returns their sum.", completion: "function add(a, b) {\n  return a + b;\n}" },
-  { prompt: "Write a JS function isEven(n) that returns true when n is even.", completion: "function isEven(n) {\n  return n % 2 === 0;\n}" },
-  { prompt: "Write a JS function max(a, b) returning the larger value.", completion: "function max(a, b) {\n  return a > b ? a : b;\n}" },
-  { prompt: "Write a JS function reverse(s) that reverses a string.", completion: "function reverse(s) {\n  return s.split('').reverse().join('');\n}" },
-  { prompt: "Write a JS function clamp(x, lo, hi) bounding x to [lo, hi].", completion: "function clamp(x, lo, hi) {\n  return Math.min(hi, Math.max(lo, x));\n}" },
-  { prompt: "Write a JS function sum(xs) that adds an array of numbers.", completion: "function sum(xs) {\n  return xs.reduce((a, b) => a + b, 0);\n}" },
+  { prompt: "Write a JS function add(a, b) that returns their sum.", completion: "function add(a, b) {\n  return a + b;\n}", cases: [{ call: "add(2, 3)", expect: 5 }] },
+  { prompt: "Write a JS function isEven(n) that returns true when n is even.", completion: "function isEven(n) {\n  return n % 2 === 0;\n}", cases: [{ call: "isEven(4)", expect: true }, { call: "isEven(7)", expect: false }] },
+  { prompt: "Write a JS function max(a, b) returning the larger value.", completion: "function max(a, b) {\n  return a > b ? a : b;\n}", cases: [{ call: "max(2, 9)", expect: 9 }] },
+  { prompt: "Write a JS function reverse(s) that reverses a string.", completion: "function reverse(s) {\n  return s.split('').reverse().join('');\n}", cases: [{ call: "reverse('abc')", expect: "cba" }] },
+  { prompt: "Write a JS function clamp(x, lo, hi) bounding x to [lo, hi].", completion: "function clamp(x, lo, hi) {\n  return Math.min(hi, Math.max(lo, x));\n}", cases: [{ call: "clamp(12, 0, 10)", expect: 10 }] },
+  { prompt: "Write a JS function sum(xs) that adds an array of numbers.", completion: "function sum(xs) {\n  return xs.reduce((a, b) => a + b, 0);\n}", cases: [{ call: "sum([1, 2, 3])", expect: 6 }] },
 ];
 
 /**
  * Teach Evermind to Code — the foundation pipeline for the coding skill.
  *
- * Distil a teacher coder (via the gateway) into a (prompt → code) corpus, learn a
+ * Distil a PANEL of teacher coders — Opus as the authority plus any cheaper
+ * models (gateway/OpenRouter/local) — into an execution-verified (prompt → code)
+ * corpus (best-of-N: only completions that pass their tests survive), learn a
  * code tokenizer (train fresh by default; set `hfTokenizerUrl` on the tokenizer
  * step to import merges from a proven code tokenizer instead), train the model,
  * and gate it with the standard convergence/benchmark checks PLUS code-specific

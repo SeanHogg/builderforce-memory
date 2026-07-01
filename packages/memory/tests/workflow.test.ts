@@ -14,6 +14,8 @@ import {
   WORKFLOW_TEMPLATES,
   getTemplate,
   cloneTemplate,
+  selectBestCandidate,
+  stripCodeFences,
   AGENTIC_SEVEN_LAYER,
   TRAIN_LLM,
   type WorkflowConfig,
@@ -222,9 +224,66 @@ describe("workflow — teaching Evermind to code", () => {
       ],
     });
     if (!r.ok) throw new Error(`broke at ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
-    expect(r.steps[0]!.detail).toMatch(/distilled 2 exemplar.*offline/);
+    expect(r.steps[0]!.detail).toMatch(/distilled 2 exemplar.*2 offline/);
     // The distilled code became multiple trainable sequences (blank-line split).
     expect(r.steps[2]!.detail).toMatch(/2 seqs|3 seqs/);
+  });
+
+  test("distill-corpus drops an offline exemplar whose code fails its execution cases", async () => {
+    const r = await runWorkflow({
+      id: "filter", name: "filter",
+      steps: [
+        {
+          id: "distill", type: "distill-corpus",
+          params: { pairs: [
+            { prompt: "add", completion: "function add(a, b) { return a + b; }", cases: [{ call: "add(2, 3)", expect: 5 }] },
+            // Wrong implementation — must be dropped, never trained on.
+            { prompt: "sub", completion: "function sub(a, b) { return a + b; }", cases: [{ call: "sub(5, 2)", expect: 3 }] },
+          ] },
+        },
+      ],
+    });
+    if (!r.ok) throw new Error(`broke at ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
+    expect(r.steps[0]!.detail).toMatch(/distilled 1 exemplar.*1 offline.*1 dropped/);
+  });
+
+  test("distill-corpus strips a markdown code fence a teacher wrapped around the code", async () => {
+    const r = await runWorkflow({
+      id: "fence", name: "fence",
+      steps: [
+        {
+          id: "distill", type: "distill-corpus",
+          params: { pairs: [
+            { prompt: "add", completion: "```js\nfunction add(a, b) { return a + b; }\n```", cases: [{ call: "add(2, 3)", expect: 5 }] },
+          ] },
+        },
+      ],
+    });
+    // The fence would fail the execution case if not stripped → the exemplar survives.
+    if (!r.ok) throw new Error(`broke at ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
+    expect(r.steps[0]!.detail).toMatch(/distilled 1 exemplar.*1 offline/);
+  });
+
+  test("selectBestCandidate keeps the first passing candidate (strongest-teacher-first) and drops all-failing", () => {
+    const cases = [{ call: "f(2)", expect: 4 }];
+    const opus = { teacher: "anthropic:claude-opus-4-8", completion: "function f(x){return x*x;}" };
+    const cheap = { teacher: "openai:coder", completion: "function f(x){return x+x;}" };
+    // Both listed; the strongest (first) correct answer wins.
+    expect(selectBestCandidate([opus, cheap], cases)?.teacher).toBe("anthropic:claude-opus-4-8");
+    // Opus wrong, cheap right → the verifiably-correct cheaper answer is kept.
+    const opusWrong = { teacher: "anthropic:claude-opus-4-8", completion: "function f(x){return x+1;}" };
+    expect(selectBestCandidate([opusWrong, cheap], cases)?.teacher).toBe("openai:coder");
+    // None pass → null (nothing trained on).
+    expect(selectBestCandidate([opusWrong, opusWrong], cases)).toBeNull();
+    // No cases → first non-empty candidate (teacher-order priority).
+    expect(selectBestCandidate([opus, cheap], [])?.teacher).toBe("anthropic:claude-opus-4-8");
+    expect(selectBestCandidate([], cases)).toBeNull();
+  });
+
+  test("stripCodeFences unwraps a fenced block but leaves bare code untouched", () => {
+    expect(stripCodeFences("```js\nfunction f(){}\n```")).toBe("function f(){}");
+    expect(stripCodeFences("```\nx = 1\n```")).toBe("x = 1");
+    expect(stripCodeFences("function f(){}")).toBe("function f(){}");
   });
 
   test("distill-corpus fails clearly when given neither pairs nor a live teacher", async () => {

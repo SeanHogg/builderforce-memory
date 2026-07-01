@@ -28,7 +28,7 @@ import { MemoryStore } from "../memory/MemoryStore.js";
 import { OpenAIBridge } from "../bridges/OpenAIBridge.js";
 import { AnthropicBridge } from "../bridges/AnthropicBridge.js";
 import type { TransformerBridge } from "../bridges/TransformerBridge.js";
-import { analyzeCode, runJsCases } from "./code-eval.js";
+import { analyzeCode, runJsCases, type CodeCase } from "./code-eval.js";
 import type { StackStep } from "../diagnostics/stack-diagnostic.js";
 import type { StepFactory, StepTypeInfo, WorkflowStepConfig } from "./types.js";
 
@@ -64,36 +64,140 @@ const CODE_TEACHER_SYSTEM =
   "You are an expert programmer. Respond with correct, idiomatic code that fulfils the request. " +
   "Output code only — no explanation, no markdown fences.";
 
-/** A (prompt → teacher completion) training exemplar produced by distillation. */
+/**
+ * A (prompt → teacher completion) training exemplar produced by distillation.
+ * `cases` (when present) execution-verify the completion; `teacher` records
+ * which panel member produced the surviving answer (attribution/telemetry).
+ */
 interface DistillPair {
   prompt: string;
   completion: string;
+  cases?: CodeCase[];
+  teacher?: string;
+}
+
+/** One coding task to distil: a prompt plus the tests its answer must pass. */
+interface DistillTask {
+  prompt: string;
+  cases?: CodeCase[];
+}
+
+/** A single teacher's answer to a prompt, before selection. */
+interface Candidate {
+  teacher: string;
+  completion: string;
+}
+
+/** A configured teacher in the panel (its display label + bridge). */
+interface Teacher {
+  label: string;
+  bridge: TransformerBridge;
+}
+
+/** One teacher's config — a panel entry, or the legacy single-teacher shape. */
+interface TeacherSpec {
+  provider?: string;
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  systemPrompt?: string;
+  maxTokens?: number;
 }
 
 /**
- * Construct a teacher {@link TransformerBridge} from step params. Any external
- * LLM can teach Evermind:
- *   • provider "openai" (default) — the BuilderForce gateway, OpenRouter, OpenAI,
- *     or any OpenAI-compatible server (Ollama / vLLM / LM Studio), selected by
- *     `baseUrl`. OpenRouter → https://openrouter.ai/api/v1.
- *   • provider "anthropic" — the Anthropic Messages API directly.
- * Returns null when no live teacher is configured (offline `pairs`-only run).
+ * Strip a wrapping ```lang … ``` markdown fence some teachers add despite the
+ * "code only, no fences" instruction — otherwise the fence fails every code
+ * gate and the exemplar is wrongly dropped.
  */
-function makeTeacher(cfg: WorkflowStepConfig): TransformerBridge | null {
-  const provider = pStr(cfg, "provider", "openai").toLowerCase();
-  const apiKey = pStr(cfg, "apiKey", "");
-  const model = pStr(cfg, "model", "");
-  const systemPrompt = pStr(cfg, "systemPrompt", CODE_TEACHER_SYSTEM);
-  const maxTokens = pNum(cfg, "maxTokens", 512);
+export function stripCodeFences(text: string): string {
+  const t = text.trim();
+  const m = /^```[\w-]*\r?\n([\s\S]*?)\r?\n```$/.exec(t);
+  return m ? m[1]!.trim() : t;
+}
 
+/** Read `cases` off a param blob, dropping malformed entries. */
+function normalizeCases(raw: unknown): CodeCase[] {
+  return Array.isArray(raw)
+    ? raw.filter((c): c is CodeCase => typeof (c as { call?: unknown })?.call === "string")
+    : [];
+}
+
+/**
+ * Best-of-N selection across a teacher panel. When the task carries execution
+ * `cases`, keep only fully-passing candidates and return the first — teachers
+ * are listed strongest-first (e.g. Opus), so the strongest correct answer wins
+ * and a wrong teacher answer is dropped rather than trained on. With no cases,
+ * take the first non-empty candidate (teacher-order priority).
+ */
+export function selectBestCandidate(candidates: Candidate[], cases: CodeCase[]): Candidate | null {
+  if (candidates.length === 0) return null;
+  if (cases.length === 0) return candidates[0]!;
+  for (const c of candidates) {
+    if (runJsCases(c.completion, cases).passRate === 1) return c;
+  }
+  return null;
+}
+
+/**
+ * Build one teacher bridge from its spec. Any external LLM can teach Evermind:
+ *   • provider "openai" (default) — the BuilderForce gateway, OpenRouter, OpenAI,
+ *     or any OpenAI-compatible server (Ollama / vLLM / LM Studio), by `baseUrl`.
+ *   • provider "anthropic" — the Anthropic Messages API directly (Opus etc).
+ * Returns null when the entry lacks the credentials it needs.
+ */
+function buildTeacher(spec: TeacherSpec, defSystem: string, defMaxTokens: number): Teacher | null {
+  const provider = (spec.provider ?? "openai").toLowerCase();
+  const apiKey = spec.apiKey ?? "";
+  const model = spec.model ?? "";
+  const systemPrompt = spec.systemPrompt ?? defSystem;
+  const maxTokens = spec.maxTokens ?? defMaxTokens;
   if (provider === "anthropic") {
     if (!apiKey) return null;
-    return new AnthropicBridge({ apiKey, systemPrompt, maxTokens, ...(model ? { model } : {}) });
+    return { label: `anthropic:${model || "default"}`, bridge: new AnthropicBridge({ apiKey, systemPrompt, maxTokens, ...(model ? { model } : {}) }) };
   }
   // openai-compatible (gateway / OpenRouter / OpenAI / local) — needs a baseUrl.
-  const baseUrl = pStr(cfg, "baseUrl", "");
+  const baseUrl = spec.baseUrl ?? "";
   if (!baseUrl) return null;
-  return new OpenAIBridge({ apiKey, baseUrl, systemPrompt, maxTokens, ...(model ? { model } : {}) });
+  return { label: `${provider}:${model || "default"}`, bridge: new OpenAIBridge({ apiKey, baseUrl, systemPrompt, maxTokens, ...(model ? { model } : {}) }) };
+}
+
+/**
+ * Build the teacher panel from step params. `teachers: TeacherSpec[]` runs
+ * several models as a best-of-N panel (list the strongest FIRST — e.g. Opus —
+ * so it wins ties); the legacy single-teacher shape (top-level
+ * provider/baseUrl/apiKey/model) is honoured as a one-entry panel. Entries
+ * without credentials are skipped, so an offline `pairs`-only run yields [].
+ */
+function makeTeachers(cfg: WorkflowStepConfig): Teacher[] {
+  const defSystem = pStr(cfg, "systemPrompt", CODE_TEACHER_SYSTEM);
+  const defMaxTokens = pNum(cfg, "maxTokens", 512);
+  const raw = cfg.params?.teachers;
+  const specs: TeacherSpec[] =
+    Array.isArray(raw) && raw.length > 0
+      ? (raw as TeacherSpec[])
+      : [{ provider: pStr(cfg, "provider", "openai"), apiKey: pStr(cfg, "apiKey", ""), model: pStr(cfg, "model", ""), baseUrl: pStr(cfg, "baseUrl", "") }];
+  const out: Teacher[] = [];
+  for (const s of specs) {
+    const t = buildTeacher(s ?? {}, defSystem, defMaxTokens);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** Read the coding tasks to distil: rich `tasks[{prompt,cases}]` or plain `prompts[]`. */
+function readTasks(cfg: WorkflowStepConfig): DistillTask[] {
+  const raw = cfg.params?.tasks;
+  if (Array.isArray(raw)) {
+    const out: DistillTask[] = [];
+    for (const t of raw) {
+      const prompt = (t as DistillTask)?.prompt;
+      if (typeof prompt !== "string") continue;
+      const cases = normalizeCases((t as DistillTask).cases);
+      out.push(cases.length ? { prompt, cases } : { prompt });
+    }
+    return out;
+  }
+  return pStrArr(cfg, "prompts").map((prompt) => ({ prompt }));
 }
 
 /** Byte length of an emitted export file (text or binary). */
@@ -536,49 +640,87 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
       }),
   },
 
-  // ── Teaching Evermind to code — distillation + execution-grounded gates ───────
+  // ── Teaching Evermind to code — multi-teacher distillation + exec gates ───────
   "distill-corpus": {
     info: {
       type: "distill-corpus",
       layer: "BUILD",
-      label: "Distill from teacher",
+      label: "Distill from teacher panel",
       description:
-        "Build a training corpus from any teacher LLM — the gateway, OpenRouter, OpenAI, a local server, or Anthropic. Generates (prompt → code) exemplars and feeds them to train-model (params: provider, baseUrl, apiKey, model, prompts, systemPrompt, maxTokens, temperature, pairs)",
+        "Build a training corpus from a panel of teacher LLMs (Opus + any other model — the gateway, OpenRouter, OpenAI, a local server, Anthropic). Per task, queries every teacher, keeps only completions that PASS the task's execution cases (best-of-N, strongest teacher first), tags each with its teacher, and ACCUMULATES so stacked steps add up. Feeds the corpus to train-model (params: teachers[{provider,baseUrl,apiKey,model}], tasks[{prompt,cases}], prompts, provider, baseUrl, apiKey, model, systemPrompt, maxTokens, temperature, pairs)",
     },
     factory: (cfg) =>
-      mkStep(cfg, "BUILD", "Distill corpus from teacher", async (ctx) => {
-        const pairs: DistillPair[] = [];
-        // Offline exemplars (pre-captured prompt→completion) — lets the step run
-        // without network and seeds an out-of-the-box template run.
+      mkStep(cfg, "BUILD", "Distill corpus from teacher panel", async (ctx) => {
+        // Accumulate across steps so multiple teacher panels stack instead of
+        // overwriting a prior distill step's exemplars.
+        const pairs: DistillPair[] = Array.isArray(ctx.bag.distillPairs) ? (ctx.bag.distillPairs as DistillPair[]) : [];
+        const startCount = pairs.length;
+        let offlineKept = 0;
+        let verified = 0;
+        let dropped = 0;
+
+        // Offline exemplars (pre-captured) — a single trusted candidate each,
+        // execution-verified when the pair carries `cases`.
         const offline = cfg.params?.pairs;
         if (Array.isArray(offline)) {
           for (const p of offline) {
             const prompt = (p as DistillPair)?.prompt;
             const completion = (p as DistillPair)?.completion;
-            if (typeof prompt === "string" && typeof completion === "string") pairs.push({ prompt, completion });
+            if (typeof prompt !== "string" || typeof completion !== "string") continue;
+            const cases = normalizeCases((p as DistillPair).cases);
+            const chosen = selectBestCandidate([{ teacher: "offline", completion: stripCodeFences(completion) }], cases);
+            if (!chosen) { dropped++; continue; }
+            const pair: DistillPair = { prompt, completion: chosen.completion, teacher: "offline" };
+            if (cases.length) pair.cases = cases;
+            pairs.push(pair);
+            offlineKept++;
           }
         }
-        // Live teacher — any external LLM provider (see makeTeacher).
-        const teacher = makeTeacher(cfg);
-        const prompts = pStrArr(cfg, "prompts");
-        let via = "offline pairs";
-        if (teacher && prompts.length > 0) {
+
+        // Live teacher panel — Opus and/or any other models, best-of-N + exec-filtered.
+        const teachers = makeTeachers(cfg);
+        const tasks = readTasks(cfg);
+        if (teachers.length > 0 && tasks.length > 0) {
           const temperature = pNum(cfg, "temperature", 0.2);
-          for (const prompt of prompts) {
-            const completion = await teacher.generate(prompt, { temperature });
-            pairs.push({ prompt, completion });
+          // Dedupe identical (teacher, prompt) calls within this run so a repeated
+          // prompt is not billed twice.
+          const memo = new Map<string, string>();
+          for (const task of tasks) {
+            const candidates: Candidate[] = [];
+            for (const t of teachers) {
+              const key = `${t.label} ${task.prompt}`;
+              let completion = memo.get(key);
+              if (completion === undefined) {
+                completion = stripCodeFences(await t.bridge.generate(task.prompt, { temperature }));
+                memo.set(key, completion);
+              }
+              if (completion.trim()) candidates.push({ teacher: t.label, completion });
+            }
+            const chosen = selectBestCandidate(candidates, task.cases ?? []);
+            if (!chosen) { dropped++; continue; }
+            const pair: DistillPair = { prompt: task.prompt, completion: chosen.completion, teacher: chosen.teacher };
+            if (task.cases?.length) pair.cases = task.cases;
+            pairs.push(pair);
+            verified++;
           }
-          via = `${pStr(cfg, "provider", "openai")} teacher`;
         }
+
         if (pairs.length === 0) {
           throw new Error(
-            "distill-corpus produced no exemplars — set a teacher (provider + apiKey + prompts; baseUrl for openai-compatible) or supply offline 'pairs'",
+            "distill-corpus produced no exemplars — set teachers (provider + apiKey + prompts/tasks; baseUrl for openai-compatible) or supply offline 'pairs'",
           );
         }
+
         const corpus = pairs.map((p) => `${p.prompt}\n${p.completion}`).join("\n\n");
         ctx.bag.corpus = corpus;
         ctx.bag.distillPairs = pairs;
-        return `distilled ${pairs.length} exemplar(s), ${corpus.length} chars (${via})`;
+
+        const added = pairs.length - startCount;
+        const parts: string[] = [];
+        if (offlineKept) parts.push(`${offlineKept} offline`);
+        if (verified) parts.push(`${verified} verified via ${teachers.length} teacher(s): ${teachers.map((t) => t.label).join(", ")}`);
+        if (dropped) parts.push(`${dropped} dropped`);
+        return `distilled ${added} exemplar(s) (${pairs.length} total, ${corpus.length} chars)${parts.length ? ` — ${parts.join(", ")}` : ""}`;
       }),
   },
   "code-parse-check": {
