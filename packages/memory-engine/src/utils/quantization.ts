@@ -54,7 +54,10 @@ export function fp16ToFloat(val: number): number {
     const mantissa =  val         & 0x3FF;
 
     if (exponent === 0) {
-        const f = mantissa / 1024.0;
+        // Subnormal: value = mantissa/1024 × 2^-14 (no implicit leading 1, min
+        // exponent -14). The 2^-14 scale was missing, so subnormals (|x| < ~6.1e-5)
+        // decoded ~16384× too large — corrupting every fp16 round-trip of tiny weights.
+        const f = (mantissa / 1024.0) * Math.pow(2, -14);
         return sign ? -f : f;
     }
 

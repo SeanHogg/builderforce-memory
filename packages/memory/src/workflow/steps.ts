@@ -16,13 +16,19 @@ import {
   BPETokenizer,
   EvermindModelPackage,
   exportEvermind,
+  importEvermind,
   benchmarkText,
   type ExportFormat,
   type BenchmarkReport,
+  type ImportOptions,
 } from "@seanhogg/builderforce-memory-engine";
 import { EvermindCognition } from "../cognition/index.js";
 import { hybridRetrieve, chunkText } from "../retrieval/index.js";
 import { MemoryStore } from "../memory/MemoryStore.js";
+import { OpenAIBridge } from "../bridges/OpenAIBridge.js";
+import { AnthropicBridge } from "../bridges/AnthropicBridge.js";
+import type { TransformerBridge } from "../bridges/TransformerBridge.js";
+import { analyzeCode, runJsCases } from "./code-eval.js";
 import type { StackStep } from "../diagnostics/stack-diagnostic.js";
 import type { StepFactory, StepTypeInfo, WorkflowStepConfig } from "./types.js";
 
@@ -47,20 +53,81 @@ function pBool(cfg: WorkflowStepConfig, key: string, def: boolean): boolean {
   const v = cfg.params?.[key];
   return typeof v === "boolean" ? v : def;
 }
+/** Read a string[] param (non-strings dropped). */
+function pStrArr(cfg: WorkflowStepConfig, key: string): string[] {
+  const v = cfg.params?.[key];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** Default teacher instruction for code distillation — code only, no prose/fences. */
+const CODE_TEACHER_SYSTEM =
+  "You are an expert programmer. Respond with correct, idiomatic code that fulfils the request. " +
+  "Output code only — no explanation, no markdown fences.";
+
+/** A (prompt → teacher completion) training exemplar produced by distillation. */
+interface DistillPair {
+  prompt: string;
+  completion: string;
+}
+
+/**
+ * Construct a teacher {@link TransformerBridge} from step params. Any external
+ * LLM can teach Evermind:
+ *   • provider "openai" (default) — the BuilderForce gateway, OpenRouter, OpenAI,
+ *     or any OpenAI-compatible server (Ollama / vLLM / LM Studio), selected by
+ *     `baseUrl`. OpenRouter → https://openrouter.ai/api/v1.
+ *   • provider "anthropic" — the Anthropic Messages API directly.
+ * Returns null when no live teacher is configured (offline `pairs`-only run).
+ */
+function makeTeacher(cfg: WorkflowStepConfig): TransformerBridge | null {
+  const provider = pStr(cfg, "provider", "openai").toLowerCase();
+  const apiKey = pStr(cfg, "apiKey", "");
+  const model = pStr(cfg, "model", "");
+  const systemPrompt = pStr(cfg, "systemPrompt", CODE_TEACHER_SYSTEM);
+  const maxTokens = pNum(cfg, "maxTokens", 512);
+
+  if (provider === "anthropic") {
+    if (!apiKey) return null;
+    return new AnthropicBridge({ apiKey, systemPrompt, maxTokens, ...(model ? { model } : {}) });
+  }
+  // openai-compatible (gateway / OpenRouter / OpenAI / local) — needs a baseUrl.
+  const baseUrl = pStr(cfg, "baseUrl", "");
+  if (!baseUrl) return null;
+  return new OpenAIBridge({ apiKey, baseUrl, systemPrompt, maxTokens, ...(model ? { model } : {}) });
+}
 
 /** Byte length of an emitted export file (text or binary). */
 function fileBytes(data: Uint8Array | string): number {
   return typeof data === "string" ? new TextEncoder().encode(data).length : data.length;
 }
 
+/** Coerce a workflow-param weight blob (bytes, ArrayBuffer, number[], or base64) to Uint8Array. */
+function toBytes(value: unknown, base64?: string): Uint8Array | null {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (Array.isArray(value) && value.every((n) => typeof n === "number")) return Uint8Array.from(value as number[]);
+  if (typeof base64 === "string" && base64) {
+    if (typeof atob !== "function") throw new Error("import-model: base64 decoding needs atob (browser/Worker/Node 16+)");
+    const bin = atob(base64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return null;
+}
+
 function mkStep(cfg: WorkflowStepConfig, layer: string, defaultLabel: string, run: StackStep["run"]): StackStep {
   return { id: cfg.id, layer, label: cfg.label ?? defaultLabel, run };
 }
 
-/** Encode a corpus into next-token training sequences (one per sentence). */
+/**
+ * Encode a corpus into next-token training sequences. Split on sentence
+ * boundaries (prose) OR blank lines (code blocks / distilled prompt→code pairs),
+ * so both natural-language and code corpora yield multiple trainable sequences.
+ */
 function corpusToSequences(corpus: string, tok: BPETokenizer): number[][] {
   return corpus
-    .split(/(?<=\.)\s+/)
+    .split(/(?<=\.)\s+|\n\s*\n/)
     .map((s) => tok.encode(s.trim()))
     .filter((ids) => ids.length >= 2);
 }
@@ -175,16 +242,38 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
 
   // ── LLM-creation pipeline (BUILD) — produces a custom .evermind model ────────
   "train-tokenizer": {
-    info: { type: "train-tokenizer", layer: "BUILD", label: "Train tokenizer", description: "Learn a BPE vocab from your corpus (params: corpus, numMerges)" },
+    info: {
+      type: "train-tokenizer",
+      layer: "BUILD",
+      label: "Train tokenizer",
+      description:
+        "Build a BPE vocab — train fresh from your corpus, OR import merges from a proven code tokenizer (params: corpus, numMerges, hfTokenizer, hfTokenizerUrl)",
+    },
     factory: (cfg) =>
       mkStep(cfg, "BUILD", "Train tokenizer (BPE)", async (ctx) => {
-        const corpus = pStr(cfg, "corpus", KNOWLEDGE.repeat(4));
-        const numMerges = pNum(cfg, "numMerges", 100);
         const tok = new BPETokenizer();
+        // Two paths, both first-class (this is an IDE choice):
+        //   • import-merges: seed from a Hugging Face tokenizer.json (code vocab on day one)
+        //   • train-fresh:   learn a vocab from the corpus
+        const hfTokenizer = cfg.params?.hfTokenizer as Record<string, unknown> | undefined;
+        const hfTokenizerUrl = pStr(cfg, "hfTokenizerUrl", "");
+        if (hfTokenizer && typeof hfTokenizer === "object") {
+          tok.loadHuggingFace(hfTokenizer);
+          ctx.bag.tokenizer = tok;
+          return `imported vocab ${tok.vocabSize} (Hugging Face merges)`;
+        }
+        if (hfTokenizerUrl) {
+          await tok.loadHuggingFaceUrl(hfTokenizerUrl);
+          ctx.bag.tokenizer = tok;
+          return `imported vocab ${tok.vocabSize} from ${hfTokenizerUrl}`;
+        }
+        // train-fresh — default to the distilled corpus from a prior step when present.
+        const corpus = pStr(cfg, "corpus", (ctx.bag.corpus as string) ?? KNOWLEDGE.repeat(4));
+        const numMerges = pNum(cfg, "numMerges", 100);
         tok.train(corpus, { numMerges });
         ctx.bag.tokenizer = tok;
         ctx.bag.corpus = corpus;
-        return `vocab ${tok.vocabSize} (${numMerges} merges)`;
+        return `trained vocab ${tok.vocabSize} (${numMerges} merges)`;
       }),
   },
   "train-model": {
@@ -413,6 +502,136 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         // Land the file set as a workflow OUTPUT so a publish step / portal can ship it.
         ctx.artifacts.export = { format, files: result.files, paramCount: result.paramCount };
         return `exported ${format}: ${result.files.length} file(s), ${total} bytes, ${result.paramCount} params`;
+      }),
+  },
+
+  "import-model": {
+    info: {
+      type: "import-model",
+      layer: "BUILD",
+      label: "Import model (warm-start)",
+      description:
+        "Warm-start an EvermindLM from a .safetensors checkpoint instead of random init — round-trips our own exports, or maps a foreign SSM checkpoint via renameMap (params: safetensors, safetensorsBase64, topK, renameMap)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Import model (warm-start)", async (ctx) => {
+        const bytes = toBytes(cfg.params?.safetensors, pStr(cfg, "safetensorsBase64", ""));
+        if (!bytes) {
+          throw new Error("import-model: provide 'safetensors' (bytes/ArrayBuffer/number[]) or 'safetensorsBase64'");
+        }
+        const opts: ImportOptions = {};
+        const topK = pNum(cfg, "topK", 0);
+        if (topK > 0) opts.topK = topK;
+        // renameMap is the JSON-friendly form of ImportOptions.rename — used to
+        // translate a foreign SSM checkpoint's tensor names to our canonical names.
+        const renameMap = cfg.params?.renameMap as Record<string, string> | undefined;
+        if (renameMap && typeof renameMap === "object") {
+          opts.rename = (name) => (name in renameMap ? renameMap[name]! : name);
+        }
+        const model = importEvermind(bytes, opts);
+        ctx.bag.model = model;
+        const params = model.parameters().reduce((n, p) => n + p.data.length, 0);
+        const c = model.config;
+        return `imported ${params} params (dModel ${c.dModel}, ${c.numLayers}L, ${c.numExperts}E) from ${bytes.length} bytes`;
+      }),
+  },
+
+  // ── Teaching Evermind to code — distillation + execution-grounded gates ───────
+  "distill-corpus": {
+    info: {
+      type: "distill-corpus",
+      layer: "BUILD",
+      label: "Distill from teacher",
+      description:
+        "Build a training corpus from any teacher LLM — the gateway, OpenRouter, OpenAI, a local server, or Anthropic. Generates (prompt → code) exemplars and feeds them to train-model (params: provider, baseUrl, apiKey, model, prompts, systemPrompt, maxTokens, temperature, pairs)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Distill corpus from teacher", async (ctx) => {
+        const pairs: DistillPair[] = [];
+        // Offline exemplars (pre-captured prompt→completion) — lets the step run
+        // without network and seeds an out-of-the-box template run.
+        const offline = cfg.params?.pairs;
+        if (Array.isArray(offline)) {
+          for (const p of offline) {
+            const prompt = (p as DistillPair)?.prompt;
+            const completion = (p as DistillPair)?.completion;
+            if (typeof prompt === "string" && typeof completion === "string") pairs.push({ prompt, completion });
+          }
+        }
+        // Live teacher — any external LLM provider (see makeTeacher).
+        const teacher = makeTeacher(cfg);
+        const prompts = pStrArr(cfg, "prompts");
+        let via = "offline pairs";
+        if (teacher && prompts.length > 0) {
+          const temperature = pNum(cfg, "temperature", 0.2);
+          for (const prompt of prompts) {
+            const completion = await teacher.generate(prompt, { temperature });
+            pairs.push({ prompt, completion });
+          }
+          via = `${pStr(cfg, "provider", "openai")} teacher`;
+        }
+        if (pairs.length === 0) {
+          throw new Error(
+            "distill-corpus produced no exemplars — set a teacher (provider + apiKey + prompts; baseUrl for openai-compatible) or supply offline 'pairs'",
+          );
+        }
+        const corpus = pairs.map((p) => `${p.prompt}\n${p.completion}`).join("\n\n");
+        ctx.bag.corpus = corpus;
+        ctx.bag.distillPairs = pairs;
+        return `distilled ${pairs.length} exemplar(s), ${corpus.length} chars (${via})`;
+      }),
+  },
+  "code-parse-check": {
+    info: {
+      type: "code-parse-check",
+      layer: "BUILD",
+      label: "Code parse check",
+      description:
+        "Validate generated output is structurally valid code — balanced delimiters/strings, optional JS parse (params: code, language, minScore)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Code structure / parse gate", async (ctx) => {
+        const code = pStr(cfg, "code", (ctx.bag.sample as string) ?? "");
+        if (!code.trim()) throw new Error("no code to check — run 'evaluate'/'generate-check' first or pass a 'code' param");
+        const language = pStr(cfg, "language", "js");
+        const analysis = analyzeCode(code, language);
+        ctx.bag.codeParse = analysis;
+        const minScore = pNum(cfg, "minScore", 0); // only enforced when configured
+        if (minScore > 0 && analysis.score < minScore) {
+          throw new Error(
+            `code structure score ${analysis.score.toFixed(2)} < min ${minScore} (unbalanced delimiters/strings — output is not valid ${language})`,
+          );
+        }
+        return `structure ${(analysis.score * 100) | 0}%${language === "js" ? `, js-parse ${analysis.jsParse ? "ok" : "fail"}` : ""}`;
+      }),
+  },
+  "code-eval": {
+    info: {
+      type: "code-eval",
+      layer: "BUILD",
+      label: "Code eval (reward)",
+      description:
+        "Execution-grounded reward: run the generated JS against test cases and score the pass-rate (params: code, cases, minPassRate)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Code execution reward", async (ctx) => {
+        const code = pStr(cfg, "code", (ctx.bag.sample as string) ?? "");
+        if (!code.trim()) throw new Error("no code to evaluate — run 'evaluate'/'generate-check' first or pass a 'code' param");
+        const rawCases = cfg.params?.cases;
+        const cases = Array.isArray(rawCases)
+          ? rawCases.filter((c): c is { call: string; expect: unknown } => typeof (c as { call?: unknown })?.call === "string")
+          : [];
+        const result = runJsCases(code, cases);
+        ctx.bag.codeEval = result;
+        const minPassRate = pNum(cfg, "minPassRate", 0); // only enforced when configured
+        if (minPassRate > 0 && result.passRate < minPassRate) {
+          throw new Error(
+            `code-eval pass-rate ${(result.passRate * 100) | 0}% < min ${(minPassRate * 100) | 0}%${result.error ? ` (${result.error})` : ""}`,
+          );
+        }
+        return result.total > 0
+          ? `${result.passed}/${result.total} cases passed (${(result.passRate * 100) | 0}%)`
+          : "no cases — execution reward skipped";
       }),
   },
 };

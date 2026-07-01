@@ -9,6 +9,21 @@ export interface BPEEncodeOptions {
 
 export type PadSide = 'right' | 'left';
 
+/** A Hugging Face `tokenizer.json` (or a bare `{ vocab, merges }`) for import. */
+export interface HuggingFaceTokenizerSpec {
+  model?: { vocab?: Record<string, number>; merges?: Array<string | [string, string]> };
+  vocab?: Record<string, number>;
+  merges?: Array<string | [string, string]>;
+}
+
+/** Override the special-token strings to match an imported tokenizer. */
+export interface SpecialTokenOverrides {
+  bos?: string;
+  eos?: string;
+  pad?: string;
+  unk?: string;
+}
+
 function buildByteEncoder(): Map<number, string> {
     const enc = new Map<number, string>();
     const ranges: [number, number][] = [
@@ -175,6 +190,50 @@ export class BPETokenizer {
         this.bosId = this.vocab.get(this.bosToken) ?? null;
         this.eosId = this.vocab.get(this.eosToken) ?? null;
         this.padId = this.vocab.get(this.padToken) ?? null;
+    }
+
+    /**
+     * Seed this tokenizer from an existing Hugging Face `tokenizer.json` — the
+     * *import-merges* path (vs `train`, which learns a fresh vocab from a corpus).
+     *
+     * BPE merges + vocab are portable DATA, not architecture: a proven code
+     * tokenizer (GPT-2 / Llama / StarCoder family) gives Evermind a battle-tested
+     * code vocabulary on day one. Those tokenizers use the same GPT-2 byte→unicode
+     * mapping this class already implements ({@link BYTE_ENCODER}), so the imported
+     * vocab is directly compatible with `encode`/`decode`/`_bpe`.
+     *
+     * Accepts the full `tokenizer.json` object (reads `.model.vocab` / `.model.merges`)
+     * or a bare `{ vocab, merges }`. `merges` may be the classic `"a b"` strings or
+     * the newer `["a", "b"]` pair arrays. Special-token strings can be overridden to
+     * match the source tokenizer (e.g. `<|endoftext|>`, `<s>`, `</s>`).
+     */
+    loadHuggingFace(spec: HuggingFaceTokenizerSpec, specials: SpecialTokenOverrides = {}): void {
+        const model = (spec.model ?? spec) as { vocab?: Record<string, number>; merges?: Array<string | [string, string]> };
+        const vocabObj = model.vocab ?? (spec as HuggingFaceTokenizerSpec).vocab;
+        const rawMerges = model.merges ?? (spec as HuggingFaceTokenizerSpec).merges;
+        if (!vocabObj || typeof vocabObj !== 'object') {
+            throw new Error('loadHuggingFace: missing model.vocab (expected a Hugging Face tokenizer.json)');
+        }
+        if (!Array.isArray(rawMerges)) {
+            throw new Error('loadHuggingFace: missing model.merges (expected a BPE tokenizer.json)');
+        }
+        const mergeArr = rawMerges.map((m) => (Array.isArray(m) ? `${m[0]} ${m[1]}` : String(m)));
+        if (specials.bos) this.bosToken = specials.bos;
+        if (specials.eos) this.eosToken = specials.eos;
+        if (specials.pad) this.padToken = specials.pad;
+        if (specials.unk) this.unkToken = specials.unk;
+        this.loadFromObjects(vocabObj, mergeArr);
+    }
+
+    /**
+     * Fetch and import a Hugging Face `tokenizer.json` by URL — the IDE's
+     * "import merges from a repo" path. Resolves once the tokenizer is loaded.
+     */
+    async loadHuggingFaceUrl(url: string, specials: SpecialTokenOverrides = {}): Promise<void> {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`loadHuggingFaceUrl: ${res.status} fetching ${url}`);
+        const spec = (await res.json()) as HuggingFaceTokenizerSpec;
+        this.loadHuggingFace(spec, specials);
     }
 
     encode(text: string, opts: BPEEncodeOptions = {}): number[] {

@@ -60,6 +60,7 @@ export {
 // ── Tokenizer ─────────────────────────────────────────────────────────────────
 
 export { BPETokenizer } from './tokenizer/bpe.js';
+export type { BPEEncodeOptions, PadSide, HuggingFaceTokenizerSpec, SpecialTokenOverrides } from './tokenizer/bpe.js';
 
 // ── Model export (the publishing step: ONNX / safetensors / GGUF / HF repo) ─────
 
@@ -89,6 +90,16 @@ export type {
     EvermindArch,
     TensorSpec,
 } from './export/index.js';
+
+// ── Model import (warm-start / weight-port: safetensors → EvermindLM) ────────────
+
+export {
+    safetensorsToTensors,
+    importEvermind,
+    importEvermindTensors,
+    inferArchFromTensors,
+} from './import/index.js';
+export type { ImportOptions } from './import/index.js';
 
 // ── Benchmarking (held-out perplexity / accuracy / throughput + A/B) ──────────
 

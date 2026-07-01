@@ -1,6 +1,6 @@
 {
   "name": "builderforce-memory",
-  "version": "2026.6.31",
+  "version": "2026.6.36",
   "private": true,
   "description": "BuilderForce Agent Memory — the memory subsystem of BuilderForce.ai. Engine (@seanhogg/builderforce-memory-engine) + runtime (@seanhogg/builderforce-memory) in one workspace.",
   "type": "module",

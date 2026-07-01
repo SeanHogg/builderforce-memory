@@ -217,9 +217,12 @@ export {
     BUILTIN_STEPS,
     AGENTIC_SEVEN_LAYER,
     TRAIN_LLM,
+    TEACH_CODE,
     WORKFLOW_TEMPLATES,
     getTemplate,
     cloneTemplate,
+    analyzeCode,
+    runJsCases,
 } from './workflow/index.js';
 export type {
     WorkflowConfig,
@@ -228,6 +231,9 @@ export type {
     StepFactory,
     WorkflowValidationError,
     RunWorkflowOptions,
+    CodeAnalysis,
+    CodeCase,
+    CodeEvalResult,
 } from './workflow/index.js';
 
 // ── Publish (ship an engine model export to HF / local folder) ──────────────────

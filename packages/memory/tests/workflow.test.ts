@@ -6,7 +6,7 @@
 
 import "fake-indexeddb/auto";
 
-import { EvermindModelPackage, BPETokenizer } from "@seanhogg/builderforce-memory-engine";
+import { EvermindModelPackage, BPETokenizer, EvermindLM, exportSafetensors } from "@seanhogg/builderforce-memory-engine";
 import {
   runWorkflow,
   validateWorkflow,
@@ -20,9 +20,10 @@ import {
 } from "../src/workflow/index.js";
 
 describe("workflow — templates + registry", () => {
-  test("ships the Agentic 7-layer and Create-an-LLM templates", () => {
-    expect(WORKFLOW_TEMPLATES.map((t) => t.id)).toEqual(["agentic-seven-layer", "train-llm"]);
+  test("ships the Agentic 7-layer, Create-an-LLM, and Teach-Code templates", () => {
+    expect(WORKFLOW_TEMPLATES.map((t) => t.id)).toEqual(["agentic-seven-layer", "train-llm", "teach-code"]);
     expect(getTemplate("agentic-seven-layer")?.steps).toHaveLength(7);
+    expect(getTemplate("teach-code")?.steps.some((s) => s.type === "distill-corpus")).toBe(true);
     expect(getTemplate("nope")).toBeUndefined();
   });
 
@@ -32,6 +33,7 @@ describe("workflow — templates + registry", () => {
       expect.arrayContaining([
         "foundation", "rag", "train-tokenizer", "train-model", "package",
         "dataset-quality", "convergence", "generate-check", "roundtrip",
+        "distill-corpus", "code-parse-check", "code-eval", "import-model",
       ]),
     );
   });
@@ -185,4 +187,115 @@ describe("workflow — running", () => {
     expect(r.steps.map((s) => s.id)).toEqual(["t", "m", "p"]);
     expect((r.artifacts.evermind as ArrayBuffer).byteLength).toBeGreaterThan(0);
   }, 20000);
+});
+
+describe("workflow — teaching Evermind to code", () => {
+  test("train-tokenizer imports merges from a Hugging Face tokenizer.json (import-merges path)", async () => {
+    // A minimal byte-level BPE tokenizer.json: vocab + merges, no training corpus.
+    const hfTokenizer = {
+      model: {
+        vocab: { "<unk>": 0, "<|im_start|>": 1, "<|im_end|>": 2, "<|endoftext|>": 3, a: 4, b: 5, c: 6, ab: 7, abc: 8 },
+        merges: ["a b", "ab c"],
+      },
+    };
+    const r = await runWorkflow({
+      id: "import", name: "import",
+      steps: [{ id: "tok", type: "train-tokenizer", params: { hfTokenizer } }],
+    });
+    if (!r.ok) throw new Error(`broke: ${r.firstFailure?.error}`);
+    expect(r.steps[0]!.detail).toMatch(/imported vocab .*Hugging Face/);
+  });
+
+  test("distill-corpus assembles offline (prompt → code) exemplars into a trainable corpus", async () => {
+    const r = await runWorkflow({
+      id: "distill", name: "distill",
+      steps: [
+        {
+          id: "distill", type: "distill-corpus",
+          params: { pairs: [
+            { prompt: "add", completion: "function add(a, b) { return a + b; }" },
+            { prompt: "sub", completion: "function sub(a, b) { return a - b; }" },
+          ] },
+        },
+        { id: "tok", type: "train-tokenizer", params: { numMerges: 40 } },
+        { id: "data", type: "dataset-quality", params: { minSequences: 2, minWords: 6 } },
+      ],
+    });
+    if (!r.ok) throw new Error(`broke at ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
+    expect(r.steps[0]!.detail).toMatch(/distilled 2 exemplar.*offline/);
+    // The distilled code became multiple trainable sequences (blank-line split).
+    expect(r.steps[2]!.detail).toMatch(/2 seqs|3 seqs/);
+  });
+
+  test("distill-corpus fails clearly when given neither pairs nor a live teacher", async () => {
+    const r = await runWorkflow({ id: "empty", name: "empty", steps: [{ id: "d", type: "distill-corpus" }] });
+    expect(r.ok).toBe(false);
+    expect(r.firstFailure?.error).toMatch(/no exemplars/);
+  });
+
+  test("code-parse-check + code-eval grade real code, and their gates can fail bad output", async () => {
+    const good = "function add(a, b) { return a + b; }";
+    // Report-only (no thresholds) — both gates pass and surface metrics.
+    const ok = await runWorkflow({
+      id: "cg", name: "cg",
+      steps: [
+        { id: "parse", type: "code-parse-check", params: { code: good, language: "js" } },
+        { id: "reward", type: "code-eval", params: { code: good, cases: [{ call: "add(2, 3)", expect: 5 }, { call: "add(-1, 1)", expect: 0 }] } },
+      ],
+    });
+    if (!ok.ok) throw new Error(`broke at ${ok.firstFailure?.id}: ${ok.firstFailure?.error}`);
+    expect(ok.steps.find((s) => s.id === "parse")!.detail).toMatch(/js-parse ok/);
+    expect(ok.steps.find((s) => s.id === "reward")!.detail).toMatch(/2\/2 cases passed/);
+
+    // A structure gate fails on unbalanced code.
+    const broken = await runWorkflow({
+      id: "cb", name: "cb",
+      steps: [{ id: "parse", type: "code-parse-check", params: { code: "function add(a, b) { return a + b;", language: "js", minScore: 1 } }],
+    });
+    expect(broken.ok).toBe(false);
+    expect(broken.firstFailure?.error).toMatch(/structure score|not valid/);
+
+    // A pass-rate gate fails when the code is wrong.
+    const wrong = await runWorkflow({
+      id: "cw", name: "cw",
+      steps: [{ id: "reward", type: "code-eval", params: { code: "function add(a, b) { return a - b; }", cases: [{ call: "add(2, 3)", expect: 5 }], minPassRate: 1 } }],
+    });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.firstFailure?.error).toMatch(/pass-rate/);
+  });
+
+  test("the Teach-Code template runs green end-to-end and ships an evermind-coder artifact", async () => {
+    const r = await runWorkflow(getTemplate("teach-code")!, { registry: defaultStepRegistry });
+    if (!r.ok) throw new Error(`broke at step ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
+    expect(r.steps.map((s) => s.id)).toEqual(
+      ["distill", "tok", "data", "model", "converge", "eval", "gen", "parse", "reward", "bench", "pkg", "export"],
+    );
+    expect(r.steps.every((s) => s.status === "pass")).toBe(true);
+    expect((r.artifacts.evermind as ArrayBuffer).byteLength).toBeGreaterThan(0);
+  }, 30000);
+});
+
+describe("workflow — warm-start (weight-port import)", () => {
+  test("import-model builds a live EvermindLM from a .safetensors checkpoint, then packages it", async () => {
+    const lm = new EvermindLM({ vocabSize: 40, dModel: 16, numLayers: 2, hiddenDim: 24, numExperts: 4, topK: 2, seed: 5 });
+    const bytes = exportSafetensors(lm); // Uint8Array
+
+    const r = await runWorkflow({
+      id: "warm", name: "warm",
+      steps: [
+        { id: "imp", type: "import-model", params: { safetensors: bytes } },
+        { id: "pkg", type: "package", params: { name: "warm" } },
+      ],
+    });
+    if (!r.ok) throw new Error(`broke at ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
+    expect(r.steps[0]!.detail).toMatch(/imported .* params .*dModel 16, 2L, 4E/);
+    // The imported model is real and serveable → package produces a valid artifact.
+    expect((r.artifacts.evermind as ArrayBuffer).byteLength).toBeGreaterThan(0);
+  });
+
+  test("import-model fails clearly when no checkpoint bytes are provided", async () => {
+    const r = await runWorkflow({ id: "noimp", name: "noimp", steps: [{ id: "imp", type: "import-model" }] });
+    expect(r.ok).toBe(false);
+    expect(r.firstFailure?.error).toMatch(/safetensors/);
+  });
 });

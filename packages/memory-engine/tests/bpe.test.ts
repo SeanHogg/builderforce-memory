@@ -250,3 +250,47 @@ test('train compresses frequent sequences below their character length', () => {
     // "the" appears often → BPE should encode it in fewer than its 3 byte-chars.
     expect(t.encode('the').length).toBeLessThan(3);
 });
+
+// ── Import merges from an existing Hugging Face tokenizer ──────────────────────
+
+test('loadHuggingFace imports vocab + string merges and applies them', () => {
+    const t = new BPETokenizer();
+    t.loadHuggingFace({
+        model: {
+            vocab: { '<unk>': 0, a: 1, b: 2, c: 3, ab: 4, abc: 5 },
+            merges: ['a b', 'ab c'],
+        },
+    });
+    expect(t.vocabSize).toBe(6);
+    // The imported merges collapse "abc" into a single token.
+    expect(t.encode('abc')).toEqual([5]);
+    expect(t.decode([5])).toBe('abc');
+});
+
+test('loadHuggingFace accepts newer [a, b] pair-array merges and a bare {vocab, merges}', () => {
+    const t = new BPETokenizer();
+    t.loadHuggingFace({
+        vocab: { '<unk>': 0, x: 1, y: 2, xy: 3 },
+        merges: [['x', 'y']],
+    });
+    expect(t.encode('xy')).toEqual([3]);
+});
+
+test('loadHuggingFace special-token overrides set bos/eos/pad ids from the imported vocab', () => {
+    const t = new BPETokenizer();
+    t.loadHuggingFace(
+        { model: { vocab: { '<s>': 0, '</s>': 1, '<pad>': 2, a: 3 }, merges: [] } },
+        { bos: '<s>', eos: '</s>', pad: '<pad>' },
+    );
+    expect(t.bosId).toBe(0);
+    expect(t.eosId).toBe(1);
+    expect(t.padId).toBe(2);
+    // addBos/addEos then wrap encoded ids with the imported specials.
+    expect(t.encode('a', { addBos: true, addEos: true })).toEqual([0, 3, 1]);
+});
+
+test('loadHuggingFace rejects a spec missing vocab or merges', () => {
+    const t = new BPETokenizer();
+    expect(() => t.loadHuggingFace({ model: { merges: [] } })).toThrow(/vocab/);
+    expect(() => t.loadHuggingFace({ model: { vocab: { a: 0 } } })).toThrow(/merges/);
+});

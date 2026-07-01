@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory",
-  "version": "2026.6.35",
+  "version": "2026.6.36",
   "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, hybrid RAG retrieval, and persistent agent memory for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -102,6 +102,7 @@
       ]
     },
     "moduleNameMapper": {
+      "^@seanhogg/builderforce-memory-engine$": "<rootDir>/../memory-engine/src/index.ts",
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "collectCoverageFrom": [
