@@ -29,8 +29,20 @@ export interface TrainOptions {
   beta2?: number;
   eps?: number;
   wsla?: boolean;
+  /** Trust region: max |Δθ| per optimizer step. 0 disables. Defaults to
+   *  {@link WSLA_MAX_DELTA} in WSLA (write-through) mode, else 0 (full training). */
+  maxDelta?: number;
   onEpochEnd?: ((epoch: number, loss: number) => void) | null;
 }
+
+/**
+ * Default per-step trust region for WSLA / write-through adaptation. Small
+ * enough that a single `adapt()` nudges the narrow params without lurching, so
+ * repeated adapts stay stable (and any that regress are cheaply rolled back by
+ * the session). Full-training callers pass `maxDelta: 0` (or omit it in
+ * non-WSLA mode) for unbounded steps.
+ */
+export const WSLA_MAX_DELTA = 0.05;
 
 interface AdamMoments {
   m: GPUBuffer;
@@ -45,13 +57,22 @@ interface AdamHyperparams {
   eps: number;
   beta1_t: number;
   beta2_t: number;
+  maxDelta: number;
 }
 
 export class MambaTrainer {
     model: HybridMambaModel;
     tokenizer: BPETokenizer | null;
     device: GPUDevice;
-    private _moments: AdamMoments[] | null;
+    /**
+     * Adam moments keyed by parameter NAME (not array index). Name-keying is what
+     * lets WSLA toggle safely: a narrow write-through step updates only the
+     * `layer{i}.wXProj/bXProj` subset, a full fine-tune updates everything, and
+     * both reuse the SAME `m`/`v` buffers per parameter. Index-keyed moments (the
+     * old scheme) silently misaligned the moment with the wrong parameter the
+     * moment the trainable set changed shape — corrupting the update.
+     */
+    private _moments: Map<string, AdamMoments>;
     private _step: number;
     private _adamwPipeline: GPUComputePipeline;
     private _clipReducePipeline: GPUComputePipeline;
@@ -62,7 +83,7 @@ export class MambaTrainer {
         this.tokenizer = tokenizer;
         this.device    = model.device;
 
-        this._moments = null;
+        this._moments = new Map();
         this._step = 0;
 
         this._adamwPipeline   = createComputePipeline(this.device, WEIGHT_UPDATE_WGSL, 'adamw_update');
@@ -70,12 +91,17 @@ export class MambaTrainer {
         this._clipScalePipeline  = createComputePipeline(this.device, GRAD_CLIP_WGSL, 'grad_clip_scale');
     }
 
-    private _initMoments(): void {
-        if (this._moments) return;
-        this._moments = this.model.parameters().map(p => ({
-            m: createEmptyStorageBuffer(this.device, p.numel * 4, false),
-            v: createEmptyStorageBuffer(this.device, p.numel * 4, false),
-        }));
+    /** Get-or-create the Adam first/second moments for a parameter, by name. */
+    private _momentFor(p: BlockParam): AdamMoments {
+        let mom = this._moments.get(p.name);
+        if (!mom) {
+            mom = {
+                m: createEmptyStorageBuffer(this.device, p.numel * 4, false),
+                v: createEmptyStorageBuffer(this.device, p.numel * 4, false),
+            };
+            this._moments.set(p.name, mom);
+        }
+        return mom;
     }
 
     async train(input: string | number[], opts: TrainOptions = {}): Promise<number[]> {
@@ -92,6 +118,8 @@ export class MambaTrainer {
             wsla         = false,
             onEpochEnd   = null,
         } = opts;
+        // Trust region defaults ON for write-through (WSLA) adapts, OFF otherwise.
+        const maxDelta = opts.maxDelta ?? (wsla ? WSLA_MAX_DELTA : 0);
 
         if (wsla) this.model.setWSLAMode(true);
 
@@ -117,7 +145,9 @@ export class MambaTrainer {
             throw new Error('Input is too short to form any training chunk.');
         }
 
-        this._initMoments();
+        // Moments are created lazily per-parameter (name-keyed) on first touch —
+        // no upfront allocation needed, and it stays correct as WSLA narrows the
+        // trainable set.
 
         const epochLosses: number[] = [];
 
@@ -128,7 +158,7 @@ export class MambaTrainer {
             for (const { inputs, targets } of chunks) {
                 const loss = await this._trainStep(
                     inputs, targets, batchSize,
-                    { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, wsla }
+                    { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, wsla, maxDelta }
                 );
                 epochLoss += loss;
                 numSteps++;
@@ -148,9 +178,9 @@ export class MambaTrainer {
         inputs: number[],
         targets: number[],
         batch: number,
-        hyperparams: TrainOptions & { learningRate: number; maxGradNorm: number; weightDecay: number; beta1: number; beta2: number; eps: number }
+        hyperparams: TrainOptions & { learningRate: number; maxGradNorm: number; weightDecay: number; beta1: number; beta2: number; eps: number; maxDelta: number }
     ): Promise<number> {
-        const { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps } = hyperparams;
+        const { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, maxDelta } = hyperparams;
 
         this._step++;
         const seqLen    = inputs.length;
@@ -179,13 +209,16 @@ export class MambaTrainer {
 
         await this._clipGradients(dLogitsBuf, dLogits.length, maxGradNorm);
 
-        const params  = this.model.parameters();
+        // Only the trainable set is updated. Under WSLA (write-through) that is
+        // the narrow per-layer subset and the backbone (incl. every A_log) stays
+        // frozen — the guarantee that repeated adapts can't destabilise the SSM.
+        const params  = this.model.getTrainableParams();
         const beta1_t = Math.pow(beta1, this._step);
         const beta2_t = Math.pow(beta2, this._step);
 
         await this._adamwStep(
             params, [dLogitsBuf],
-            { learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t }
+            { learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t, maxDelta }
         );
 
         dLogitsBuf.destroy();
@@ -199,7 +232,7 @@ export class MambaTrainer {
         gradBufs: GPUBuffer[],
         hp: AdamHyperparams
     ): Promise<void> {
-        const { learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t } = hp;
+        const { learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t, maxDelta } = hp;
 
         for (let i = 0; i < params.length; i++) {
             const p       = params[i]!;
@@ -207,16 +240,17 @@ export class MambaTrainer {
 
             if (!gradBuf || gradBuf.size < p.numel * 4) continue;
 
+            const mom = this._momentFor(p);
             const paramsBuf = createUniformBuffer(this.device, packAdamParams(
-                p.numel, learningRate, beta1, beta2, eps, weightDecay, beta1_t, beta2_t
+                p.numel, learningRate, beta1, beta2, eps, weightDecay, beta1_t, beta2_t, maxDelta
             ));
 
             const bg = createBindGroup(this.device, this._adamwPipeline, [
                 paramsBuf,
                 p.buf,
                 gradBuf,
-                this._moments![i]!.m,
-                this._moments![i]!.v,
+                mom.m,
+                mom.v,
             ]);
 
             dispatchKernel(this.device, this._adamwPipeline, bg,
@@ -300,10 +334,13 @@ function buildChunks(ids: number[], seqLen: number): Array<{inputs: number[], ta
 
 function packAdamParams(
     numElements: number, lr: number, beta1: number, beta2: number,
-    eps: number, weightDecay: number, beta1_t: number, beta2_t: number
+    eps: number, weightDecay: number, beta1_t: number, beta2_t: number,
+    maxDelta: number
 ): ArrayBuffer {
-    const buf = new ArrayBuffer(32);
+    // 48 bytes: u32 + 8×f32 = 36, padded to a 16-byte multiple for the uniform
+    // layout (matches AdamParams' _pad0.._pad2 in WEIGHT_UPDATE_WGSL).
+    const buf = new ArrayBuffer(48);
     new Uint32Array(buf, 0, 1).set([numElements]);
-    new Float32Array(buf, 4, 7).set([lr, beta1, beta2, eps, weightDecay, beta1_t, beta2_t]);
+    new Float32Array(buf, 4, 8).set([lr, beta1, beta2, eps, weightDecay, beta1_t, beta2_t, maxDelta]);
     return buf;
 }

@@ -60,12 +60,15 @@ fn softplus(x: f32) -> f32 {
 //   B_bar = (A_bar - 1) / A * B  ≈  Δ * B  (first-order for simplicity)
 fn discretise_A(delta_val: f32, a_log: f32) -> f32 {
     // A is stored as -exp(a_log) to ensure A_bar < 1 (stable)
-    let a_cont = -exp(a_log);
+    // Clamp log-decay so -exp(a_log) can't overflow to -Inf (A_bar→0, state
+    // death) nor collapse toward 0 (A_bar→1, no decay). Keeps A_bar strictly in
+    // (0,1) across repeated adapts. Belt-and-suspenders: WSLA also freezes A_log.
+    let a_cont = -exp(clamp(a_log, -10.0, 5.0));
     return exp(delta_val * a_cont);
 }
 
 fn discretise_B(delta_val: f32, a_log: f32, b_val: f32) -> f32 {
-    let a_cont  = -exp(a_log);
+    let a_cont  = -exp(clamp(a_log, -10.0, 5.0));
     let a_bar   = exp(delta_val * a_cont);
     // (A_bar - 1) / A_cont * B
     let b_bar   = (a_bar - 1.0) / a_cont * b_val;
@@ -264,7 +267,10 @@ fn softplus_grad(x: f32) -> f32 {
 }
 
 fn discretise_A(delta_val: f32, a_log: f32) -> f32 {
-    let a_cont = -exp(a_log);
+    // Clamp log-decay so -exp(a_log) can't overflow to -Inf (A_bar→0, state
+    // death) nor collapse toward 0 (A_bar→1, no decay). Keeps A_bar strictly in
+    // (0,1) across repeated adapts. Belt-and-suspenders: WSLA also freezes A_log.
+    let a_cont = -exp(clamp(a_log, -10.0, 5.0));
     return exp(delta_val * a_cont);
 }
 

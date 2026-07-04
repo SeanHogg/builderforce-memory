@@ -413,6 +413,33 @@ export class HybridMambaModel {
         return params;
     }
 
+    /**
+     * The parameters a `learn()` / `adapt()` step is allowed to update.
+     *
+     * Under WSLA (write-through / narrow adaptation — the Evermind "update ==
+     * replace" path) this is ONLY the per-layer narrow subset (the input
+     * projections that produce Δ/B/C). The backbone — token embedding, final
+     * norm, and every block's `A_log` / conv / output projection — stays FROZEN.
+     * Freezing `A_log` is the key stability guarantee: the state-transition
+     * decay can never drift into a degenerate regime (state death / no-decay)
+     * across repeated adapts, which is what made the model "die after several
+     * executions". Outside WSLA every parameter trains (full fine-tune / distill).
+     *
+     * Param names are namespaced `layer{i}.{name}` to match {@link parameters},
+     * so a name-keyed optimizer (see MambaTrainer) reuses the same Adam moments
+     * whether it's stepping the full set or just the WSLA subset.
+     */
+    getTrainableParams(): LayerParam[] {
+        if (!this._wslaMode) return this.parameters();
+        const params: LayerParam[] = [];
+        for (let i = 0; i < this.layers.length; i++) {
+            for (const p of this.layers[i]!.getTrainableParams()) {
+                params.push({ ...p, name: `layer${i}.${p.name}` });
+            }
+        }
+        return params;
+    }
+
     setWSLAMode(enabled: boolean): void {
         for (const layer of this.layers) layer.setWSLAMode(enabled);
         this._wslaMode = enabled;

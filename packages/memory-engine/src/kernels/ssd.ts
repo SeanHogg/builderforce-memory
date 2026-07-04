@@ -50,7 +50,10 @@ struct SsdParams {
 @group(0) @binding(9) var<storage, read_write> state_carry : array<f32>; // [n_chunks+1,B,H,N,d_head]
 
 fn softplus(x: f32) -> f32 {
-    return log(1.0 + exp(x));
+    // Numerically stable: max(x,0) + log1p(exp(-|x|)). The naive log(1+exp(x))
+    // overflows to +Inf for x ≳ 88 (f32 exp range) — and a downstream
+    // exp(-Inf*0) then yields NaN, poisoning the state. This form never overflows.
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
 }
 
 // Workgroup: one chunk × one head × one batch item
@@ -186,7 +189,10 @@ struct SsdParams {
 @group(0) @binding(14) var<storage, read_write> dD_vec     : array<f32>;
 
 fn softplus(x: f32) -> f32 {
-    return log(1.0 + exp(x));
+    // Numerically stable: max(x,0) + log1p(exp(-|x|)). The naive log(1+exp(x))
+    // overflows to +Inf for x ≳ 88 (f32 exp range) — and a downstream
+    // exp(-Inf*0) then yields NaN, poisoning the state. This form never overflows.
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
 }
 fn d_softplus(x: f32) -> f32 {
     return 1.0 / (1.0 + exp(-x));

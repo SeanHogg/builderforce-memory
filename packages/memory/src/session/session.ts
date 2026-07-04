@@ -160,12 +160,30 @@ export interface AdaptOptions {
     wsla?         : boolean;  // Default: true  (WSLA fast-adapt mode)
     fullTrain?    : boolean;  // Convenience alias: sets wsla=false and epochs=5
     onProgress?   : (epoch: number, loss: number) => void;
+    /**
+     * Snapshot the weights before adapting and RESTORE them if the adapt produced
+     * a non-finite loss or clearly regressed the model's perplexity on the same
+     * text. Default true — this is the last line of defence behind WSLA + the
+     * per-step trust region that keeps write-through learning from "dying after
+     * several executions". Set false to skip the snapshot cost (e.g. bulk full
+     * training where you validate externally).
+     */
+    rollbackOnRegression? : boolean;  // Default: true
+    /** Regression tolerance: roll back if post-perplexity > pre × this. Default 1.25. */
+    regressionTolerance?  : number;
 }
 
 export interface AdaptResult {
     losses     : number[];
     epochCount : number;
     durationMs : number;
+    /** True when the adapt was reverted to the pre-adapt snapshot (see below). */
+    rolledBack?    : boolean;
+    /** Why it rolled back, when it did (`non-finite loss` | `perplexity regression`). */
+    rollbackReason?: string;
+    /** Perplexity on the adapt text before / after (when measured). */
+    perplexityBefore?: number;
+    perplexityAfter? : number;
 }
 
 export type StorageTarget = 'indexedDB' | 'download' | 'fileSystem';
@@ -531,6 +549,20 @@ export class MambaSession {
             );
         }
 
+        const rollbackOnRegression = options.rollbackOnRegression ?? true;
+        const regressionTolerance  = options.regressionTolerance ?? 1.25;
+
+        // Snapshot the weights and measure the pre-adapt perplexity so a bad adapt
+        // can be reverted. This is what makes repeated write-through learning safe:
+        // an update that produces NaN/Inf or clearly worsens the model is undone
+        // instead of persisting and compounding across executions.
+        let snapshot: ArrayBuffer | null = null;
+        let perplexityBefore: number | undefined;
+        if (rollbackOnRegression) {
+            snapshot = await this._model.exportWeights();
+            perplexityBefore = await this._trainer.evaluate(text).catch(() => undefined);
+        }
+
         const startTime = Date.now();
         const losses    = await this._trainer.train(text, {
             epochs,
@@ -540,11 +572,34 @@ export class MambaSession {
             onEpochEnd: onProgress ?? null,
         });
 
-        return {
+        const base: AdaptResult = {
             losses,
             epochCount : losses.length,
             durationMs : Date.now() - startTime,
         };
+
+        if (!rollbackOnRegression || !snapshot) return base;
+
+        // Validate the adapt. Roll back on a non-finite loss (the update poisoned
+        // the weights) or a perplexity regression beyond tolerance.
+        const nonFiniteLoss = losses.some((l) => !Number.isFinite(l));
+        const perplexityAfter = await this._trainer.evaluate(text).catch(() => Number.POSITIVE_INFINITY);
+        const regressed =
+            Number.isFinite(perplexityBefore ?? NaN) && Number.isFinite(perplexityAfter) &&
+            perplexityAfter > (perplexityBefore as number) * regressionTolerance;
+
+        if (nonFiniteLoss || !Number.isFinite(perplexityAfter) || regressed) {
+            await this._model.loadWeights(snapshot);
+            return {
+                ...base,
+                rolledBack    : true,
+                rollbackReason: nonFiniteLoss || !Number.isFinite(perplexityAfter) ? 'non-finite loss' : 'perplexity regression',
+                perplexityBefore,
+                perplexityAfter,
+            };
+        }
+
+        return { ...base, rolledBack: false, perplexityBefore, perplexityAfter };
     }
 
     // ── Evaluation ─────────────────────────────────────────────────────────────

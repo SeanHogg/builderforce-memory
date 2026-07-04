@@ -19,6 +19,10 @@ struct AdamParams {
     weight_decay   : f32,   // default 0.01
     beta1_t        : f32,   // beta1^t  (precomputed bias correction term)
     beta2_t        : f32,   // beta2^t
+    max_delta      : f32,   // trust region: max |Δθ| per step (0 ⇒ unbounded)
+    _pad0          : f32,   // pad struct to a 16-byte multiple (uniform layout)
+    _pad1          : f32,
+    _pad2          : f32,
 };
 
 @group(0) @binding(0) var<uniform>             adam     : AdamParams;
@@ -52,9 +56,24 @@ fn adamw_update(
     let m_hat = m_new / (1.0 - adam.beta1_t);
     let v_hat = v_new / (1.0 - adam.beta2_t);
 
-    // Weight decay (decoupled) + gradient step
-    param[i] = p * (1.0 - adam.lr * adam.weight_decay) -
-               adam.lr * m_hat / (sqrt(v_hat) + adam.eps);
+    // Adam step.
+    var step = adam.lr * m_hat / (sqrt(v_hat) + adam.eps);
+
+    // Numerical guard: never write a non-finite step into a weight. A NaN or Inf
+    // here (from a bad gradient, a zero v_hat, an overflow) would permanently
+    // poison the parameter and every future forward — the "model dies" failure.
+    // NaN fails self-comparison; treat ±Inf-magnitude as non-finite too.
+    if (step != step || step > 3.4e38 || step < -3.4e38) { step = 0.0; }
+
+    // Trust region: bound how far ONE step can move a weight. With write-through
+    // adaptation running repeatedly, an unbounded step (even from a noisy
+    // gradient) compounds across executions and blows the weights up; clamping
+    // the per-element delta keeps every adapt small and reversible. max_delta==0
+    // disables the bound (full-training callers that don't set it).
+    if (adam.max_delta > 0.0) { step = clamp(step, -adam.max_delta, adam.max_delta); }
+
+    // Weight decay (decoupled) + bounded gradient step
+    param[i] = p * (1.0 - adam.lr * adam.weight_decay) - step;
 }
 `;
 
