@@ -87,6 +87,7 @@
         "ts-jest",
         {
           "useESM": true,
+          "isolatedModules": true,
           "tsconfig": {
             "module": "ES2022",
             "moduleResolution": "bundler",
