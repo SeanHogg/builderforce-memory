@@ -87,13 +87,13 @@
         "ts-jest",
         {
           "useESM": true,
-          "isolatedModules": true,
           "tsconfig": {
             "module": "ES2022",
             "moduleResolution": "bundler",
             "strict": false,
             "esModuleInterop": true,
             "skipLibCheck": true,
+            "isolatedModules": true,
             "rootDir": "..",
             "types": [
               "@webgpu/types",

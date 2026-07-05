@@ -327,7 +327,7 @@ describe("workflow — teaching Evermind to code", () => {
     const r = await runWorkflow(getTemplate("teach-code")!, { registry: defaultStepRegistry });
     if (!r.ok) throw new Error(`broke at step ${r.firstFailure?.id}: ${r.firstFailure?.error}`);
     expect(r.steps.map((s) => s.id)).toEqual(
-      ["distill", "tok", "data", "model", "converge", "eval", "gen", "parse", "reward", "bench", "pkg", "export"],
+      ["distill", "tok", "data", "model", "converge", "eval", "gen", "parse", "reward", "bench", "codebench", "pkg", "export"],
     );
     expect(r.steps.every((s) => s.status === "pass")).toBe(true);
     expect((r.artifacts.evermind as ArrayBuffer).byteLength).toBeGreaterThan(0);

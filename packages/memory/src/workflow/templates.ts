@@ -122,6 +122,14 @@ export const TEACH_CODE: WorkflowConfig = {
     { id: "parse", type: "code-parse-check", params: { language: "js" } },
     { id: "reward", type: "code-eval", params: { cases: [{ call: "add(2, 3)", expect: 5 }] } },
     { id: "bench", type: "benchmark" },
+    // Held-out pass@1 — measures whether the student can GENERATE passing code on
+    // unseen prompts (symmetric with `bench`'s held-out perplexity). Ungated here
+    // (a demo-scale model won't pass) so it reports the metric without failing the
+    // pipeline; real corpora set `minPass1` to enforce a student-quality floor.
+    { id: "codebench", type: "code-benchmark", params: { tasks: [
+      { prompt: "function subtract", cases: [{ call: "subtract(5, 2)", expect: 3 }] },
+      { prompt: "function isEven", cases: [{ call: "isEven(4)", expect: true }, { call: "isEven(3)", expect: false }] },
+    ] } },
     { id: "pkg", type: "roundtrip", params: { name: "evermind-coder" } },
     { id: "export", type: "export", params: { format: "huggingface", name: "evermind-coder", version: "1.0.0" } },
   ],

@@ -776,4 +776,64 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
           : "no cases — execution reward skipped";
       }),
   },
+  "code-benchmark": {
+    info: {
+      type: "code-benchmark",
+      layer: "BUILD",
+      label: "Code benchmark (pass@1)",
+      description:
+        "Held-out coding benchmark: prompt the TRAINED model on N unseen tasks, execute each generated solution against its cases, and score pass@1 (a task passes only if ALL its cases pass). The symmetric coding counterpart to `benchmark`'s held-out perplexity (params: tasks:[{prompt,cases,maxNewTokens?}], maxNewTokens, temperature, minPass1)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Code benchmark (held-out pass@1)", async (ctx) => {
+        const model = ctx.bag.model as EvermindLM | undefined;
+        const tok = ctx.bag.tokenizer as BPETokenizer | undefined;
+        if (!model || !tok) throw new Error("no trained model — add 'train-model' first");
+
+        // Held-out tasks: each is a prompt the model did NOT train on plus the
+        // execution cases its output must satisfy. A task counts as passed only
+        // when EVERY case passes (strict pass@1), so this measures whether the
+        // student learned to GENERATE working code, not just clean corpus tokens.
+        const rawTasks = cfg.params?.tasks;
+        const tasks = Array.isArray(rawTasks)
+          ? rawTasks.filter(
+              (t): t is { prompt: string; cases?: unknown; maxNewTokens?: unknown } =>
+                typeof (t as { prompt?: unknown })?.prompt === "string",
+            )
+          : [];
+        if (tasks.length === 0) {
+          throw new Error("no held-out tasks — pass params.tasks: [{ prompt, cases: [{ call, expect }] }]");
+        }
+
+        const defaultMaxNewTokens = pNum(cfg, "maxNewTokens", 24);
+        const temperature = pNum(cfg, "temperature", 0);
+        const perTask = tasks.map((t) => {
+          const cases: CodeCase[] = Array.isArray(t.cases)
+            ? (t.cases as unknown[]).filter(
+                (c): c is CodeCase => typeof (c as { call?: unknown })?.call === "string",
+              )
+            : [];
+          const maxNewTokens = typeof t.maxNewTokens === "number" ? t.maxNewTokens : defaultMaxNewTokens;
+          const generated = model.generateText(t.prompt, tok, { maxNewTokens, temperature });
+          const code = stripCodeFences(typeof generated === "string" ? generated : "");
+          const evalResult = runJsCases(code, cases);
+          // Strict pass@1: the task passes only when it HAS cases and they ALL pass.
+          const passed = evalResult.total > 0 && evalResult.passRate === 1;
+          return { prompt: t.prompt, passed, cases: evalResult.total, casesPassed: evalResult.passed, error: evalResult.error };
+        });
+
+        const passedTasks = perTask.filter((r) => r.passed).length;
+        const pass1 = perTask.length > 0 ? passedTasks / perTask.length : 0;
+        ctx.bag.codeBenchmark = { pass1, passedTasks, totalTasks: perTask.length, perTask };
+
+        // Optional quality gate — symmetric with `benchmark`'s maxPerplexity/minTop1.
+        const minPass1 = pNum(cfg, "minPass1", 0); // only enforced when configured
+        if (minPass1 > 0 && pass1 < minPass1) {
+          throw new Error(
+            `code pass@1 ${(pass1 * 100) | 0}% below min ${(minPass1 * 100) | 0}% (student did not learn to generate passing code — more/better TEACH_CODE corpus or epochs)`,
+          );
+        }
+        return `pass@1 ${passedTasks}/${perTask.length} (${(pass1 * 100) | 0}%) over held-out coding tasks`;
+      }),
+  },
 };
