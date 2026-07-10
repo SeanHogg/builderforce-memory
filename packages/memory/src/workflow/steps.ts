@@ -18,9 +18,13 @@ import {
   exportEvermind,
   importEvermind,
   benchmarkText,
+  VideoRVQCodec,
+  buildVideoSequence,
+  generateVideo,
   type ExportFormat,
   type BenchmarkReport,
   type ImportOptions,
+  type Video,
 } from "@seanhogg/builderforce-memory-engine";
 import { EvermindCognition } from "../cognition/index.js";
 import { hybridRetrieve, chunkText } from "../retrieval/index.js";
@@ -234,6 +238,63 @@ function corpusToSequences(corpus: string, tok: BPETokenizer): number[][] {
     .split(/(?<=\.)\s+|\n\s*\n/)
     .map((s) => tok.encode(s.trim()))
     .filter((ids) => ids.length >= 2);
+}
+
+/** Build a VideoRVQCodec from step params (shared by the video build steps). */
+function makeVideoCodec(cfg: WorkflowStepConfig, textVocabSize: number): VideoRVQCodec {
+  return new VideoRVQCodec({
+    height: pNum(cfg, "height", 8),
+    width: pNum(cfg, "width", 8),
+    channels: pNum(cfg, "channels", 3),
+    patch: pNum(cfg, "patch", 4),
+    levels: pNum(cfg, "levels", 2),
+    codebookSize: pNum(cfg, "codebookSize", 16),
+    keyframeInterval: pNum(cfg, "keyframeInterval", 12),
+    textVocabSize,
+    seed: pNum(cfg, "seed", 7),
+  });
+}
+
+/**
+ * Deterministic synthetic clips so the video steps are self-runnable (the way the
+ * text steps default their corpus). A smooth spatial pattern that drifts a little
+ * per frame — enough temporal redundancy to exercise the inter-frame path.
+ */
+function synthVideos(count: number, frames: number, h: number, w: number, c: number): Video[] {
+  const out: Video[] = [];
+  for (let v = 0; v < count; v++) {
+    const clip: Video = [];
+    for (let t = 0; t < frames; t++) {
+      const f = new Float32Array(h * w * c);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          for (let ch = 0; ch < c; ch++) {
+            f[((y * w) + x) * c + ch] = 0.5 + 0.4 * Math.sin((x + v * 1.3 + t * 0.3) * 0.7 + y * 0.5 + ch);
+          }
+        }
+      }
+      clip.push(f);
+    }
+    out.push(clip);
+  }
+  return out;
+}
+
+/** Mean per-pixel reconstruction MSE of a codec over clips (the video roundtrip metric). */
+function videoReconMSE(codec: VideoRVQCodec, videos: Video[]): number {
+  let se = 0;
+  let n = 0;
+  for (const v of videos) {
+    const r = codec.decode(codec.encode(v));
+    for (let t = 0; t < v.length; t++) {
+      for (let k = 0; k < v[t]!.length; k++) {
+        const d = v[t]![k]! - r[t]![k]!;
+        se += d * d;
+      }
+      n += v[t]!.length;
+    }
+  }
+  return n > 0 ? se / n : 0;
 }
 
 interface Registered {
@@ -550,6 +611,105 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         ctx.artifacts.evermind = blob;
         ctx.artifacts.tokenizer = { vocab: Object.fromEntries(tok.vocab), merges: [...tok.merges.keys()] };
         return `artifact ${blob.byteLength} bytes; trained vs served output matches`;
+      }),
+  },
+  "video-train": {
+    info: {
+      type: "video-train",
+      layer: "BUILD",
+      label: "Train video model",
+      description:
+        "Fit a temporal residual-VQ codec on clips, then train an EvermindLM on the video token streams — the model that generates video (params: height, width, channels, patch, levels, codebookSize, clips, frames, epochs, lr)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Train video model (codec + EvermindLM)", async (ctx) => {
+        const videos =
+          (ctx.bag.videos as Video[] | undefined) ??
+          synthVideos(
+            pNum(cfg, "clips", 3),
+            pNum(cfg, "frames", 4),
+            pNum(cfg, "height", 8),
+            pNum(cfg, "width", 8),
+            pNum(cfg, "channels", 3),
+          );
+        if (videos.length === 0) throw new Error("no clips to train on — provide ctx.bag.videos or a positive 'clips' param");
+
+        // Learn the codec's codebooks, then autoregress the (unchanged) EvermindLM
+        // over the resulting token streams. Text region is 0 for a pure-video model.
+        const codec = makeVideoCodec(cfg, 0);
+        const codecMSE = codec.fit(videos, { iterations: pNum(cfg, "codecIterations", 10) });
+        const sequences = videos.map((v) => buildVideoSequence(codec, [], v));
+        const model = new EvermindLM({
+          vocabSize: codec.vocabSize,
+          dModel: pNum(cfg, "dModel", 32),
+          numLayers: pNum(cfg, "numLayers", 2),
+          hiddenDim: pNum(cfg, "hiddenDim", 48),
+          seed: pNum(cfg, "seed", 11),
+        });
+        const epochs = pNum(cfg, "epochs", 60);
+        const history = new EvermindLMTrainer(model, { lr: pNum(cfg, "lr", 0.03), epochs }).fit(sequences);
+
+        ctx.bag.videoCodec = codec;
+        ctx.bag.videoModel = model;
+        ctx.bag.videoTrainingHistory = history;
+        const last = history.at(-1) ?? 0;
+        return `codec MSE ${codecMSE.toFixed(4)}; trained ${epochs} epochs over ${sequences.length} clip(s), loss ${last.toFixed(3)}`;
+      }),
+  },
+  "video-roundtrip": {
+    info: {
+      type: "video-roundtrip",
+      layer: "BUILD",
+      label: "Video round-trip",
+      description:
+        "Fit the video codec and gate reconstruction quality (encode→decode MSE), then smoke-test generate→decode yields valid frames (params: maxMSE, height, width, levels, codebookSize)",
+    },
+    factory: (cfg) =>
+      mkStep(cfg, "BUILD", "Video codec round-trip (encode→decode)", async (ctx) => {
+        const videos =
+          (ctx.bag.videos as Video[] | undefined) ??
+          synthVideos(
+            pNum(cfg, "clips", 3),
+            pNum(cfg, "frames", 4),
+            pNum(cfg, "height", 8),
+            pNum(cfg, "width", 8),
+            pNum(cfg, "channels", 3),
+          );
+        // Reuse a codec trained earlier if present; otherwise fit a fresh one.
+        let codec = ctx.bag.videoCodec as VideoRVQCodec | undefined;
+        const before = codec ? videoReconMSE(codec, videos) : Infinity;
+        if (!codec) {
+          codec = makeVideoCodec(cfg, 0);
+          codec.fit(videos, { iterations: pNum(cfg, "codecIterations", 10) });
+        }
+        const mse = videoReconMSE(codec, videos);
+
+        // Structural check: encode is a self-delimiting stream that decodes to the
+        // same frame count and shape — the real serve smoke test for video.
+        const toks = codec.encode(videos[0]!);
+        const recon = codec.decode(toks);
+        if (recon.length !== videos[0]!.length) throw new Error(`round-trip frame count ${recon.length} ≠ ${videos[0]!.length}`);
+        for (const f of recon) {
+          if (f.length !== videos[0]![0]!.length) throw new Error("round-trip frame shape mismatch");
+        }
+
+        // A trained model (if present) must generate frames of the right shape.
+        const model = ctx.bag.videoModel as EvermindLM | undefined;
+        if (model) {
+          const { video: gen } = generateVideo(model, codec, [], { maxNewTokens: toks.length });
+          for (const f of gen) {
+            if (f.length !== videos[0]![0]!.length) throw new Error("generated frame shape mismatch");
+          }
+        }
+
+        // Quality gate — only enforced when configured.
+        const maxMSE = pNum(cfg, "maxMSE", 0);
+        if (maxMSE > 0 && mse > maxMSE) {
+          throw new Error(`video reconstruction MSE ${mse.toFixed(4)} exceeds max ${maxMSE} (raise levels/codebookSize or fit longer)`);
+        }
+        ctx.bag.videoReconMSE = mse;
+        const improved = Number.isFinite(before) ? ` (was ${before.toFixed(4)} unfit)` : "";
+        return `recon MSE ${mse.toFixed(4)}${improved}; ${recon.length} frames round-trip clean`;
       }),
   },
   package: {

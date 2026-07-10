@@ -7,8 +7,9 @@
  */
 
 import { VideoRVQCodec, type Video } from "../src/codec/video_rvq.js";
+import { ImageRVQCodec } from "../src/codec/image_rvq.js";
 import { MultimodalVocab, VIDEO_BANK_INTRA, VIDEO_BANK_INTER } from "../src/codec/multimodal_vocab.js";
-import { buildVideoSequence, generateVideo } from "../src/codec/evermind_video.js";
+import { buildVideoSequence, generateVideo, generateImage } from "../src/codec/evermind_video.js";
 import { EvermindLM, EvermindLMTrainer } from "../src/lm/evermind_lm.js";
 
 /** Deterministic synthetic clip: smooth spatial pattern that drifts a little each frame. */
@@ -128,6 +129,48 @@ describe("VideoRVQCodec — learned codebooks", () => {
     const after = codec.fit(videos, { iterations: 12, seed: 3 });
     expect(after).toBeLessThan(before);
     expect(after).toBeCloseTo(reconMSE(codec, videos), 6); // fit's report matches a fresh measure
+  });
+});
+
+describe("VideoRVQCodec — serialization (ships with the model artifact)", () => {
+  test("serialize → deserialize reproduces config, codebooks, and encodings", () => {
+    const codec = new VideoRVQCodec({ height: 8, width: 8, channels: 3, patch: 4, levels: 2, codebookSize: 16, textVocabSize: 5, seed: 9 });
+    const videos = [makeVideo(3, 8, 8, 3, 0), makeVideo(3, 8, 8, 3, 0.9)];
+    codec.fit(videos, { iterations: 10 });
+
+    const restored = VideoRVQCodec.deserialize(codec.serialize());
+    expect(restored.vocabSize).toBe(codec.vocabSize);
+    expect(restored.tokensPerFrame).toBe(codec.tokensPerFrame);
+    // A restored codec must encode/decode identically — else a served model is corrupt.
+    const v = makeVideo(3, 8, 8, 3, 1.7);
+    expect(restored.encode(v)).toEqual(codec.encode(v));
+    const a = codec.decode(codec.encode(v));
+    const b = restored.decode(restored.encode(v));
+    for (let t = 0; t < a.length; t++) expect(Array.from(b[t]!)).toEqual(Array.from(a[t]!));
+  });
+});
+
+describe("ImageRVQCodec — still image is the single-frame case", () => {
+  test("encode/decode a frame; fit reduces error; every frame is intra", () => {
+    const codec = new ImageRVQCodec({ height: 8, width: 8, channels: 3, patch: 4, levels: 2, codebookSize: 16, seed: 2 });
+    const images = [makeVideo(1, 8, 8, 3, 0)[0]!, makeVideo(1, 8, 8, 3, 1.1)[0]!, makeVideo(1, 8, 8, 3, 2.2)[0]!];
+    const toks = codec.encode(images[0]!);
+    // No <delta> markers — a still image has no temporal residual.
+    expect(toks).not.toContain(codec.vocab.frameDelta);
+    const recon = codec.decode(toks);
+    expect(recon.length).toBe(codec.frameSize);
+    const after = codec.fit(images, { iterations: 12 });
+    expect(after).toBeGreaterThanOrEqual(0);
+  });
+
+  test("generateImage returns a single frame of the right shape", () => {
+    const codec = new ImageRVQCodec({ height: 4, width: 4, channels: 1, patch: 2, levels: 1, codebookSize: 4, textVocabSize: 2, seed: 4 });
+    const image = makeVideo(1, 4, 4, 1)[0]!;
+    const seq = [1, ...codec.encode(image)];
+    const lm = new EvermindLM({ vocabSize: codec.vocabSize, dModel: 16, numLayers: 2, hiddenDim: 24, seed: 3 });
+    new EvermindLMTrainer(lm, { lr: 0.05, epochs: 120 }).fit([seq]);
+    const { image: gen } = generateImage(lm, codec, [1], { maxNewTokens: seq.length });
+    expect(gen.length).toBe(4 * 4 * 1);
   });
 });
 

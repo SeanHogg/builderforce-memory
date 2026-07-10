@@ -11,4 +11,6 @@ export type { MultimodalVocabConfig, TokenKind } from "./multimodal_vocab.js";
 export { VideoRVQCodec } from "./video_rvq.js";
 export type { VideoRVQConfig, Frame, Video } from "./video_rvq.js";
 
-export { buildVideoSequence, generateVideo } from "./evermind_video.js";
+export { ImageRVQCodec } from "./image_rvq.js";
+
+export { buildVideoSequence, generateVideo, generateImage } from "./evermind_video.js";

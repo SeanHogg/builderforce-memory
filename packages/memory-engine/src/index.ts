@@ -69,8 +69,10 @@ export {
     VIDEO_BANK_INTRA,
     VIDEO_BANK_INTER,
     VideoRVQCodec,
+    ImageRVQCodec,
     buildVideoSequence,
     generateVideo,
+    generateImage,
 } from './codec/index.js';
 export type {
     MultimodalVocabConfig,

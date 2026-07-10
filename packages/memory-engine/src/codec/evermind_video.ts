@@ -7,7 +7,8 @@
  */
 
 import type { EvermindLM, LMGenerateOptions } from "../lm/evermind_lm.js";
-import type { VideoRVQCodec, Video } from "./video_rvq.js";
+import type { VideoRVQCodec, Video, Frame } from "./video_rvq.js";
+import type { ImageRVQCodec } from "./image_rvq.js";
 
 /**
  * Build a unified training sequence `text… <vid> frames… </vid>` for
@@ -40,4 +41,15 @@ export function generateVideo(
   }
   const tokens = lm.generate(promptTokens, { ...opts, stopToken: opts.stopToken ?? codec.vocab.eosVideo });
   return { video: codec.decode(tokens), tokens };
+}
+
+/** Generate a single image — the still-image case of {@link generateVideo}. */
+export function generateImage(
+  lm: EvermindLM,
+  codec: ImageRVQCodec,
+  promptTokens: number[],
+  opts: LMGenerateOptions,
+): { image: Frame; tokens: number[] } {
+  const { video, tokens } = generateVideo(lm, codec.video, promptTokens, opts);
+  return { image: video[0] ?? new Float32Array(codec.frameSize), tokens };
 }

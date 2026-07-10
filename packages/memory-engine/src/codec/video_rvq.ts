@@ -63,6 +63,8 @@ export interface VideoRVQConfig {
   seed?: number;
 }
 
+const VRQ_MAGIC = 0x56525130; // "VRQ0"
+
 const DEFAULTS = {
   channels: 3,
   patch: 4,
@@ -135,6 +137,64 @@ export class VideoRVQCodec {
   /** Total vocabulary size for this codec's model. */
   get vocabSize(): number {
     return this.vocab.size;
+  }
+
+  // ── Serialize (so a trained codec ships alongside the model artifact) ───────────
+
+  /**
+   * Serialize config + learned codebooks to a compact "VRQ0" binary. A generated
+   * video model is only servable if its codec travels with it (the decoder needs
+   * these codebooks), so this is the video analogue of EvermindLM.exportWeights.
+   */
+  serialize(): ArrayBuffer {
+    const headerEls = 9; // magic, h, w, channels, patch, levels, codebookSize, keyframeInterval, textVocabSize
+    const total = 2 * this.levels * this.codebookSize * this.latentDim;
+    const buf = new ArrayBuffer(headerEls * 4 + total * 4);
+    const head = new Uint32Array(buf, 0, headerEls);
+    head[0] = VRQ_MAGIC;
+    head[1] = this.height;
+    head[2] = this.width;
+    head[3] = this.channels;
+    head[4] = this.patch;
+    head[5] = this.levels;
+    head[6] = this.codebookSize;
+    head[7] = this.keyframeInterval;
+    head[8] = this.vocab.textVocabSize;
+    const body = new Float32Array(buf, headerEls * 4, total);
+    let o = 0;
+    for (const bank of this.banks) {
+      for (const cb of bank) {
+        body.set(cb, o);
+        o += cb.length;
+      }
+    }
+    return buf;
+  }
+
+  /** Reconstruct a codec (config + codebooks) from a "VRQ0" binary. */
+  static deserialize(buffer: ArrayBuffer): VideoRVQCodec {
+    const head = new Uint32Array(buffer, 0, 9);
+    if (head[0] !== VRQ_MAGIC) throw new Error("VideoRVQCodec.deserialize: bad magic (not a VRQ0 blob)");
+    const codec = new VideoRVQCodec({
+      height: head[1]!,
+      width: head[2]!,
+      channels: head[3]!,
+      patch: head[4]!,
+      levels: head[5]!,
+      codebookSize: head[6]!,
+      keyframeInterval: head[7]!,
+      textVocabSize: head[8]!,
+    });
+    const total = 2 * codec.levels * codec.codebookSize * codec.latentDim;
+    const body = new Float32Array(buffer.slice(36, 36 + total * 4));
+    let o = 0;
+    for (const bank of codec.banks) {
+      for (const cb of bank) {
+        cb.set(body.subarray(o, o + cb.length));
+        o += cb.length;
+      }
+    }
+    return codec;
   }
 
   // ── Encode ───────────────────────────────────────────────────────────────────
