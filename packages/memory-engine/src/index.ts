@@ -62,6 +62,24 @@ export {
 export { BPETokenizer } from './tokenizer/bpe.js';
 export type { BPEEncodeOptions, PadSide, HuggingFaceTokenizerSpec, SpecialTokenOverrides } from './tokenizer/bpe.js';
 
+// ── Modality codecs (media ⇄ tokens; lets EvermindLM generate video) ────────────
+
+export {
+    MultimodalVocab,
+    VIDEO_BANK_INTRA,
+    VIDEO_BANK_INTER,
+    VideoRVQCodec,
+    buildVideoSequence,
+    generateVideo,
+} from './codec/index.js';
+export type {
+    MultimodalVocabConfig,
+    TokenKind,
+    VideoRVQConfig,
+    Frame,
+    Video,
+} from './codec/index.js';
+
 // ── Model export (the publishing step: ONNX / safetensors / GGUF / HF repo) ─────
 
 export {
