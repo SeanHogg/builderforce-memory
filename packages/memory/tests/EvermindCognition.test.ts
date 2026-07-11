@@ -6,7 +6,6 @@
 
 import 'fake-indexeddb/auto';
 
-import { jest } from '@jest/globals';
 import { EvermindCognition } from '../src/cognition/EvermindCognition.js';
 import { workspacePresenceGatherer } from '../src/cognition/gatherers.js';
 import { MemoryStore } from '../src/memory/MemoryStore.js';
@@ -90,17 +89,33 @@ describe('EvermindCognition — write-through commit', () => {
 
 describe('EvermindCognition — write-through recall (version-token cache)', () => {
     it('serves recall and invalidates the cache when knowledge changes', async () => {
-        const { store, cog } = freshCognition();
+        // Deterministic in-memory store double. The invariant under test is
+        // EvermindCognition's version-token recall CACHE — not the store's recall
+        // internals — so we drive it with a store whose recallSimilarScored is a
+        // plain counter. (The real MemoryScore + fake-indexeddb recall path is
+        // exercised by the other cases; its async IndexedDB timing made this
+        // call-count assertion flaky under CI parallelism.)
+        const facts = new Map<string, { content: string; importance: number; timestamp: number }>();
+        let scoredCalls = 0;
+        const store = {
+            async remember(subjectKey: string, content: string, opts?: { importance?: number }) {
+                facts.set(subjectKey, { content, importance: opts?.importance ?? 0.6, timestamp: 0 });
+            },
+            async recall(subjectKey: string) {
+                return facts.get(subjectKey) ?? null;
+            },
+            async recallSimilarScored(_query: string, topK: number) {
+                scoredCalls++;
+                return [...facts.values()].slice(0, topK).map((f) => ({ entry: f, score: 1 }));
+            },
+        };
+        const cog = new EvermindCognition({ store: store as unknown as MemoryStore, now: () => 0 });
         await cog.commit({ subjectKey: SUBJECT, content: STALE });
-
-        // Count store reads to prove caching: recallDetailed prefers the scored recall
-        // (recallSimilarScored -> recallAll under the hood) when the store exposes it.
-        const spy = jest.spyOn(store, 'recallSimilarScored');
 
         const first = await cog.recall('ssm stack', 3);
         const second = await cog.recall('ssm stack', 3);
         expect(first).toEqual(second);
-        expect(spy).toHaveBeenCalledTimes(1); // second served from cache (same version)
+        expect(scoredCalls).toBe(1); // second served from cache (same version)
 
         // A supersede bumps the version → cache invalidates → store hit again.
         const gather = workspacePresenceGatherer({
@@ -111,7 +126,6 @@ describe('EvermindCognition — write-through recall (version-token cache)', () 
         await cog.commit({ subjectKey: SUBJECT, content: FRESH }, gather);
 
         await cog.recall('ssm stack', 3);
-        expect(spy).toHaveBeenCalledTimes(2); // re-read after invalidation
-        spy.mockRestore();
+        expect(scoredCalls).toBe(2); // re-read after invalidation
     });
 });
