@@ -33,6 +33,8 @@ export type {
     MoEEpochResult,
     EvermindModelManifest,
     EvermindModelCard,
+    EvermindModelType,
+    EvermindModality,
     PackageMeta,
     ValidationResult,
 } from './moe/index.js';

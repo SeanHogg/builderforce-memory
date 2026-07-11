@@ -18,6 +18,7 @@ export type {
   EvermindModelManifest,
   EvermindModelCard,
   EvermindModelType,
+  EvermindModality,
   PackageMeta,
   ValidationResult,
 } from "./moe_package.js";
