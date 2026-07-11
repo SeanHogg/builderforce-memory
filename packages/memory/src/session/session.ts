@@ -184,6 +184,10 @@ export interface AdaptResult {
     /** Perplexity on the adapt text before / after (when measured). */
     perplexityBefore?: number;
     perplexityAfter? : number;
+    /** Mean pre-clip gradient L2 norm across the adapt's epochs — the standard
+     *  early-warning for an unstable update (it spikes before a loss goes non-finite).
+     *  Undefined when the trainer didn't measure it. */
+    gradNorm?: number;
 }
 
 export type StorageTarget = 'indexedDB' | 'download' | 'fileSystem';
@@ -564,18 +568,29 @@ export class MambaSession {
         }
 
         const startTime = Date.now();
+        // Capture the per-epoch grad norm (instability signal) without disturbing the
+        // caller's own progress callback.
+        const gradNorms: number[] = [];
         const losses    = await this._trainer.train(text, {
             epochs,
             learningRate,
             seqLen,
             wsla,
-            onEpochEnd: onProgress ?? null,
+            trackGradNorm: true,
+            onEpochEnd: (epoch, loss, gradNorm) => {
+                if (typeof gradNorm === 'number' && Number.isFinite(gradNorm)) gradNorms.push(gradNorm);
+                onProgress?.(epoch, loss);
+            },
         });
+        const gradNorm = gradNorms.length
+            ? gradNorms.reduce((a, b) => a + b, 0) / gradNorms.length
+            : undefined;
 
         const base: AdaptResult = {
             losses,
             epochCount : losses.length,
             durationMs : Date.now() - startTime,
+            gradNorm,
         };
 
         if (!rollbackOnRegression || !snapshot) return base;

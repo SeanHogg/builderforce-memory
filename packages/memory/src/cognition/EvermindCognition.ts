@@ -62,8 +62,17 @@ interface SimilarityCapableStore {
     recallSimilar(query: string, topK: number, runtime?: unknown): Promise<StoreRecallEntry[]>;
 }
 
+/** A store that also exposes each hit's TRUE 0..1 similarity score (preferred). */
+interface ScoredSimilarityStore {
+    recallSimilarScored(query: string, topK: number, runtime?: unknown): Promise<Array<{ entry: StoreRecallEntry; score: number }>>;
+}
+
 function hasRecallSimilar(store: unknown): store is SimilarityCapableStore {
     return typeof (store as SimilarityCapableStore).recallSimilar === 'function';
+}
+
+function hasRecallSimilarScored(store: unknown): store is ScoredSimilarityStore {
+    return typeof (store as ScoredSimilarityStore).recallSimilarScored === 'function';
 }
 
 export class EvermindCognition {
@@ -185,18 +194,26 @@ export class EvermindCognition {
         const cached = this._recallCache.get(cacheKey);
         if (cached) return cached;
 
-        const raw: StoreRecallEntry[] = hasRecallSimilar(this._store)
-            ? await this._store.recallSimilar(query, topK, this._runtime)
-            : [];
+        // Prefer the scored recall so ranking uses the TRUE similarity of each hit;
+        // fall back to the positional proxy (1/(idx+1)) only for a store that can't
+        // report scores. `raw` carries the real 0..1 similarity when available.
+        const raw: Array<{ entry: StoreRecallEntry; score: number | null }> =
+            hasRecallSimilarScored(this._store)
+                ? (await this._store.recallSimilarScored(query, topK, this._runtime))
+                    .map((s) => ({ entry: s.entry, score: s.score }))
+                : hasRecallSimilar(this._store)
+                    ? (await this._store.recallSimilar(query, topK, this._runtime)).map((entry) => ({ entry, score: null }))
+                    : [];
 
         const now = this._now();
         const ranked = raw
-            .map((entry, idx) => {
+            .map(({ entry, score }, idx) => {
                 const { content, flagged } = sanitizeRecalledFact(entry.content);
                 const trust = trustScore({ importance: entry.importance, timestamp: entry.timestamp }, now);
-                // Keep similarity primary (1/(idx+1)) and let trust modulate it,
-                // so a high-trust fact rises but an irrelevant one can't dominate.
-                const rankScore = (1 / (idx + 1)) * (0.5 + 0.5 * trust);
+                // Similarity primary, trust modulates: use the real score when the store
+                // reported one, else the positional proxy (1/(idx+1)) for the same shape.
+                const similarity = score != null ? score : 1 / (idx + 1);
+                const rankScore = similarity * (0.5 + 0.5 * trust);
                 return { content, trust, flagged, rankScore };
             })
             .sort((a, b) => b.rankScore - a.rankScore)

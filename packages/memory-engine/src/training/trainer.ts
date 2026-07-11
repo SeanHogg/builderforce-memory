@@ -9,6 +9,7 @@ import {
     createComputePipeline,
     createBindGroup,
     dispatchKernel,
+    readBuffer,
     cdiv,
 } from '../utils/gpu_utils.js';
 
@@ -32,7 +33,12 @@ export interface TrainOptions {
   /** Trust region: max |Δθ| per optimizer step. 0 disables. Defaults to
    *  {@link WSLA_MAX_DELTA} in WSLA (write-through) mode, else 0 (full training). */
   maxDelta?: number;
-  onEpochEnd?: ((epoch: number, loss: number) => void) | null;
+  /** Read back the pre-clip gradient L2 norm each step (the `grad_norm_reduce`
+   *  kernel already computes it — this just maps it to the CPU). OFF by default: the
+   *  readback is a GPU sync point that would slow a long finetune. `adapt()` turns it
+   *  ON so the norm reaches {@link AdaptResult} as an instability signal. */
+  trackGradNorm?: boolean;
+  onEpochEnd?: ((epoch: number, loss: number, gradNorm?: number) => void) | null;
 }
 
 /**
@@ -116,6 +122,7 @@ export class MambaTrainer {
             beta2        = 0.999,
             eps          = 1e-8,
             wsla         = false,
+            trackGradNorm = false,
             onEpochEnd   = null,
         } = opts;
         // Trust region defaults ON for write-through (WSLA) adapts, OFF otherwise.
@@ -153,21 +160,25 @@ export class MambaTrainer {
 
         for (let epoch = 0; epoch < epochs; epoch++) {
             let epochLoss = 0;
+            let epochGradNorm = 0;
             let numSteps  = 0;
 
             for (const { inputs, targets } of chunks) {
-                const loss = await this._trainStep(
+                const { loss, gradNorm } = await this._trainStep(
                     inputs, targets, batchSize,
-                    { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, wsla, maxDelta }
+                    { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, wsla, maxDelta, trackGradNorm }
                 );
                 epochLoss += loss;
+                if (gradNorm != null) epochGradNorm += gradNorm;
                 numSteps++;
             }
 
             const avgLoss = epochLoss / numSteps;
             epochLosses.push(avgLoss);
 
-            if (onEpochEnd) onEpochEnd(epoch + 1, avgLoss);
+            // Mean pre-clip grad norm this epoch (only measured when trackGradNorm is on).
+            const avgGradNorm = trackGradNorm ? epochGradNorm / numSteps : undefined;
+            if (onEpochEnd) onEpochEnd(epoch + 1, avgLoss, avgGradNorm);
         }
 
         if (wsla) this.model.setWSLAMode(false);
@@ -178,9 +189,9 @@ export class MambaTrainer {
         inputs: number[],
         targets: number[],
         batch: number,
-        hyperparams: TrainOptions & { learningRate: number; maxGradNorm: number; weightDecay: number; beta1: number; beta2: number; eps: number; maxDelta: number }
-    ): Promise<number> {
-        const { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, maxDelta } = hyperparams;
+        hyperparams: TrainOptions & { learningRate: number; maxGradNorm: number; weightDecay: number; beta1: number; beta2: number; eps: number; maxDelta: number; trackGradNorm?: boolean }
+    ): Promise<{ loss: number; gradNorm: number | null }> {
+        const { learningRate, maxGradNorm, weightDecay, beta1, beta2, eps, maxDelta, trackGradNorm } = hyperparams;
 
         this._step++;
         const seqLen    = inputs.length;
@@ -207,7 +218,7 @@ export class MambaTrainer {
 
         const dLogitsBuf = createStorageBuffer(this.device, dLogits, false);
 
-        await this._clipGradients(dLogitsBuf, dLogits.length, maxGradNorm);
+        const gradNorm = await this._clipGradients(dLogitsBuf, dLogits.length, maxGradNorm, !!trackGradNorm);
 
         // Only the trainable set is updated. Under WSLA (write-through) that is
         // the narrow per-layer subset and the backbone (incl. every A_log) stays
@@ -224,7 +235,7 @@ export class MambaTrainer {
         dLogitsBuf.destroy();
         gpuLogits.destroy();
 
-        return loss;
+        return { loss, gradNorm };
     }
 
     private async _adamwStep(
@@ -260,7 +271,14 @@ export class MambaTrainer {
         }
     }
 
-    private async _clipGradients(gradBuf: GPUBuffer, numel: number, maxNorm: number): Promise<void> {
+    /**
+     * Clip gradients to `maxNorm` in place. The reduce kernel writes Σg² into
+     * `normSqBuf`; the scale kernel then rescales the grads. When `trackNorm` is set
+     * we read Σg² back and return the true pre-clip L2 norm (√Σg²) — the kernel
+     * already computed it, so this is only a small buffer readback (a GPU sync,
+     * hence opt-in). Returns null when not tracking.
+     */
+    private async _clipGradients(gradBuf: GPUBuffer, numel: number, maxNorm: number, trackNorm = false): Promise<number | null> {
         const normSqBuf = createEmptyStorageBuffer(this.device, 4, true);
         this.device.queue.writeBuffer(normSqBuf, 0, new Float32Array([0.0]));
 
@@ -274,6 +292,14 @@ export class MambaTrainer {
         dispatchKernel(this.device, this._clipReducePipeline, bg1,
             [cdiv(numel, 256), 1, 1]);
 
+        // Read Σg² AFTER the reduce (the scale kernel only reads it, never overwrites),
+        // so the returned norm is the pre-clip magnitude — the instability signal.
+        let gradNorm: number | null = null;
+        if (trackNorm) {
+            const out = await readBuffer(this.device, normSqBuf, 4);
+            gradNorm = Math.sqrt(Math.max(0, out[0] ?? 0));
+        }
+
         const bg2 = createBindGroup(this.device, this._clipScalePipeline,
             [pBuf, gradBuf, normSqBuf]);
         dispatchKernel(this.device, this._clipScalePipeline, bg2,
@@ -281,6 +307,7 @@ export class MambaTrainer {
 
         pBuf.destroy();
         normSqBuf.destroy();
+        return gradNorm;
     }
 
     async evaluate(input: string | number[]): Promise<number> {

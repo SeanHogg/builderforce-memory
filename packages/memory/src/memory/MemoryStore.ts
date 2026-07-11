@@ -328,6 +328,16 @@ export class MemoryStore {
      * reason, it transparently falls back to Jaccard word-overlap similarity.
      */
     async recallSimilar(query: string, topK: number, runtime?: SSMRuntimeRef): Promise<MemoryEntry[]> {
+        return (await this.recallSimilarScored(query, topK, runtime)).map(s => s.entry);
+    }
+
+    /**
+     * Like {@link recallSimilar} but returns each hit's real 0..1 relevance score
+     * (SSM-embedding cosine, or Jaccard on the fallback path) alongside the entry —
+     * so callers can rank/threshold by TRUE similarity instead of list position.
+     * {@link recallSimilar} is the score-dropping convenience wrapper over this.
+     */
+    async recallSimilarScored(query: string, topK: number, runtime?: SSMRuntimeRef): Promise<Array<{ entry: MemoryEntry; score: number }>> {
         const all = await this.recallAll();
         if (all.length === 0) return [];
 
@@ -344,7 +354,9 @@ export class MemoryStore {
                         ? synced.index.search(queryVec, topK)
                         // Below it, an exact scan over the (already-embedded) vectors.
                         : denseSearch(queryVec, synced.items, topK, this._annThreshold);
-                    return hits.map(h => synced.byKey.get(h.id)).filter((e): e is MemoryEntry => !!e);
+                    return hits
+                        .map(h => { const entry = synced.byKey.get(h.id); return entry ? { entry, score: h.score } : null; })
+                        .filter((e): e is { entry: MemoryEntry; score: number } => !!e);
                 }
             }
             // Any failure falls through to the Jaccard path below.
@@ -359,7 +371,7 @@ export class MemoryStore {
         });
 
         scored.sort((a, b) => b.score - a.score);
-        return scored.slice(0, topK).map(s => s.entry);
+        return scored.slice(0, topK);
     }
 
     /**
