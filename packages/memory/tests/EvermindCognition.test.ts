@@ -93,8 +93,9 @@ describe('EvermindCognition — write-through recall (version-token cache)', () 
         const { store, cog } = freshCognition();
         await cog.commit({ subjectKey: SUBJECT, content: STALE });
 
-        // Count store reads to prove caching: recallSimilar -> recallAll under the hood.
-        const spy = jest.spyOn(store, 'recallSimilar');
+        // Count store reads to prove caching: recallDetailed prefers the scored recall
+        // (recallSimilarScored -> recallAll under the hood) when the store exposes it.
+        const spy = jest.spyOn(store, 'recallSimilarScored');
 
         const first = await cog.recall('ssm stack', 3);
         const second = await cog.recall('ssm stack', 3);

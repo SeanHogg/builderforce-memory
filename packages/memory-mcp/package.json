@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory-mcp",
-  "version": "2026.7.1",
+  "version": "2026.7.11",
   "description": "BuilderForce Agent Memory — MCP transport. Exposes @seanhogg/builderforce-memory to any MCP client (Claude Agent SDK in-process, stdio, or HTTP) over a pluggable MemoryBackend, with token-saving fetch-on-demand recall.",
   "type": "module",
   "main": "dist/index.js",
@@ -57,7 +57,7 @@
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
-    "@seanhogg/builderforce-memory": "^2026.6.29",
+    "@seanhogg/builderforce-memory": "^2026.7.11",
     "fake-indexeddb": "^6.0.0"
   },
   "peerDependenciesMeta": {

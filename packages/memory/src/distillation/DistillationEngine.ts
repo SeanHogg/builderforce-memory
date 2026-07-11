@@ -82,6 +82,10 @@ export interface DistillResult {
     skipReason?  : string;
     /** Number of past exemplars rehearsed alongside this one (EVM-5). */
     rehearsed?   : number;
+    /** Student's pre-adapt perplexity on the teacher output, when the quality gate
+     *  measured it — a "how novel was this exemplar" signal. Kept even when the
+     *  exemplar was NOT skipped (previously discarded on the trained path). */
+    gatePerplexity?: number;
 }
 
 export interface DistillBatchResult {
@@ -100,6 +104,8 @@ export interface DistillationLog {
     skipReason?        : string;
     finalLoss?         : number;
     epochs             : number;
+    /** Pre-adapt perplexity on the teacher output (when the quality gate measured it). */
+    gatePerplexity?    : number;
 }
 
 /** Maximum number of distillation log entries to retain in memory. */
@@ -194,6 +200,11 @@ export class DistillationEngine {
 
         // ── Quality gate ──────────────────────────────────────────────────────
 
+        // Pre-adapt novelty of this exemplar (student perplexity on the teacher output).
+        // Measured by the gate below; hoisted so it survives to the TRAINED path instead
+        // of being dropped for exactly the exemplars we go on to learn from.
+        let gatePerplexity: number | undefined;
+
         if (opts.qualityGate) {
             const gate = opts.qualityGate;
 
@@ -216,19 +227,19 @@ export class DistillationEngine {
             }
 
             if (gate.maxPerplexity != null) {
-                let perplexity: number | undefined;
                 try {
-                    perplexity = await this._runtime.evaluate(teacherOutput);
+                    gatePerplexity = await this._runtime.evaluate(teacherOutput);
                 } catch {
                     // Evaluation failure is non-fatal — proceed with adaptation
                 }
-                if (perplexity != null && perplexity < gate.maxPerplexity) {
+                if (gatePerplexity != null && gatePerplexity < gate.maxPerplexity) {
                     const result: DistillResult = {
                         input,
                         teacherOutput,
                         adaptResult : { losses: [], epochCount: 0, durationMs: 0 },
                         skipped     : true,
                         skipReason  : 'already_learned',
+                        gatePerplexity,
                     };
                     this._appendLog({
                         input,
@@ -236,6 +247,7 @@ export class DistillationEngine {
                         skipped    : true,
                         skipReason : 'already_learned',
                         epochs     : 0,
+                        gatePerplexity,
                     });
                     return result;
                 }
@@ -270,9 +282,10 @@ export class DistillationEngine {
             skipped    : false,
             finalLoss  : adaptResult.losses.at(-1),
             epochs     : adaptResult.epochCount,
+            gatePerplexity,
         });
 
-        return { input, teacherOutput, adaptResult, skipped: false, rehearsed: rehearsed.length };
+        return { input, teacherOutput, adaptResult, skipped: false, rehearsed: rehearsed.length, gatePerplexity };
     }
 
     /**

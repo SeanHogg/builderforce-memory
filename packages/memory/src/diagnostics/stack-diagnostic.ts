@@ -66,7 +66,43 @@ export interface StackDiagnosticResult {
   firstFailure?: StackStepResult;
   /** Outputs produced by the run (e.g. `artifacts.evermind` for a build workflow). */
   artifacts: Record<string, unknown>;
+  /**
+   * Curated STRUCTURED metrics the run computed (loss curve, perplexity/top-1,
+   * dataset quality, pass@1, convergence, codec MSE) — the numbers steps previously
+   * left buried in `ctx.bag` and only echoed into a human `detail` string, forcing a
+   * UI to regex-parse them. A UI can now chart/gauge these directly. Only the
+   * allow-listed metric keys are included; heavy scratch (model blob, tokenizer,
+   * corpus, candidate list) is deliberately excluded.
+   */
+  metrics: Record<string, unknown>;
   totalMs: number;
+}
+
+/**
+ * `ctx.bag` keys that are genuine metrics/reports worth surfacing on the result.
+ * Everything else in the bag is scratch (large objects / model instances) and is
+ * kept out so the metrics payload stays small and serializable.
+ */
+const METRIC_BAG_KEYS = [
+  'trainingHistory',      // per-epoch loss curve (train-model / video-train)
+  'datasetMetrics',       // { words, sequences, avgSeqLen, duplicateRatio }
+  'benchmark',            // BenchmarkReport: perplexity, bitsPerToken, top1/topK, tok/s
+  'converged',            // convergence verdict + loss-drop numbers
+  'codeBenchmark',        // { pass1, passedTasks, totalTasks, perTask[] }
+  'codeParse',            // code-parse check result
+  'codeEval',             // code-eval check result
+  'videoReconMSE',        // video-roundtrip reconstruction error
+  'videoTrainingHistory', // per-epoch loss curve for the video model
+  'sample',               // generate-check sample output
+] as const;
+
+/** Pick the present metric keys out of the bag (skips absent + undefined values). */
+function collectMetrics(bag: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of METRIC_BAG_KEYS) {
+    if (bag[key] !== undefined) out[key] = bag[key];
+  }
+  return out;
 }
 
 /**
@@ -99,5 +135,5 @@ export async function runStackDiagnostic(
     opts.onStep?.(result);
   }
 
-  return { ok: !firstFailure, steps: results, ...(firstFailure ? { firstFailure } : {}), artifacts: ctx.artifacts, totalMs: now() - start };
+  return { ok: !firstFailure, steps: results, ...(firstFailure ? { firstFailure } : {}), artifacts: ctx.artifacts, metrics: collectMetrics(ctx.bag), totalMs: now() - start };
 }
