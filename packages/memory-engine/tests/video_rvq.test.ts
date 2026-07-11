@@ -11,6 +11,7 @@ import { ImageRVQCodec } from "../src/codec/image_rvq.js";
 import { MultimodalVocab, VIDEO_BANK_INTRA, VIDEO_BANK_INTER } from "../src/codec/multimodal_vocab.js";
 import { buildVideoSequence, generateVideo, generateImage } from "../src/codec/evermind_video.js";
 import { EvermindLM, EvermindLMTrainer } from "../src/lm/evermind_lm.js";
+import { EvermindModelPackage } from "../src/moe/moe_package.js";
 
 /** Deterministic synthetic clip: smooth spatial pattern that drifts a little each frame. */
 function makeVideo(T: number, H: number, W: number, C: number, phase = 0): Video {
@@ -171,6 +172,50 @@ describe("ImageRVQCodec — still image is the single-frame case", () => {
     new EvermindLMTrainer(lm, { lr: 0.05, epochs: 120 }).fit([seq]);
     const { image: gen } = generateImage(lm, codec, [1], { maxNewTokens: seq.length });
     expect(gen.length).toBe(4 * 4 * 1);
+  });
+});
+
+describe("EvermindModelPackage — self-contained media artifact (codec bundled)", () => {
+  test("fromMediaLM → toBlob → fromBlob → loadMediaLM reproduces model + codec", () => {
+    const codec = new VideoRVQCodec({ height: 8, width: 8, channels: 3, patch: 4, levels: 2, codebookSize: 8, seed: 3 });
+    codec.fit([makeVideo(3, 8, 8, 3)], { iterations: 6 });
+    const lm = new EvermindLM({ vocabSize: codec.vocabSize, dModel: 16, numLayers: 2, hiddenDim: 24, seed: 8 });
+
+    const blob = EvermindModelPackage.fromMediaLM(lm, codec, {
+      name: "vid", version: "1.0.0", modality: "video", card: { description: "test media model" },
+    }).toBlob();
+
+    const pkg = EvermindModelPackage.fromBlob(blob);
+    expect(pkg.manifest.modality).toBe("video");
+    expect(pkg.validate().ok).toBe(true);
+
+    const served = pkg.loadMediaLM();
+    expect(served.modality).toBe("video");
+    expect(served.codec.vocabSize).toBe(codec.vocabSize);
+    // Served model + codec must generate identically to the originals.
+    const a = generateVideo(lm, codec, [], { maxNewTokens: 40 });
+    const b = generateVideo(served.lm, served.codec, [], { maxNewTokens: 40 });
+    expect(b.tokens).toEqual(a.tokens);
+  });
+
+  test("validate() flags a corrupt codec section", () => {
+    const codec = new VideoRVQCodec({ height: 4, width: 4, channels: 1, patch: 2, levels: 1, codebookSize: 4, seed: 1 });
+    const lm = new EvermindLM({ vocabSize: codec.vocabSize, seed: 2 });
+    const pkg = EvermindModelPackage.fromMediaLM(lm, codec, { name: "x", version: "1", modality: "video", card: { description: "d" } });
+    const corrupt = new EvermindModelPackage(pkg.manifest, pkg.checkpoint, new ArrayBuffer(pkg.codec!.byteLength));
+    const v = corrupt.validate();
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => /codec checksum/.test(e))).toBe(true);
+  });
+
+  test("text packages still round-trip unchanged (no codec section)", () => {
+    const lm = new EvermindLM({ vocabSize: 6, dModel: 8, numLayers: 1, hiddenDim: 12, seed: 4 });
+    const pkg = EvermindModelPackage.fromLM(lm, { name: "t", version: "1", card: { description: "text" } });
+    const back = EvermindModelPackage.fromBlob(pkg.toBlob());
+    expect(back.codec).toBeUndefined();
+    expect(back.manifest.modality).toBeUndefined();
+    expect(back.validate().ok).toBe(true);
+    expect(() => back.loadMediaLM()).toThrow(/modality/);
   });
 });
 

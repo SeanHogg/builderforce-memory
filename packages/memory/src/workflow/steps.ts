@@ -693,13 +693,31 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
           if (f.length !== videos[0]![0]!.length) throw new Error("round-trip frame shape mismatch");
         }
 
-        // A trained model (if present) must generate frames of the right shape.
+        // A trained model (if present) → the real deploy round-trip: package the
+        // model + codec into a self-contained .evermind, reload it, and generate.
+        // Served output must match the in-memory model, exactly like text roundtrip.
         const model = ctx.bag.videoModel as EvermindLM | undefined;
         if (model) {
-          const { video: gen } = generateVideo(model, codec, [], { maxNewTokens: toks.length });
-          for (const f of gen) {
+          const before = generateVideo(model, codec, [], { maxNewTokens: toks.length });
+          const modality = pNum(cfg, "frames", 4) === 1 ? "image" : "video";
+          const blob = EvermindModelPackage.fromMediaLM(model, codec, {
+            name: pStr(cfg, "name", "custom-evermind-video"),
+            version: pStr(cfg, "version", "1.0.0"),
+            modality,
+            card: { description: pStr(cfg, "description", "round-trip validated media model") },
+          }).toBlob();
+          const pkg = EvermindModelPackage.fromBlob(blob);
+          const val = pkg.validate();
+          if (!val.ok) throw new Error(`packaged media artifact failed validation: ${val.errors.join("; ")}`);
+          const served = pkg.loadMediaLM();
+          const after = generateVideo(served.lm, served.codec, [], { maxNewTokens: toks.length });
+          if (after.tokens.join(",") !== before.tokens.join(",")) {
+            throw new Error("served media model produced different tokens than the trained model");
+          }
+          for (const f of after.video) {
             if (f.length !== videos[0]![0]!.length) throw new Error("generated frame shape mismatch");
           }
+          ctx.artifacts.evermind = blob;
         }
 
         // Quality gate — only enforced when configured.

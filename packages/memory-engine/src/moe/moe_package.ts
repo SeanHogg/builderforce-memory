@@ -13,6 +13,7 @@
 
 import { SharedExpertMoE, type MoEConfig } from "./moe_model.js";
 import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
+import { VideoRVQCodec } from "../codec/video_rvq.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;
@@ -20,6 +21,9 @@ const PKG_VERSION = 1;
 
 /** The kinds of model an `.evermind` package can carry. */
 export type EvermindModelType = "shared-expert-moe" | "evermind-lm";
+
+/** Output modality. `text` (default) needs no codec; `video`/`image` bundle a VRQ codec. */
+export type EvermindModality = "text" | "video" | "image";
 
 /** Human-facing description published with the model (the "model card"). */
 export interface EvermindModelCard {
@@ -38,14 +42,26 @@ export interface EvermindModelManifest {
   name: string;
   version: string;
   modelType: EvermindModelType;
+  /** Output modality; absent ⇒ "text". Video/image also carry a `codec` section. */
+  modality?: EvermindModality;
   /** Flat numeric model config (the constructor args), serialised verbatim. */
   config: Record<string, number>;
   /** Total trainable scalar parameters (for sizing / pricing / display). */
   paramCount: number;
   checkpointFormat: "MoE0" | "EVL0";
   checkpointFp16: boolean;
+  /**
+   * Byte length of the checkpoint section — REQUIRED when a codec section follows
+   * (so the reader knows where the checkpoint ends). Absent ⇒ checkpoint runs to
+   * end-of-blob (the original text-only layout, still read verbatim).
+   */
+  checkpointBytes?: number;
   /** 32-bit FNV-1a over the checkpoint bytes — integrity for download/purchase. */
   checksum: number;
+  /** Media codec section format (present for video/image packages). */
+  codecFormat?: "VRQ0";
+  /** 32-bit FNV-1a over the codec bytes — integrity for the bundled codec. */
+  codecChecksum?: number;
   card: EvermindModelCard;
   /** ISO timestamp, caller-supplied (the engine avoids Date for determinism). */
   createdAt?: string;
@@ -84,6 +100,8 @@ export class EvermindModelPackage {
   constructor(
     readonly manifest: EvermindModelManifest,
     readonly checkpoint: ArrayBuffer,
+    /** Serialized media codec ("VRQ0" blob), present for video/image packages. */
+    readonly codec?: ArrayBuffer,
   ) {}
 
   /** Package a trained model with its publishing metadata. */
@@ -126,17 +144,61 @@ export class EvermindModelPackage {
     return new EvermindModelPackage(manifest, checkpoint);
   }
 
-  /** Serialise to a single `.evermind` blob: magic, version, manifest, checkpoint. */
+  /**
+   * Package a video/image generative model: its {@link EvermindLM} weights AND the
+   * {@link VideoRVQCodec} needed to turn generated tokens back into frames. Without
+   * the bundled codec a served media model would emit undecodable token ids — this
+   * is what makes an `.evermind` media artifact self-contained and servable.
+   */
+  static fromMediaLM(
+    lm: EvermindLM,
+    codec: VideoRVQCodec,
+    meta: PackageMeta & { modality: "video" | "image" },
+  ): EvermindModelPackage {
+    if (lm.config.vocabSize !== codec.vocabSize) {
+      throw new Error(
+        `fromMediaLM: LM vocabSize (${lm.config.vocabSize}) must equal codec.vocabSize (${codec.vocabSize})`,
+      );
+    }
+    const fp16 = meta.fp16 ?? false;
+    const checkpoint = lm.exportWeights({ fp16 });
+    const codecBlob = codec.serialize();
+    const manifest: EvermindModelManifest = {
+      schema: "evermind.model/1",
+      name: meta.name,
+      version: meta.version,
+      modelType: "evermind-lm",
+      modality: meta.modality,
+      config: lm.config as unknown as Record<string, number>,
+      paramCount: lm.parameters().reduce((n, p) => n + p.data.length, 0),
+      checkpointFormat: "EVL0",
+      checkpointFp16: fp16,
+      checkpointBytes: checkpoint.byteLength,
+      checksum: fnv1a(new Uint8Array(checkpoint)),
+      codecFormat: "VRQ0",
+      codecChecksum: fnv1a(new Uint8Array(codecBlob)),
+      card: meta.card,
+      ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
+    };
+    return new EvermindModelPackage(manifest, checkpoint, codecBlob);
+  }
+
+  /** Serialise to a single `.evermind` blob: magic, version, manifest, checkpoint[, codec]. */
   toBlob(): ArrayBuffer {
     const manifestBytes = new TextEncoder().encode(JSON.stringify(this.manifest));
     const headerBytes = 12; // magic, version, manifestLen
-    const out = new ArrayBuffer(headerBytes + manifestBytes.byteLength + this.checkpoint.byteLength);
+    const codecBytes = this.codec?.byteLength ?? 0;
+    const out = new ArrayBuffer(headerBytes + manifestBytes.byteLength + this.checkpoint.byteLength + codecBytes);
     const head = new Uint32Array(out, 0, 3);
     head[0] = PKG_MAGIC;
     head[1] = PKG_VERSION;
     head[2] = manifestBytes.byteLength;
-    new Uint8Array(out, headerBytes, manifestBytes.byteLength).set(manifestBytes);
-    new Uint8Array(out, headerBytes + manifestBytes.byteLength).set(new Uint8Array(this.checkpoint));
+    let o = headerBytes;
+    new Uint8Array(out, o, manifestBytes.byteLength).set(manifestBytes);
+    o += manifestBytes.byteLength;
+    new Uint8Array(out, o, this.checkpoint.byteLength).set(new Uint8Array(this.checkpoint));
+    o += this.checkpoint.byteLength;
+    if (this.codec) new Uint8Array(out, o, codecBytes).set(new Uint8Array(this.codec));
     return out;
   }
 
@@ -152,8 +214,19 @@ export class EvermindModelPackage {
     }
     const manifestBytes = new Uint8Array(buffer, headerBytes, manifestLen);
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as EvermindModelManifest;
-    const checkpoint = buffer.slice(headerBytes + manifestLen);
-    return new EvermindModelPackage(manifest, checkpoint);
+    const bodyStart = headerBytes + manifestLen;
+    // A codec section follows the checkpoint only when the manifest fixed the
+    // checkpoint length; otherwise the checkpoint runs to end-of-blob (text layout).
+    const cpBytes = manifest.checkpointBytes;
+    if (cpBytes != null) {
+      if (bodyStart + cpBytes > buffer.byteLength) {
+        throw new Error("EvermindModelPackage.fromBlob: truncated (checkpointBytes exceeds blob)");
+      }
+      const checkpoint = buffer.slice(bodyStart, bodyStart + cpBytes);
+      const codec = bodyStart + cpBytes < buffer.byteLength ? buffer.slice(bodyStart + cpBytes) : undefined;
+      return new EvermindModelPackage(manifest, checkpoint, codec);
+    }
+    return new EvermindModelPackage(manifest, buffer.slice(bodyStart));
   }
 
   /** Verify integrity + structural sanity before trusting a downloaded package. */
@@ -175,6 +248,19 @@ export class EvermindModelPackage {
     const actual = fnv1a(new Uint8Array(this.checkpoint));
     if (actual !== this.manifest.checksum) {
       errors.push(`checksum mismatch (manifest ${this.manifest.checksum}, actual ${actual}) — corrupt or tampered checkpoint`);
+    }
+    // Media packages must carry an integral codec — a served media model can't
+    // decode tokens → frames without it.
+    const modality = this.manifest.modality ?? "text";
+    if (modality === "video" || modality === "image") {
+      if (!this.codec) {
+        errors.push(`modality '${modality}' package is missing its codec section`);
+      } else {
+        const codecActual = fnv1a(new Uint8Array(this.codec));
+        if (codecActual !== this.manifest.codecChecksum) {
+          errors.push(`codec checksum mismatch (manifest ${this.manifest.codecChecksum}, actual ${codecActual}) — corrupt codec`);
+        }
+      }
     }
     return { ok: errors.length === 0, errors };
   }
@@ -201,5 +287,20 @@ export class EvermindModelPackage {
     const lm = new EvermindLM(this.manifest.config as unknown as EvermindLMConfig);
     lm.loadWeights(this.checkpoint);
     return lm;
+  }
+
+  /**
+   * Reconstruct a video/image model: the generative {@link EvermindLM} plus its
+   * {@link VideoRVQCodec}. Pair with `generateVideo` / `generateImage` to produce
+   * frames. This is what a media-serving path (gateway) loads and runs.
+   */
+  loadMediaLM(): { lm: EvermindLM; codec: VideoRVQCodec; modality: EvermindModality } {
+    const v = this.validate();
+    if (!v.ok) throw new Error(`EvermindModelPackage.loadMediaLM: ${v.errors.join("; ")}`);
+    const modality = this.manifest.modality ?? "text";
+    if (modality !== "video" && modality !== "image") {
+      throw new Error(`loadMediaLM: package modality is '${modality}', use loadLM()`);
+    }
+    return { lm: this.loadLM(), codec: VideoRVQCodec.deserialize(this.codec!), modality };
   }
 }
