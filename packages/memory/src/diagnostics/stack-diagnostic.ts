@@ -92,6 +92,7 @@ const METRIC_BAG_KEYS = [
   'codeParse',            // code-parse check result
   'codeEval',             // code-eval check result
   'videoReconMSE',        // video-roundtrip reconstruction error
+  'videoCodecMSE',        // video-train codec reconstruction error
   'videoTrainingHistory', // per-epoch loss curve for the video model
   'sample',               // generate-check sample output
 ] as const;

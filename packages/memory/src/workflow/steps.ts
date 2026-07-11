@@ -652,6 +652,10 @@ export const BUILTIN_STEPS: Record<string, Registered> = {
         ctx.bag.videoCodec = codec;
         ctx.bag.videoModel = model;
         ctx.bag.videoTrainingHistory = history;
+        // Surface the codec's reconstruction MSE as a metric (symmetric with the
+        // video-roundtrip step's ctx.bag.videoReconMSE) so it isn't stranded in the
+        // human detail string — runStackDiagnostic().metrics can chart it.
+        ctx.bag.videoCodecMSE = codecMSE;
         const last = history.at(-1) ?? 0;
         return `codec MSE ${codecMSE.toFixed(4)}; trained ${epochs} epochs over ${sequences.length} clip(s), loss ${last.toFixed(3)}`;
       }),

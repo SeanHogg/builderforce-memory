@@ -46,7 +46,10 @@ export interface LimbicTrainOptions {
   eps?: number;
   /** Max global gradient L2 norm before the optimiser step. Default 1.0. */
   maxGradNorm?: number;
-  onEpochEnd?: ((epoch: number, loss: number) => void) | null;
+  /** Per-epoch hook. `gradNorm` is the pre-clip gradient L2 norm this epoch (the
+   *  instability early-warning) — computed CPU-side so it's always available, unlike
+   *  the GPU trainer where it's opt-in. */
+  onEpochEnd?: ((epoch: number, loss: number, gradNorm?: number) => void) | null;
 }
 
 interface AdamMoment {
@@ -146,7 +149,7 @@ export class LimbicTrainer {
         for (let i = 0; i < g.data.length; i++) g.data[i]! *= invN;
       }
 
-      this._clipGradients(grads, maxGradNorm);
+      const gradNorm = this._clipGradients(grads, maxGradNorm);
 
       this._step++;
       const beta1_t = Math.pow(beta1, this._step);
@@ -160,7 +163,7 @@ export class LimbicTrainer {
 
       const avg = epochLoss / samples.length;
       losses.push(avg);
-      if (onEpochEnd) onEpochEnd(epoch + 1, avg);
+      if (onEpochEnd) onEpochEnd(epoch + 1, avg, gradNorm);
     }
     return losses;
   }
@@ -184,7 +187,8 @@ export class LimbicTrainer {
     return total / samples.length;
   }
 
-  private _clipGradients(grads: LimbicParam[], maxNorm: number): void {
+  /** Clip grads to `maxNorm` in place; returns the PRE-clip L2 norm (the signal). */
+  private _clipGradients(grads: LimbicParam[], maxNorm: number): number {
     let normSq = 0;
     for (const g of grads) for (let i = 0; i < g.data.length; i++) normSq += g.data[i]! * g.data[i]!;
     const norm = Math.sqrt(normSq);
@@ -192,6 +196,7 @@ export class LimbicTrainer {
       const scale = maxNorm / norm;
       for (const g of grads) for (let i = 0; i < g.data.length; i++) g.data[i]! *= scale;
     }
+    return norm;
   }
 
   private _adamwStepCpu(
