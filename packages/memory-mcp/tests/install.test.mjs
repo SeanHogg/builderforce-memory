@@ -131,6 +131,31 @@ test("claude combo: writes hook + skill and registers all four hooks (idempotent
     assert.equal(JSON.parse(fs.get("/home/u/.claude/settings.json")).hooks.Stop.length, 1);
 });
 
+test("claude combo: collapses duplicate hooks that differ only by path separator", () => {
+    // Simulates the real-world drift where an earlier install wrote the command
+    // with forward slashes and a later one used backslashes, so the naive
+    // string-equality dedup missed it and BOTH fired every SessionStart —
+    // doubling the memory injected into every session.
+    const fwd = 'node "/home/u/.claude/builderforce-memory/bfmem-hook.mjs" --session';
+    const back = 'node "\\home\\u\\.claude\\builderforce-memory\\bfmem-hook.mjs" --session';
+    const fs = memFs({
+        "/home/u/.claude/settings.json": JSON.stringify({
+            hooks: {
+                SessionStart: [
+                    { hooks: [{ type: "command", command: fwd }] },
+                    { hooks: [{ type: "command", command: back }] },
+                ],
+            },
+        }),
+    });
+    installClaudeCombo({ fs, claudeDir: "/home/u/.claude", memoryFile: "/home/u/.builderforce-memory/memory.json" });
+    const ss = JSON.parse(fs.get("/home/u/.claude/settings.json"));
+    const sessionHooks = ss.hooks.SessionStart.filter((g) =>
+        (g.hooks || []).some((h) => (h.command || "").includes("bfmem-hook.mjs") && (h.command || "").includes("--session")),
+    );
+    assert.equal(sessionHooks.length, 1, "duplicate SessionStart hooks must collapse to one");
+});
+
 test("claude combo: preserves pre-existing unrelated hooks", () => {
     const fs = memFs({
         "/home/u/.claude/settings.json": JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "echo hi" }] }] } }),

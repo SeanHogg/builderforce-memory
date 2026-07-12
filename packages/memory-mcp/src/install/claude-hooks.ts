@@ -36,6 +36,8 @@ export function bfmemHookSource(memoryFile: string): string {
  *                 durable correction is persisted via memory_remember.
  */
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const FILE = ${JSON.stringify(memoryFile)};
 const mode = process.argv[2] || "--session";
@@ -51,6 +53,27 @@ function tokens(s) {
     return String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
 }
 
+// ── Per-session injection ledger ─────────────────────────────────────────────
+// The SessionStart digest and the per-prompt recall both push memory CONTENT
+// into the context window, where it stays for the rest of the session. Without
+// dedup, a long session re-injects the same memories on every turn — unbounded
+// growth that is exactly what pushes a session past 150k tokens. The ledger
+// records which keys have already been surfaced THIS session so we inject each
+// memory at most once. Keyed by the host-provided session_id; degrades to the
+// old always-inject behaviour when no id is available.
+function ledgerFile(sid) {
+    const safe = String(sid || "").replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 80) || "nosession";
+    return path.join(os.tmpdir(), "bfmem-injected-" + safe + ".json");
+}
+function loadLedger(sid) {
+    try { const a = JSON.parse(fs.readFileSync(ledgerFile(sid), "utf8")); return new Set(Array.isArray(a) ? a : []); }
+    catch { return new Set(); }
+}
+function saveLedger(sid, set) {
+    if (!sid) return; // no id → no dedup state to persist (safe fallback)
+    try { fs.writeFileSync(ledgerFile(sid), JSON.stringify([...set].slice(-500))); } catch { /* best effort */ }
+}
+
 if (mode === "--precompact") {
     process.stdout.write(
         "[builderforce-memory] Context is about to be compacted. Persist any durable learnings from this session — decisions, fixes, project facts, user preferences — by calling memory_remember with concise one-line facts. Recall them later with memory_recall instead of re-reading files.",
@@ -59,13 +82,18 @@ if (mode === "--precompact") {
 }
 
 if (mode === "--recall") {
-    let prompt = "";
-    try { const j = JSON.parse(readStdin() || "{}"); prompt = typeof j.prompt === "string" ? j.prompt : ""; } catch { /* no input */ }
+    let prompt = "", sid = "";
+    try {
+        const j = JSON.parse(readStdin() || "{}");
+        prompt = typeof j.prompt === "string" ? j.prompt : "";
+        sid = typeof j.session_id === "string" ? j.session_id : "";
+    } catch { /* no input */ }
     if (!prompt) process.exit(0);
     const entries = loadEntries();
     if (entries.length === 0) process.exit(0);
     const q = new Set(tokens(prompt));
     if (q.size === 0) process.exit(0);
+    const led = loadLedger(sid);
     const scored = entries
         .map((e) => {
             const hay = new Set(tokens([e.key, e.content, (e.tags || []).join(" ")].join(" ")));
@@ -74,10 +102,13 @@ if (mode === "--recall") {
             return { e, score };
         })
         .filter((x) => x.score >= 2)
+        .filter((x) => !led.has(x.e.key)) // already surfaced this session → don't re-inject
         .sort((a, b) => b.score - a.score)
         .slice(0, 3);
     if (scored.length === 0) process.exit(0);
-    const lines = scored.map((x) => "• " + x.e.key + ": " + String(x.e.content || "").slice(0, 240)).join("\\n");
+    for (const x of scored) led.add(x.e.key);
+    saveLedger(sid, led);
+    const lines = scored.map((x) => "• " + x.e.key + ": " + String(x.e.content || "").slice(0, 200)).join("\\n");
     process.stdout.write(
         "[builderforce-memory] Relevant stored memories for this request — use these instead of re-deriving or re-reading:\\n" + lines,
     );
@@ -148,19 +179,37 @@ if (mode === "--capture") {
     process.exit(0);
 }
 
+// SessionStart (default mode). Read the source + session_id so we can (a) seed
+// the per-session ledger with the digest keys and (b) skip re-injecting on
+// 'resume', where the earlier context — including this digest — is retained and
+// a second copy would be pure waste.
+let src = "startup", sessionId = "";
+try {
+    const j = JSON.parse(readStdin() || "{}");
+    if (typeof j.source === "string") src = j.source;
+    if (typeof j.session_id === "string") sessionId = j.session_id;
+} catch { /* no input */ }
+
 const entries = loadEntries();
 if (entries.length === 0) {
-    process.stdout.write(
+    if (src !== "resume") process.stdout.write(
         "[builderforce-memory] Active (memory empty). Store durable facts with memory_remember and retrieve them with memory_recall instead of re-reading files or chat history — that is how token usage stays low.",
     );
     process.exit(0);
 }
-const top = entries
+const ranked = entries
     .map((e) => ({ key: e.key, content: String(e.content ?? ""), importance: typeof e.importance === "number" ? e.importance : 0.5 }))
     .sort((a, b) => b.importance - a.importance)
-    .slice(0, 8)
-    .map((e) => "• " + e.key + ": " + e.content.slice(0, 200))
-    .join("\\n");
+    .slice(0, 6);
+
+// Record the digest keys so per-prompt recall won't re-surface what's already
+// on screen. Fresh window (startup/clear) → new ledger; otherwise merge.
+const led = (src === "startup" || src === "clear") ? new Set() : loadLedger(sessionId);
+for (const e of ranked) led.add(e.key);
+saveLedger(sessionId, led);
+
+if (src === "resume") process.exit(0); // context retained across resume — nothing to re-inject
+const top = ranked.map((e) => "• " + e.key + ": " + e.content.slice(0, 180)).join("\\n");
 process.stdout.write(
     "[builderforce-memory] Active — token-saving memory loaded. Before re-reading files or history, call memory_recall. Store durable facts with memory_remember.\\nTop memories:\\n" + top,
 );
@@ -251,12 +300,28 @@ export function installClaudeCombo(opts: {
         fs.copyFileSync(paths.settingsFile, `${paths.settingsFile}.bak`);
     }
     const hooks = (settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {}) as Record<string, unknown>;
+    // Compare commands by a normalized form (path separators unified, whitespace
+    // collapsed, case-folded) so a re-install can't register a second copy of the
+    // same hook just because an earlier run wrote "C:/…" and this one writes
+    // "C:\…". Without this, Windows accumulates duplicate SessionStart/PreCompact
+    // hooks that each fire — doubling the memory the combo injects every session.
+    const normCmd = (c: string) => String(c ?? "").replace(/\\/g, "/").replace(/\s+/g, " ").trim().toLowerCase();
+    const hookRef = normCmd(paths.hookScript);
     const added: string[] = [];
     for (const { event, mode } of HOOK_EVENTS) {
         const command = `node "${paths.hookScript}" ${mode}`;
-        const arr = (Array.isArray(hooks[event]) ? hooks[event] : (hooks[event] = [])) as Array<{ hooks?: Array<{ type?: string; command?: string }> }>;
-        const exists = arr.some((g) => (g.hooks || []).some((h) => h.command === command));
-        if (!exists) { arr.push({ hooks: [{ type: "command", command }] }); added.push(event); }
+        const arr = (Array.isArray(hooks[event]) ? hooks[event] : []) as Array<{ hooks?: Array<{ type?: string; command?: string }> }>;
+        // Drop any existing group that points at OUR hook script for THIS mode
+        // (any path-separator variant), then re-add exactly one canonical entry.
+        // This both dedupes accidental duplicates and refreshes the command.
+        const kept = arr.filter((g) => !(g.hooks || []).some((h) => {
+            const n = normCmd(h.command ?? "");
+            return n.includes(hookRef) && n.endsWith(mode);
+        }));
+        const wasPresent = kept.length !== arr.length;
+        kept.push({ hooks: [{ type: "command", command }] });
+        hooks[event] = kept;
+        if (!wasPresent) added.push(event);
     }
     settings.hooks = hooks;
     const settingsDir = nodePath.dirname(paths.settingsFile);
