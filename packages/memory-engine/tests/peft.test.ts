@@ -64,7 +64,7 @@ describe("LoRA adapter", () => {
       const stride = Math.max(1, Math.floor(buf.length / 5));
       let checked = 0;
       for (let i = 0; i < buf.length; i += stride) {
-        expect(grad[i]!).toBeCloseTo(fdAt(lora, model, buf, i, eps), 2);
+        expect(grad[i]!).toBeCloseTo(fdAt(lora, buf, i, eps), 2);
         checked++;
       }
       expect(checked).toBeGreaterThan(2);
@@ -103,12 +103,12 @@ describe("LoRA adapter", () => {
 });
 
 // finite-diff of the merged-model loss wrt a raw adapter buffer entry
-function fdAt(lora: EvermindLMLoRA, model: EvermindLM, buf: Float32Array, i: number, eps: number): number {
+function fdAt(lora: EvermindLMLoRA, buf: Float32Array, i: number, eps: number): number {
   const orig = buf[i]!;
   buf[i] = orig + eps;
-  const plus = pureLossMerged(lora, model, SEQ);
+  const plus = pureLossMerged(lora, SEQ);
   buf[i] = orig - eps;
-  const minus = pureLossMerged(lora, model, SEQ);
+  const minus = pureLossMerged(lora, SEQ);
   buf[i] = orig;
   return (plus - minus) / (2 * eps);
 }
@@ -131,9 +131,9 @@ describe("QLoRA (quantized frozen base + trainable adapter)", () => {
     const fp32Bytes = model.config.vocabSize * model.config.dModel * 4;
     const fp = lora.footprint();
     expect(fp.baseBytes).toBeLessThan(fp32Bytes / 3); // int8 ≈ 1 byte/param
-    const before = pureLossMerged(lora, model, SEQ);
+    const before = pureLossMerged(lora, SEQ);
     lora.fit([SEQ], { epochs: 40, lr: 0.05 });
-    const after = pureLossMerged(lora, model, SEQ);
+    const after = pureLossMerged(lora, SEQ);
     expect(after).toBeLessThan(before);
   });
 
