@@ -24,6 +24,7 @@
 import { SharedExpertMoE } from "../moe/moe_model.js";
 import { crossEntropyLoss, crossEntropyGrad } from "../training/autograd.js";
 import { AdamW, type AdamWOptions } from "../optim/adamw.js";
+import { DynamicLossScaler, roundFp16, type LossScalerOptions } from "../training/mixed_precision.js";
 import { SeededRng } from "../utils/rng.js";
 import { quantizeFp16, dequantizeFp16 } from "../utils/quantization.js";
 import { appendCrcTrailer, verifyCrcTrailer } from "../utils/crc32.js";
@@ -181,68 +182,71 @@ export class EvermindLM {
 
   // ── Forward ────────────────────────────────────────────────────────────────
 
-  /** Run the model over a token sequence; returns per-position logits + a cache. */
-  forward(tokens: number[]): { logits: Float32Array[]; cache: ForwardCache } {
-    const { dModel, convKernel, numLayers, vocabSize } = this.config;
-    const T = tokens.length;
-
-    // Embed.
-    let x: Float32Array[] = tokens.map((tok) => {
+  /** Embed a token sequence into per-position channel vectors. */
+  private _embed(tokens: number[]): Float32Array[] {
+    const { dModel } = this.config;
+    return tokens.map((tok) => {
       const row = new Float32Array(dModel);
       const off = tok * dModel;
       for (let c = 0; c < dModel; c++) row[c] = this.emb[off + c]!;
       return row;
     });
+  }
 
-    const layers: LayerCache[] = [];
-    for (let l = 0; l < numLayers; l++) {
-      const layerIn = x;
-      const ker = this.conv[l]!;
-      const nConv = this.nConv[l]!;
-      const nMoe = this.nMoe[l]!;
+  /**
+   * One (conv + MoE) block: pre-norm → depthwise causal conv → residual, then
+   * pre-norm → MoE channel mixer → residual. Returns the block output and the
+   * activation cache its backward needs. Isolating this is what lets
+   * {@link lossAndBackwardCheckpointed} recompute a layer's activations on demand
+   * instead of retaining every layer's cache at once.
+   */
+  private _forwardLayer(l: number, layerIn: Float32Array[]): { afterMoe: Float32Array[]; cache: LayerCache } {
+    const { dModel, convKernel } = this.config;
+    const T = layerIn.length;
+    const ker = this.conv[l]!;
+    const nConv = this.nConv[l]!;
+    const nMoe = this.nMoe[l]!;
 
-      // Pre-norm → depthwise causal conv → residual.
-      const normedConv: Float32Array[] = [];
-      const rmsConv: number[] = [];
-      for (let t = 0; t < T; t++) {
-        const { y, r } = rmsNorm(layerIn[t]!, nConv);
-        normedConv.push(y);
-        rmsConv.push(r);
-      }
-      const afterConv: Float32Array[] = [];
-      for (let t = 0; t < T; t++) {
-        const out = Float32Array.from(layerIn[t]!); // residual base
-        for (let c = 0; c < dModel; c++) {
-          let acc = 0;
-          for (let j = 0; j < convKernel; j++) {
-            const ti = t - j;
-            if (ti >= 0) acc += ker[c * convKernel + j]! * normedConv[ti]![c]!;
-          }
-          out[c] = out[c]! + acc;
+    const normedConv: Float32Array[] = [];
+    const rmsConv: number[] = [];
+    for (let t = 0; t < T; t++) {
+      const { y, r } = rmsNorm(layerIn[t]!, nConv);
+      normedConv.push(y);
+      rmsConv.push(r);
+    }
+    const afterConv: Float32Array[] = [];
+    for (let t = 0; t < T; t++) {
+      const out = Float32Array.from(layerIn[t]!); // residual base
+      for (let c = 0; c < dModel; c++) {
+        let acc = 0;
+        for (let j = 0; j < convKernel; j++) {
+          const ti = t - j;
+          if (ti >= 0) acc += ker[c * convKernel + j]! * normedConv[ti]![c]!;
         }
-        afterConv.push(out);
+        out[c] = out[c]! + acc;
       }
-
-      // Pre-norm → MoE channel mixer → residual.
-      const rmsMoe: number[] = [];
-      const moeCache: MoECacheLike[] = [];
-      const afterMoe: Float32Array[] = [];
-      for (let t = 0; t < T; t++) {
-        const { y, r } = rmsNorm(afterConv[t]!, nMoe);
-        rmsMoe.push(r);
-        const out = Float32Array.from(afterConv[t]!); // residual base
-        const mr = this.moe[l]!.forward(y);
-        for (let c = 0; c < dModel; c++) out[c] = out[c]! + mr.output[c]!;
-        afterMoe.push(out);
-        moeCache.push(mr.cache as unknown as MoECacheLike);
-      }
-
-      layers.push({ layerIn, normedConv, rmsConv, afterConv, rmsMoe, moeCache });
-      x = afterMoe;
+      afterConv.push(out);
     }
 
-    // Tied head: logits_t[v] = x_t · emb[v].
-    const logits: Float32Array[] = x.map((xt) => {
+    const rmsMoe: number[] = [];
+    const moeCache: MoECacheLike[] = [];
+    const afterMoe: Float32Array[] = [];
+    for (let t = 0; t < T; t++) {
+      const { y, r } = rmsNorm(afterConv[t]!, nMoe);
+      rmsMoe.push(r);
+      const out = Float32Array.from(afterConv[t]!); // residual base
+      const mr = this.moe[l]!.forward(y);
+      for (let c = 0; c < dModel; c++) out[c] = out[c]! + mr.output[c]!;
+      afterMoe.push(out);
+      moeCache.push(mr.cache as unknown as MoECacheLike);
+    }
+    return { afterMoe, cache: { layerIn, normedConv, rmsConv, afterConv, rmsMoe, moeCache } };
+  }
+
+  /** Tied output head: logits_t[v] = x_t · emb[v]. */
+  private _head(x: Float32Array[]): Float32Array[] {
+    const { dModel, vocabSize } = this.config;
+    return x.map((xt) => {
       const lg = new Float32Array(vocabSize);
       for (let v = 0; v < vocabSize; v++) {
         let acc = 0;
@@ -252,34 +256,39 @@ export class EvermindLM {
       }
       return lg;
     });
+  }
 
-    return { logits, cache: { tokens, layers, finalX: x } };
+  /** Run the model over a token sequence; returns per-position logits + a cache. */
+  forward(tokens: number[]): { logits: Float32Array[]; cache: ForwardCache } {
+    let x = this._embed(tokens);
+    const layers: LayerCache[] = [];
+    for (let l = 0; l < this.config.numLayers; l++) {
+      const { afterMoe, cache } = this._forwardLayer(l, x);
+      layers.push(cache);
+      x = afterMoe;
+    }
+    return { logits: this._head(x), cache: { tokens, layers, finalX: x } };
   }
 
   // ── Loss + backward ──────────────────────────────────────────────────────────
 
   /**
-   * Next-token cross-entropy over the sequence (predict tokens[t+1] from
-   * position t), accumulating exact gradients. Returns the mean loss. Call
-   * {@link zeroGrad} before and an optimiser step after.
+   * Head + tied-embedding gradient. Accumulates dL/d(head→emb) into gEmb and
+   * returns the mean next-token loss plus dL/d(finalX). Shared by the full and
+   * checkpointed backward paths so the head maths lives in one place.
    */
-  lossAndBackward(tokens: number[]): number {
-    const { dModel, convKernel, numLayers, vocabSize } = this.config;
+  private _headBackward(tokens: number[], logits: Float32Array[], finalX: Float32Array[]): { loss: number; dX: Float32Array[] } {
+    const { dModel, vocabSize } = this.config;
     const T = tokens.length;
-    if (T < 2) return 0;
-    const { logits, cache } = this.forward(tokens);
-
     const predPositions = T - 1; // positions 0..T-2 predict the next token
     const inv = 1 / predPositions;
-
-    // dL/d(finalX_t) and head gradient into the tied embedding.
     const dX: Float32Array[] = Array.from({ length: T }, () => new Float32Array(dModel));
     let loss = 0;
     for (let t = 0; t < predPositions; t++) {
       const target = tokens[t + 1]!;
       loss += crossEntropyLoss(logits[t]!, target) * inv;
       const dLogit = crossEntropyGrad(logits[t]!, target); // probs - onehot
-      const xt = cache.finalX[t]!;
+      const xt = finalX[t]!;
       for (let v = 0; v < vocabSize; v++) {
         const g = dLogit[v]! * inv;
         if (g === 0) continue;
@@ -290,59 +299,109 @@ export class EvermindLM {
         }
       }
     }
+    return { loss, dX };
+  }
 
-    // Backprop through layers in reverse.
-    for (let l = numLayers - 1; l >= 0; l--) {
-      const lc = cache.layers[l]!;
-      const ker = this.conv[l]!;
-      const gker = this.gConv[l]!;
-      const nConv = this.nConv[l]!;
-      const gNConv = this.gNConv[l]!;
-      const nMoe = this.nMoe[l]!;
-      const gNMoe = this.gNMoe[l]!;
+  /**
+   * Backward through one (conv + MoE) block given dL/d(block output) and the
+   * block's activation cache. Accumulates conv/norm/MoE gradients and returns
+   * dL/d(block input). The inverse of {@link _forwardLayer}.
+   */
+  private _backwardLayer(l: number, dOut: Float32Array[], lc: LayerCache): Float32Array[] {
+    const { dModel, convKernel } = this.config;
+    const T = dOut.length;
+    const ker = this.conv[l]!;
+    const gker = this.gConv[l]!;
+    const nConv = this.nConv[l]!;
+    const gNConv = this.gNConv[l]!;
+    const nMoe = this.nMoe[l]!;
+    const gNMoe = this.gNMoe[l]!;
 
-      // MoE sub-block: afterMoe = afterConv + MoE(RMSNorm(afterConv, nMoe)).
-      const dAfterConv: Float32Array[] = [];
-      for (let t = 0; t < T; t++) {
-        const dMoeNormed = this.moe[l]!.backward(dX[t]!, lc.moeCache[t] as never);
-        const { dx, dgain } = rmsNormBackward(dMoeNormed, lc.afterConv[t]!, lc.rmsMoe[t]!, nMoe);
-        for (let c = 0; c < dModel; c++) gNMoe[c] = gNMoe[c]! + dgain[c]!;
-        const d = Float32Array.from(dX[t]!); // residual passthrough
-        for (let c = 0; c < dModel; c++) d[c] = d[c]! + dx[c]!;
-        dAfterConv.push(d);
-      }
-
-      // Conv sub-block: afterConv = layerIn + conv(RMSNorm(layerIn, nConv)).
-      const dNormedConv: Float32Array[] = Array.from({ length: T }, () => new Float32Array(dModel));
-      const dLayerIn: Float32Array[] = dAfterConv.map((v) => Float32Array.from(v)); // residual passthrough
-      for (let t = 0; t < T; t++) {
-        for (let c = 0; c < dModel; c++) {
-          const dmix = dAfterConv[t]![c]!;
-          if (dmix === 0) continue;
-          for (let j = 0; j < convKernel; j++) {
-            const ti = t - j;
-            if (ti < 0) continue;
-            gker[c * convKernel + j] = gker[c * convKernel + j]! + dmix * lc.normedConv[ti]![c]!;
-            dNormedConv[ti]![c] = dNormedConv[ti]![c]! + dmix * ker[c * convKernel + j]!;
-          }
-        }
-      }
-      for (let t = 0; t < T; t++) {
-        const { dx, dgain } = rmsNormBackward(dNormedConv[t]!, lc.layerIn[t]!, lc.rmsConv[t]!, nConv);
-        for (let c = 0; c < dModel; c++) {
-          gNConv[c] = gNConv[c]! + dgain[c]!;
-          dLayerIn[t]![c] = dLayerIn[t]![c]! + dx[c]!;
-        }
-      }
-      for (let t = 0; t < T; t++) dX[t] = dLayerIn[t]!;
-    }
-
-    // Embedding lookup: dX at layer-0 input flows into the row for token_t.
+    // MoE sub-block: afterMoe = afterConv + MoE(RMSNorm(afterConv, nMoe)).
+    const dAfterConv: Float32Array[] = [];
     for (let t = 0; t < T; t++) {
-      const off = tokens[t]! * dModel;
-      for (let c = 0; c < dModel; c++) this.gEmb[off + c] = this.gEmb[off + c]! + dX[t]![c]!;
+      const dMoeNormed = this.moe[l]!.backward(dOut[t]!, lc.moeCache[t] as never);
+      const { dx, dgain } = rmsNormBackward(dMoeNormed, lc.afterConv[t]!, lc.rmsMoe[t]!, nMoe);
+      for (let c = 0; c < dModel; c++) gNMoe[c] = gNMoe[c]! + dgain[c]!;
+      const d = Float32Array.from(dOut[t]!); // residual passthrough
+      for (let c = 0; c < dModel; c++) d[c] = d[c]! + dx[c]!;
+      dAfterConv.push(d);
     }
 
+    // Conv sub-block: afterConv = layerIn + conv(RMSNorm(layerIn, nConv)).
+    const dNormedConv: Float32Array[] = Array.from({ length: T }, () => new Float32Array(dModel));
+    const dLayerIn: Float32Array[] = dAfterConv.map((v) => Float32Array.from(v)); // residual passthrough
+    for (let t = 0; t < T; t++) {
+      for (let c = 0; c < dModel; c++) {
+        const dmix = dAfterConv[t]![c]!;
+        if (dmix === 0) continue;
+        for (let j = 0; j < convKernel; j++) {
+          const ti = t - j;
+          if (ti < 0) continue;
+          gker[c * convKernel + j] = gker[c * convKernel + j]! + dmix * lc.normedConv[ti]![c]!;
+          dNormedConv[ti]![c] = dNormedConv[ti]![c]! + dmix * ker[c * convKernel + j]!;
+        }
+      }
+    }
+    for (let t = 0; t < T; t++) {
+      const { dx, dgain } = rmsNormBackward(dNormedConv[t]!, lc.layerIn[t]!, lc.rmsConv[t]!, nConv);
+      for (let c = 0; c < dModel; c++) {
+        gNConv[c] = gNConv[c]! + dgain[c]!;
+        dLayerIn[t]![c] = dLayerIn[t]![c]! + dx[c]!;
+      }
+    }
+    return dLayerIn;
+  }
+
+  /** Embedding lookup: dL/d(layer-0 input) flows into the row for each token. */
+  private _embedBackward(tokens: number[], dIn: Float32Array[]): void {
+    const { dModel } = this.config;
+    for (let t = 0; t < tokens.length; t++) {
+      const off = tokens[t]! * dModel;
+      for (let c = 0; c < dModel; c++) this.gEmb[off + c] = this.gEmb[off + c]! + dIn[t]![c]!;
+    }
+  }
+
+  /**
+   * Next-token cross-entropy over the sequence (predict tokens[t+1] from
+   * position t), accumulating exact gradients. Returns the mean loss. Call
+   * {@link zeroGrad} before and an optimiser step after.
+   */
+  lossAndBackward(tokens: number[]): number {
+    if (tokens.length < 2) return 0;
+    const { logits, cache } = this.forward(tokens);
+    const { loss, dX } = this._headBackward(tokens, logits, cache.finalX);
+    let d = dX;
+    for (let l = this.config.numLayers - 1; l >= 0; l--) d = this._backwardLayer(l, d, cache.layers[l]!);
+    this._embedBackward(tokens, d);
+    return loss;
+  }
+
+  /**
+   * Activation-checkpointed backward — numerically identical gradients to
+   * {@link lossAndBackward}, but retains only the per-LAYER inputs during the
+   * forward instead of every layer's full activation cache. Each layer's
+   * activations are RECOMPUTED (a cheap extra forward) when its backward runs,
+   * so peak activation memory is one layer's cache, not all of them. This is the
+   * memory-for-compute trade the cookbook pairs with FSDP to fit longer
+   * sequences / bigger models on a constrained device.
+   */
+  lossAndBackwardCheckpointed(tokens: number[]): number {
+    if (tokens.length < 2) return 0;
+    let x = this._embed(tokens);
+    const layerInputs: Float32Array[][] = [];
+    for (let l = 0; l < this.config.numLayers; l++) {
+      layerInputs.push(x); // keep only the input; drop the cache
+      x = this._forwardLayer(l, x).afterMoe;
+    }
+    const logits = this._head(x);
+    const { loss, dX } = this._headBackward(tokens, logits, x);
+    let d = dX;
+    for (let l = this.config.numLayers - 1; l >= 0; l--) {
+      const { cache } = this._forwardLayer(l, layerInputs[l]!); // recompute this layer's activations
+      d = this._backwardLayer(l, d, cache);
+    }
+    this._embedBackward(tokens, d);
     return loss;
   }
 
@@ -513,29 +572,114 @@ export class EvermindLM {
   }
 }
 
+export interface EvermindLMTrainOptions extends AdamWOptions {
+  epochs?: number;
+  /**
+   * Gradient accumulation: average gradients over this many sequences (micro-
+   * batches) before each optimiser step, for a larger effective batch on a
+   * memory-constrained device. Default 1.
+   */
+  accumSteps?: number;
+  /**
+   * Use activation checkpointing (recompute layer activations in backward) to
+   * cap peak activation memory. Identical gradients, a little extra compute.
+   * Default false.
+   */
+  checkpoint?: boolean;
+  /**
+   * Mixed-precision training: fp16-rounded gradients with dynamic loss scaling
+   * over fp32 master weights (the model params). Overflowing steps are skipped
+   * and the scale backs off. Default false.
+   */
+  mixedPrecision?: boolean | LossScalerOptions;
+}
+
 /** Minimal sequence trainer: AdamW over next-token cross-entropy. */
 export class EvermindLMTrainer {
   private readonly adam: AdamW;
+  private readonly scaler: DynamicLossScaler | null;
+  private readonly grads: { data: Float32Array }[];
   constructor(
     private readonly model: EvermindLM,
-    private readonly opts: AdamWOptions & { epochs?: number } = {},
+    private readonly opts: EvermindLMTrainOptions = {},
   ) {
     this.adam = new AdamW(model, opts);
+    this.grads = model.gradients();
+    this.scaler = opts.mixedPrecision
+      ? new DynamicLossScaler(typeof opts.mixedPrecision === "object" ? opts.mixedPrecision : {})
+      : null;
   }
+
+  /** The dynamic loss scaler (mixed-precision mode only) — exposes scale/overflow stats. */
+  get lossScaler(): DynamicLossScaler | null {
+    return this.scaler;
+  }
+
+  private _backward(seq: number[]): number {
+    return this.opts.checkpoint ? this.model.lossAndBackwardCheckpointed(seq) : this.model.lossAndBackward(seq);
+  }
+
+  /** Divide accumulated gradients by `n` (accumulation averaging), in place. */
+  private _scaleGrads(n: number): void {
+    if (n === 1) return;
+    const inv = 1 / n;
+    for (const g of this.grads) for (let i = 0; i < g.data.length; i++) g.data[i] = g.data[i]! * inv;
+  }
+
+  /** Round accumulated gradients to fp16 precision (mixed-precision simulation), in place. */
+  private _fp16Grads(): void {
+    for (const g of this.grads) for (let i = 0; i < g.data.length; i++) g.data[i] = roundFp16(g.data[i]!);
+  }
+
+  /** Multiply accumulated gradients by `s`, in place. */
+  private _mulGrads(s: number): void {
+    if (s === 1) return;
+    for (const g of this.grads) for (let i = 0; i < g.data.length; i++) g.data[i] = g.data[i]! * s;
+  }
+
   /** Train on a set of token sequences; returns per-epoch mean loss. */
   fit(sequences: number[][]): number[] {
     const epochs = this.opts.epochs ?? 1;
+    const accum = Math.max(1, this.opts.accumSteps ?? 1);
     const history: number[] = [];
     for (let e = 0; e < epochs; e++) {
       let total = 0;
       let n = 0;
+      let pending = 0;
+      // The scale is fixed for the duration of one accumulation window, so scale-up
+      // (per sequence) and unscale (at flush) always use the SAME factor even as the
+      // controller grows/backs it off between windows.
+      let windowScale = this.scaler ? this.scaler.scale : 1;
+      this.model.zeroGrad();
+      const flush = () => {
+        if (pending === 0) return;
+        this._scaleGrads(pending); // accumulation averaging
+        if (this.scaler) {
+          this._fp16Grads(); // half-precision gradients
+          const overflow = this.scaler.check(this.grads);
+          if (this.scaler.update(overflow)) {
+            this._mulGrads(1 / windowScale); // unscale by the SAME factor we scaled by
+            this.adam.step();
+          } // else: skip the step, scale has backed off
+          windowScale = this.scaler.scale; // next window uses the updated scale
+        } else {
+          this.adam.step();
+        }
+        this.model.zeroGrad();
+        pending = 0;
+      };
       for (const seq of sequences) {
         if (seq.length < 2) continue;
-        this.model.zeroGrad();
-        total += this.model.lossAndBackward(seq);
-        this.adam.step();
+        if (pending === 0 && this.scaler) windowScale = this.scaler.scale;
+        const loss = this._backward(seq);
+        // Emulate scaling the loss before backward: the gradient is linear in the
+        // loss, so scaling the just-produced gradients by the loss scale is equivalent.
+        this._mulGrads(windowScale);
+        total += loss;
         n++;
+        if (++pending >= accum) flush();
       }
+      flush();
       history.push(n > 0 ? total / n : 0);
     }
     return history;

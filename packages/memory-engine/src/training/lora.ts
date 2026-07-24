@@ -211,3 +211,155 @@ export function quantizeBase(base: Float32Array, mode: BaseQuant): { view: Float
     }
   }
 }
+
+import { EvermindLM } from "../lm/evermind_lm.js";
+
+export interface LoRAFitOptions extends AdamWOptions {
+  epochs?: number;
+  /**
+   * Gradient accumulation: average the adapter gradient over this many sequences
+   * (micro-batches) before each optimiser step. Lets a memory-constrained device
+   * train at a larger *effective* batch. Default 1 (step per sequence).
+   */
+  accumSteps?: number;
+}
+
+/**
+ * LoRA / QLoRA fine-tuning of an {@link EvermindLM} through its tied token
+ * embedding — the dominant parameter (vocab×dModel) and the natural adapter
+ * target (input lookup and output head share it). The base model is frozen; only
+ * the {@link LoRAAdapter} trains.
+ *
+ * QLoRA: pass `baseQuant: "fp16" | "int8"` and the frozen base is stored
+ * quantized and dequantized on the fly for the merged forward, so the resident
+ * base costs half (fp16) or a quarter (int8) of the bytes while the adapter
+ * trains full-precision.
+ *
+ * The adapter is the shippable artifact: {@link serializeAdapter} emits a few KB
+ * you swap per persona/tenant/project, versus rewriting the whole checkpoint.
+ */
+export class EvermindLMLoRA {
+  readonly adapter: LoRAAdapter;
+  readonly baseQuant: BaseQuant;
+  /** Frozen base embedding as used in the merged forward (dequantized under QLoRA). */
+  private readonly frozenBase: Float32Array;
+  private readonly baseBytesStored: number;
+  private readonly rows: number;
+  private readonly cols: number;
+
+  constructor(
+    private readonly model: EvermindLM,
+    config: LoRAConfig & { baseQuant?: BaseQuant } = {},
+  ) {
+    this.rows = model.config.vocabSize;
+    this.cols = model.config.dModel;
+    this.baseQuant = config.baseQuant ?? "none";
+    const { view, bytes } = quantizeBase(Float32Array.from(model.emb), this.baseQuant);
+    this.frozenBase = view;
+    this.baseBytesStored = bytes;
+    this.adapter = new LoRAAdapter(this.rows, this.cols, config);
+  }
+
+  /** The frozen base model this adapter rides on. */
+  get baseModel(): EvermindLM {
+    return this.model;
+  }
+
+  /** Effective embedding used for training/generation: frozenBase + adapter delta. */
+  mergedEmb(): Float32Array {
+    return this.adapter.applyTo(this.frozenBase);
+  }
+
+  /**
+   * One forward+backward on the merged weights, projecting the base-embedding
+   * gradient onto the adapter. The underlying model's own weights are left
+   * exactly as they were (base frozen); adapter gradients ACCUMULATE (caller
+   * zeroes between optimiser windows).
+   */
+  private _accumulate(seq: number[]): number {
+    const merged = this.mergedEmb();
+    const saved = this.model.emb;
+    this.model.emb = merged; // swap in effective weights (tied lookup + head)
+    this.model.zeroGrad();
+    const loss = this.model.lossAndBackward(seq);
+    const gW = this.model.gradients()[0]!.data; // dL/dW_eff == dL/dΔW, shape [rows×cols]
+    this.adapter.accumulateGradient(gW);
+    this.model.emb = saved; // restore the frozen base
+    return loss;
+  }
+
+  /** Train the adapter (only) with AdamW + optional gradient accumulation. */
+  fit(sequences: number[][], opts: LoRAFitOptions = {}): number[] {
+    const epochs = opts.epochs ?? 1;
+    const accum = Math.max(1, opts.accumSteps ?? 1);
+    const adam = new AdamW(this.adapter, opts);
+    const grads = this.adapter.gradients();
+    const history: number[] = [];
+    for (let e = 0; e < epochs; e++) {
+      let total = 0;
+      let n = 0;
+      let pending = 0;
+      this.adapter.zeroGrad();
+      const flush = () => {
+        if (pending === 0) return;
+        if (pending !== 1) for (const g of grads) for (let i = 0; i < g.data.length; i++) g.data[i] = g.data[i]! / pending;
+        adam.step();
+        this.adapter.zeroGrad();
+        pending = 0;
+      };
+      for (const seq of sequences) {
+        if (seq.length < 2) continue;
+        total += this._accumulate(seq);
+        n++;
+        if (++pending >= accum) flush();
+      }
+      flush();
+      history.push(n > 0 ? total / n : 0);
+    }
+    return history;
+  }
+
+  generate(prompt: number[], opts: import("../lm/evermind_lm.js").LMGenerateOptions): number[] {
+    const saved = this.model.emb;
+    this.model.emb = this.mergedEmb();
+    try {
+      return this.model.generate(prompt, opts);
+    } finally {
+      this.model.emb = saved;
+    }
+  }
+
+  generateText(prompt: string, codec: import("../lm/evermind_lm.js").TextCodec, opts: import("../lm/evermind_lm.js").LMGenerateOptions): string {
+    return codec.decode(this.generate(codec.encode(prompt), opts));
+  }
+
+  /** The shippable adapter artifact (a few KB). */
+  serializeAdapter(): ArrayBuffer {
+    return this.adapter.serialize();
+  }
+
+  /** Reconstruct a fine-tuned model from a base model + a serialized adapter. */
+  static loadAdapter(model: EvermindLM, adapterBuffer: ArrayBuffer, baseQuant: BaseQuant = "none"): EvermindLMLoRA {
+    const loaded = LoRAAdapter.deserialize(adapterBuffer);
+    const wrap = new EvermindLMLoRA(model, { rank: loaded.rank, alpha: loaded.alpha, baseQuant });
+    wrap.adapter.B.set(loaded.B);
+    wrap.adapter.A.set(loaded.A);
+    return wrap;
+  }
+
+  /** Bake the adapter into the base and return a standalone EVL0 checkpoint. */
+  merge(opts: { fp16?: boolean } = {}): ArrayBuffer {
+    this.model.emb.set(this.mergedEmb());
+    return this.model.exportWeights(opts);
+  }
+
+  /** Byte cost of the trainable adapter vs the frozen base — the LoRA/QLoRA saving. */
+  footprint(): { adapterBytes: number; baseBytes: number; trainableParams: number; baseParams: number } {
+    return {
+      adapterBytes: this.adapter.serialize().byteLength,
+      baseBytes: this.baseBytesStored,
+      trainableParams: this.adapter.numParams(),
+      baseParams: this.rows * this.cols,
+    };
+  }
+}

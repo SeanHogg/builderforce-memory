@@ -41,9 +41,15 @@ export type {
 
 // ── EvermindLM (the generative model) + AdamW ──────────────────────────────────
 export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED } from './lm/index.js';
-export type { EvermindLMConfig, LMGenerateOptions, TextCodec } from './lm/index.js';
+export type { EvermindLMConfig, LMGenerateOptions, TextCodec, EvermindLMTrainOptions } from './lm/index.js';
 export { AdamW } from './optim/adamw.js';
-export type { AdamWOptions, OptimTarget, OptimParam } from './optim/adamw.js';
+export type { AdamWOptions, OptimTarget, OptimParam, ShardSpec } from './optim/adamw.js';
+
+// PEFT / efficient-training toolkit (LoRA, QLoRA, mixed precision, checkpointing).
+export { LoRAAdapter, EvermindLMLoRA, quantizeBase } from './training/lora.js';
+export type { LoRAConfig, LoRAFitOptions, BaseQuant } from './training/lora.js';
+export { DynamicLossScaler, roundFp16, fp16View } from './training/mixed_precision.js';
+export type { LossScalerOptions } from './training/mixed_precision.js';
 
 // ── Training ──────────────────────────────────────────────────────────────────
 
