@@ -69,6 +69,16 @@ Generic build step types (compose your own pipeline via the step registry):
 
 ---
 
+## Evermind recall contract (`@seanhogg/builderforce-memory/evermind`)
+
+A dependency-free subpath a browser chat client can import without the rest of the runtime:
+
+- `EvermindRecallItem`, `EvermindRecallResult` — what a project Evermind recall returns.
+- `rankEvermindRecall`, `recallTokens`, `hashRecallQuery` — the lexical recall ranker.
+- `countReconciledMemories` — which recalled memories an answer restates (write-through reconcile).
+- `formatEvermindMemoryBlock` — the recalled-memory prompt block, each item neutralised with `sanitizeRecalledFact`.
+- `EVERMIND_MIN_TEACH_CHARS` — the teach floor below which a turn is never contributed.
+
 ## Installation
 
 ```bash

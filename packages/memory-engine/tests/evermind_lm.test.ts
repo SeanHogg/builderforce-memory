@@ -5,7 +5,7 @@
  */
 
 import { EvermindLM, EvermindLMTrainer, type TextCodec } from "../src/lm/evermind_lm.js";
-import { EvermindModelPackage } from "../src/moe/moe_package.js";
+import { EvermindModelPackage } from "../src/evermind/package.js";
 import { BPETokenizer } from "../src/tokenizer/bpe.js";
 import { crossEntropyLoss } from "../src/training/autograd.js";
 

@@ -1,5 +1,5 @@
 /**
- * MambaCode.js – Entry Point (v2.0.0)
+ * @seanhogg/builderforce-memory-engine – entry point
  */
 
 // ── Model classes ─────────────────────────────────────────────────────────────
@@ -22,7 +22,6 @@ export {
     DEFAULT_MOE_CONFIG,
     DEFAULT_MOE_SEED,
     MoETrainer,
-    EvermindModelPackage,
 } from './moe/index.js';
 export type {
     MoEConfig,
@@ -31,13 +30,41 @@ export type {
     MoESample,
     MoETrainOptions,
     MoEEpochResult,
+} from './moe/index.js';
+
+// ── Evermind (the .evermind artifact + the shared learning pipeline) ───────────
+export {
+    EvermindModelPackage,
+    adaptAndDiff,
+    EVERMIND_ADAPT_MAX_CHARS,
+    EVERMIND_ADAPT_WINDOW_TOKENS,
+    parseDeltaLearnPayload,
+    buildDeltaLearnPayload,
+    decodeDeltaPayload,
+    deltaUnusableReason,
+    MAX_DELTA_B64_CHARS,
+    DELTA_LABEL_MAX_CHARS,
+    mergeCheckpointDiffs,
+    meanEvalLoss,
+    sequenceLoss,
+    EVAL_MAX_TOKENS,
+} from './evermind/index.js';
+export type {
     EvermindModelManifest,
     EvermindModelCard,
     EvermindModelType,
     EvermindModality,
     PackageMeta,
     ValidationResult,
-} from './moe/index.js';
+    AdaptResult,
+    AdaptOptions,
+    AdaptTokenizer,
+    DeltaLearnPayload,
+    DeltaParseResult,
+    MergeResult,
+    EvalExample,
+    EvalTokenizer,
+} from './evermind/index.js';
 
 // ── EvermindLM (the generative model) + AdamW ──────────────────────────────────
 export { EvermindLM, EvermindLMTrainer, DEFAULT_LM_CONFIG, DEFAULT_LM_SEED, logProbOfToken } from './lm/index.js';
@@ -229,6 +256,7 @@ export {
     applyCheckpointDiff,
 } from './utils/delta.js';
 export type { RowDelta } from './utils/delta.js';
+export { bytesToBase64, base64ToBytes } from './utils/base64.js';
 
 // ── Seeded RNG (reproducible weight init) ─────────────────────────────────────
 
@@ -339,8 +367,3 @@ export type {
 } from './limbic/index.js';
 
 export { LIMBIC_AFFECT_WGSL } from './kernels/limbic_affect.js';
-
-// ── Version ───────────────────────────────────────────────────────────────────
-
-export const VERSION     = '2.0.0';
-export const DESCRIPTION = 'MambaCode.js: WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM for browser code models';

@@ -11,7 +11,7 @@ import { ImageRVQCodec } from "../src/codec/image_rvq.js";
 import { MultimodalVocab, VIDEO_BANK_INTRA, VIDEO_BANK_INTER } from "../src/codec/multimodal_vocab.js";
 import { buildVideoSequence, generateVideo, generateImage } from "../src/codec/evermind_video.js";
 import { EvermindLM, EvermindLMTrainer } from "../src/lm/evermind_lm.js";
-import { EvermindModelPackage } from "../src/moe/moe_package.js";
+import { EvermindModelPackage } from "../src/evermind/package.js";
 
 /** Deterministic synthetic clip: smooth spatial pattern that drifts a little each frame. */
 function makeVideo(T: number, H: number, W: number, C: number, phase = 0): Video {

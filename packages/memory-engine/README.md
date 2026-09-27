@@ -65,6 +65,20 @@ Metrics: held-out perplexity, bits-per-token, top-1/top-k next-token accuracy, a
 
 ---
 
+## Evermind learning pipeline
+
+`src/evermind/` is the engine half of the Evermind module. Every learner that contributes to a shared Evermind runs the same code:
+
+| Export | What it does |
+|---|---|
+| `EvermindModelPackage` | The portable `.evermind` artifact (manifest, checkpoint, integrity, optional tokenizer and codec). |
+| `adaptAndDiff(pkg, tokenizer, text)` | Fits a private copy of a version on some text and returns the sparse diff, final loss and window count. |
+| `parseDeltaLearnPayload` / `buildDeltaLearnPayload` / `decodeDeltaPayload` | The wire contract of a pushed weight delta, including the `MAX_DELTA_B64_CHARS` cap. |
+| `deltaUnusableReason(delta, base)` | Structural check a delta must pass before it may join a merge batch. |
+| `mergeCheckpointDiffs(base, diffs, weights?)` | FedAvg-over-contributors merge of element-granular deltas. |
+| `meanEvalLoss` / `sequenceLoss` | Forward-only pre/post-merge regression check. |
+| `bytesToBase64` / `base64ToBytes` | Isomorphic binary codec used by the wire contract. |
+
 ## Installation
 
 ```bash

@@ -12,9 +12,10 @@
  * BuilderForce VS Code extension rewrites the snapshot directly) must produce
  * byte-identical stubs; otherwise re-running either one re-stubs the other's work.
  *
- * NOTE: `Builderforce.ai/clients/vscode/src/memorySnapshot.ts` is the extension-side
- * mirror of these three functions. They are deliberately kept in lockstep — the
- * marker below is the shared idempotency contract between the two processes.
+ * Dependency-free and published as its own subpath
+ * (`@seanhogg/builderforce-memory-mcp/compaction`), so an external compactor imports
+ * these rules instead of re-implementing them — the marker below is the shared
+ * idempotency contract between the two processes.
  */
 
 /**

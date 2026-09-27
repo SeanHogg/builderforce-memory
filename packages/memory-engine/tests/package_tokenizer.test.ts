@@ -10,7 +10,7 @@
  * before this section existed must still parse byte for byte.
  */
 
-import { EvermindModelPackage } from '../src/moe/moe_package';
+import { EvermindModelPackage } from '../src/evermind/package';
 import { EvermindLM } from '../src/lm/evermind_lm';
 import { BPETokenizer } from '../src/tokenizer/bpe';
 import { SharedExpertMoE } from '../src/moe/moe_model';

@@ -203,6 +203,10 @@ const remote: MemoryBackend = {
 const server = await createMemoryMcpServer(remote);
 ```
 
+## Compaction rules (`@seanhogg/builderforce-memory-mcp/compaction`)
+
+The stub format that `memory_compact` writes (`[absorbed→Evermind vN] <first line>`) is published as a dependency-free subpath. An external compactor imports `planCompaction`, `memoryStub` and `isStub` from it, so its stubs are byte-identical to the server's and neither re-stubs the other.
+
 ## Dependencies
 
 `@modelcontextprotocol/sdk` + `zod` are hard deps. `@anthropic-ai/claude-agent-sdk`

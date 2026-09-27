@@ -6,7 +6,7 @@
 
 import { SharedExpertMoE } from "../src/moe/moe_model.js";
 import { MoETrainer, type MoESample } from "../src/moe/moe_trainer.js";
-import { EvermindModelPackage } from "../src/moe/moe_package.js";
+import { EvermindModelPackage } from "../src/evermind/package.js";
 
 const CFG = { modelDim: 4, hiddenDim: 6, numExperts: 4, topK: 2, seed: 2024 };
 

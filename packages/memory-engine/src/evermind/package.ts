@@ -1,5 +1,5 @@
 /**
- * moe_package.ts — EvermindModelPackage: the portable, publishable AI artifact.
+ * evermind/package.ts — EvermindModelPackage: the portable, publishable AI artifact.
  *
  * This is the unit a creator publishes to the marketplace and a buyer downloads
  * and runs: a self-describing manifest (name, version, config, model card,
@@ -11,7 +11,7 @@
  * browser (where models are trained) and in Node/Workers (where they execute).
  */
 
-import { SharedExpertMoE, type MoEConfig } from "./moe_model.js";
+import { SharedExpertMoE, type MoEConfig } from "../moe/moe_model.js";
 import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
 import { VideoRVQCodec } from "../codec/video_rvq.js";
 import { BPETokenizer } from "../tokenizer/bpe.js";
@@ -279,6 +279,7 @@ export class EvermindModelPackage {
     if (this.tokenizer) new Uint8Array(out, o, tokBytes).set(new Uint8Array(this.tokenizer));
     return out;
   }
+
 
   /** Parse a `.evermind` blob. Throws on bad magic / truncation. */
   static fromBlob(buffer: ArrayBuffer): EvermindModelPackage {
