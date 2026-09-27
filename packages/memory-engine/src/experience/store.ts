@@ -19,9 +19,10 @@ export interface ExperienceSnapshot {
   skills: Skill[];
   runs: Run[];
   /**
-   * Which episodes and skills the local Evermind has already been adapted on, and
-   * when — so training reads each procedure once instead of re-fitting the same text
-   * on every pass.
+   * Which episodes and skills the local Evermind has been adapted on, and by which
+   * adaptation (the N of the model's `+expN` version) — so training reads each
+   * procedure once, and a model rolled back to an earlier N re-learns what the
+   * discarded versions had learned.
    */
   learned: Record<string, number>;
 }
@@ -44,8 +45,8 @@ export interface ExperienceStore {
   getRun(id: string): Promise<Run | undefined>;
   listRuns(limit: number): Promise<Run[]>;
 
-  /** Record that the model was adapted on these items. */
-  markLearned(ids: string[], at: number): Promise<void>;
+  /** Record that adaptation number `adaptation` (the model's `+expN`) learned these items. */
+  markLearned(ids: string[], adaptation: number): Promise<void>;
 
   snapshot(): Promise<ExperienceSnapshot>;
   /** Delete every episode, skill and run. */
@@ -160,9 +161,9 @@ export class InMemoryExperienceStore implements ExperienceStore {
     return this.data.runs.slice(0, Math.max(0, limit));
   }
 
-  async markLearned(ids: string[], at: number): Promise<void> {
+  async markLearned(ids: string[], adaptation: number): Promise<void> {
     if (ids.length === 0) return;
-    for (const id of ids) this.data.learned[id] = at;
+    for (const id of ids) this.data.learned[id] = adaptation;
     await this.changed();
   }
 

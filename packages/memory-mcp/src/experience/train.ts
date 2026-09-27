@@ -7,10 +7,11 @@
  * decides what is new, runs the passes over the local model file and writes the
  * result back, keeping the previous model beside it.
  *
- * "What is new" is the store's learned ledger, and it holds only for the model it was
- * written against: an adapted model carries a `+expN` version suffix, so a model
- * without one is a fresh base (a newly downloaded Evermind) that has learned nothing
- * yet and gets every procedure again.
+ * "What is new" is the store's learned ledger. Every adaptation writes `<base>+expN`
+ * and records N against each procedure it learned, so a loaded model trusts exactly
+ * the entries at or below its own N: rolling back to `<model>.prev` (+exp N-1)
+ * re-teaches what the discarded version had learned, and a fresh base (no suffix,
+ * N = 0) — a newly downloaded Evermind — gets every procedure again.
  */
 
 import type { adaptPackage, experienceDocuments, packDocuments, ExperienceStore } from "@seanhogg/builderforce-memory-engine";
@@ -37,16 +38,21 @@ export function nextExperienceVersion(version: string): string {
     return m ? version.replace(EXP_SUFFIX, `+exp${Number(m[1]) + 1}`) : `${version}+exp1`;
 }
 
-/** Whether this model was adapted on this store's experience (vs. a fresh base). */
-export function isExperienceAdapted(version: string): boolean {
-    return EXP_SUFFIX.test(version);
+/** Which adaptation produced this model: N for `+expN`, 0 for a base that has none. */
+export function experienceIndex(version: string): number {
+    const m = EXP_SUFFIX.exec(version);
+    return m ? Number(m[1]) : 0;
 }
 
 /** Procedures the model has not learned yet. */
 export async function pendingDocuments(store: ExperienceStore, engine: TrainEngine, modelVersion: string) {
     const snap = await store.snapshot();
-    const learned = isExperienceAdapted(modelVersion) ? snap.learned : {};
-    return engine.experienceDocuments(snap.episodes, snap.skills).filter((d) => !(d.id in learned));
+    const current = experienceIndex(modelVersion);
+    const known = (id: string) => {
+        const n = snap.learned[id];
+        return typeof n === "number" && n >= 1 && n <= current;
+    };
+    return engine.experienceDocuments(snap.episodes, snap.skills).filter((d) => !known(d.id));
 }
 
 export async function trainExperience(
@@ -54,7 +60,6 @@ export async function trainExperience(
     engine: TrainEngine,
     model: LoadedEvermind,
     modelFile: string,
-    now: number = Date.now(),
 ): Promise<TrainOutcome> {
     const version = model.pkg.manifest.version ?? "0";
     const docs = await pendingDocuments(store, engine, version);
@@ -85,6 +90,6 @@ export async function trainExperience(
     const staged = `${modelFile}.next`;
     model.fs.writeFileSync(staged, new Uint8Array(pkg.toBlob()));
     model.fs.renameSync(staged, modelFile);
-    await store.markLearned(learned, now);
+    await store.markLearned(learned, experienceIndex(next));
     return { status: "trained", learned: learned.length, passes, loss: lossSum / passes, version: next, previousModel };
 }

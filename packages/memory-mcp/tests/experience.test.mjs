@@ -149,6 +149,12 @@ test("experience_train adapts the private model once per procedure and keeps the
   await call("skill_compile", { episodeId: "ep1" });
   const second = (await call("experience_train")).json;
   assert.equal(second.version, "7+exp2", "the reviewed skill is new; its raw episode is superseded");
+
+  // Roll back: the kept model (+exp1) never learned the skill, so it is pending again —
+  // and only the skill; the episode learned at +exp1 still counts.
+  fs.copyFileSync(`${modelFile}.prev`, modelFile);
+  assert.equal((await call("experience_train", { dryRun: true })).json.pending, 1);
+  assert.equal((await call("experience_train")).json.version, "7+exp2");
 });
 
 test("training without a model says how to configure one", async () => {

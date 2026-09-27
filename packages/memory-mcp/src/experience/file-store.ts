@@ -124,9 +124,9 @@ export class FileExperienceStore implements ExperienceStore {
         return this.inner.listRuns(limit);
     }
 
-    async markLearned(ids: string[], at: number): Promise<void> {
+    async markLearned(ids: string[], adaptation: number): Promise<void> {
         this.fresh();
-        await this.inner.markLearned(ids, at);
+        await this.inner.markLearned(ids, adaptation);
     }
 
     async snapshot(): Promise<ExperienceSnapshot> {
