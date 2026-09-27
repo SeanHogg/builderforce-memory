@@ -2,20 +2,20 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.SeanHogg/builderforce-memory",
   "title": "Builderforce Memory",
-  "description": "Token-saving persistent memory for AI agents. Recall durable facts — decisions, fixes, project context, user preferences — instead of re-reading files or chat history, and remember new ones as you learn them.",
+  "description": "Token-saving persistent memory for AI agents: recall durable facts instead of re-reading files.",
   "repository": {
     "url": "https://github.com/SeanHogg/builderforce-memory",
     "source": "github",
     "subfolder": "packages/memory-mcp"
   },
-  "version": "2026.9.28",
+  "version": "2026.9.29",
   "websiteUrl": "https://builderforce.ai",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@seanhogg/builderforce-memory-mcp",
-      "version": "2026.9.28",
+      "version": "2026.9.29",
       "transport": {
         "type": "stdio"
       },

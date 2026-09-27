@@ -31,6 +31,14 @@ if (pkg.mcpName !== manifest.name) {
   process.exit(1);
 }
 
+// The registry caps the description at 100 characters and rejects the whole
+// publish otherwise — after npm has already shipped. Fail here instead.
+const REGISTRY_DESCRIPTION_MAX = 100;
+if (typeof manifest.description !== "string" || manifest.description.length > REGISTRY_DESCRIPTION_MAX) {
+  console.error(`✗ server.json description must be at most ${REGISTRY_DESCRIPTION_MAX} characters (the MCP Registry rejects longer ones).`);
+  process.exit(1);
+}
+
 manifest.version = pkg.version;
 for (const entry of manifest.packages ?? []) {
   if (entry.identifier === pkg.name) entry.version = pkg.version;
