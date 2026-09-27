@@ -30,12 +30,7 @@ export type { MemoryTool, ToolResult } from "./tool-core.js";
 // The domain is the engine's; this is its durable host and its tools.
 export { createExperienceHost, EXPERIENCE_ENV } from "./experience/host.js";
 export type { ExperienceHost, ExperienceHostOptions, ExperienceEngine } from "./experience/host.js";
-export { buildExperienceTools } from "./experience/tools.js";
-export { FileExperienceStore, isSafeExperienceId } from "./experience/file-store.js";
-export { trainExperience, nextExperienceVersion, isExperienceAdapted } from "./experience/train.js";
-export type { TrainOutcome } from "./experience/train.js";
-export { SharedJsonFile, contentHash } from "./persistence/shared-json-file.js";
-export { loadEvermindPackage } from "./model/evermind-package.js";
+export { nextExperienceVersion } from "./experience/train.js";
 
 // ── Compaction (absorbed fact → one-line pointer stub) ───────────────────────
 // Exported so an EXTERNAL compactor (the BuilderForce VS Code extension rewrites

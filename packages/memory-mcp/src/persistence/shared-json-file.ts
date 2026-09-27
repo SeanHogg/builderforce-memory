@@ -15,6 +15,9 @@
 export type SharedFileFs = {
     readFileSync(path: string, enc: "utf8"): string;
     writeFileSync(path: string, data: string): void;
+    /** When present, writes land atomically (temp file + rename). */
+    renameSync?(from: string, to: string): void;
+    unlinkSync?(path: string): void;
     existsSync(path: string): boolean;
     statSync(path: string): { mtimeMs: number; size: number };
 };
@@ -91,9 +94,33 @@ export class SharedJsonFile {
         return { text, accept: () => (this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash }) };
     }
 
-    /** Write, and stamp our own write so the next check does not read it back as foreign. */
+    /**
+     * Write, and stamp our own write so the next check does not read it back as foreign.
+     *
+     * Atomic where the filesystem allows: the text goes to a sibling temp file that is
+     * then renamed over the target, so a crash mid-write leaves the previous complete
+     * file, never a truncated one (which would read as empty and be overwritten by the
+     * next write). If the rename is refused (Windows, while another process holds the
+     * file open), the write falls back to writing in place.
+     */
     write(text: string): void {
-        this.fs.writeFileSync(this.path, text);
+        const rename = this.fs.renameSync?.bind(this.fs);
+        let written = false;
+        if (rename) {
+            const tmp = `${this.path}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`;
+            try {
+                this.fs.writeFileSync(tmp, text);
+                rename(tmp, this.path);
+                written = true;
+            } catch {
+                try {
+                    if (this.fs.existsSync(tmp)) this.fs.unlinkSync?.(tmp);
+                } catch {
+                    /* best effort: a stray temp file is harmless */
+                }
+            }
+        }
+        if (!written) this.fs.writeFileSync(this.path, text);
         try {
             const st = this.fs.statSync(this.path);
             this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash: contentHash(text) };

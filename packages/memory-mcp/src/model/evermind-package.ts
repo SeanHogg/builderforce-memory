@@ -35,6 +35,7 @@ export type ModelFs = {
     writeFileSync(path: string, data: string | Uint8Array): void;
     existsSync(path: string): boolean;
     copyFileSync(src: string, dest: string): void;
+    renameSync(from: string, to: string): void;
 };
 
 export interface LoadedEvermind {

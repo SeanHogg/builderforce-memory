@@ -36,6 +36,29 @@ const scheduleShape = z.union([
 
 const ACTION_KINDS = new Set(["click", "setValue", "keys"]);
 
+const isTarget = (t: unknown): boolean =>
+    !!t && typeof t === "object" && typeof (t as { name?: unknown }).name === "string";
+
+/**
+ * Why one recorded action is unusable, or null. Every field the corpus and replay read
+ * is checked here, so one malformed step is refused at save time instead of making
+ * every later `experience_train` throw.
+ */
+function actionProblem(a: Record<string, unknown>): string | null {
+    switch (a["kind"]) {
+        case "click":
+            return isTarget(a["target"]) ? null : "a click needs a target element";
+        case "setValue":
+            if (!isTarget(a["target"])) return "a setValue needs a target element";
+            return typeof a["value"] === "string" ? null : "a setValue needs a string value (empty for a secret)";
+        case "keys":
+            if (typeof a["keys"] !== "string" || !a["keys"]) return "a keys action needs its keys";
+            return a["target"] == null || isTarget(a["target"]) ? null : "a keys target must be an element";
+        default:
+            return "the action kind must be click, setValue or keys";
+    }
+}
+
 /** Accept a recorder's episode, or say what is wrong with it. */
 export function asEpisode(raw: unknown, newId: () => string): Episode | string {
     const e = raw as Partial<Episode> | null;
@@ -47,7 +70,14 @@ export function asEpisode(raw: unknown, newId: () => string): Episode | string {
         if (!s || typeof s.id !== "string" || !s.action || !ACTION_KINDS.has(s.action.kind)) {
             return `episode.steps[${i}] needs an id and an action of kind click, setValue or keys.`;
         }
+        const problem = actionProblem(s.action as unknown as Record<string, unknown>);
+        if (problem) return `episode.steps[${i}]: ${problem}.`;
     }
+    // A secret field records THAT it was filled, never the value: whatever a recorder
+    // sent, a secret value is not stored (and so never returned by episode_get).
+    const steps = e.steps.map((s) =>
+        s.action.kind === "setValue" && s.action.secret ? { ...s, action: { ...s.action, value: "" } } : s,
+    );
     const id = typeof e.id === "string" && e.id ? e.id : newId();
     if (!isSafeExperienceId(id)) return "episode.id may use letters, digits, '-' and '_' only.";
     return {
@@ -57,7 +87,7 @@ export function asEpisode(raw: unknown, newId: () => string): Episode | string {
         args: Array.isArray(e.args) ? e.args.map(String) : [],
         startedAt: typeof e.startedAt === "number" ? e.startedAt : Date.now(),
         endedAt: typeof e.endedAt === "number" ? e.endedAt : null,
-        steps: e.steps,
+        steps,
     };
 }
 
@@ -193,7 +223,11 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                 const skill = await store.getSkill(str(args["id"]));
                 if (!skill) return fail(`No skill "${str(args["id"])}".`);
                 const r = args["routine"] as Omit<SkillRoutine, "lastRunAt"> | null;
-                skill.routine = r ? { ...r, lastRunAt: skill.routine?.lastRunAt ?? null } : null;
+                // Routine values are stored in plain JSON, so a secret parameter's value is
+                // never kept here — secrets come from the host's vault at run time.
+                const secret = new Set(skill.params.filter((p) => p.secret).map((p) => p.name));
+                const values = r ? Object.fromEntries(Object.entries(r.values).filter(([k]) => !secret.has(k))) : {};
+                skill.routine = r ? { ...r, values, lastRunAt: skill.routine?.lastRunAt ?? null } : null;
                 await store.putSkill(skill);
                 return okJson(skill);
             },

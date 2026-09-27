@@ -23,10 +23,12 @@ import type { SharedJsonFile } from "../persistence/shared-json-file.js";
 
 /** The filesystem calls the store makes besides the snapshot's own. */
 export interface EpisodeFolders {
-    /** Delete one episode's screenshot folder, if it exists. Only ever called with a safe id. */
+    /**
+     * Delete one episode's screenshot folder, if it exists. Only ever called with a safe
+     * id. Forgetting everything calls this once per KNOWN episode — never a recursive
+     * delete of the parent, which sits beside a user-chosen memory file.
+     */
     remove(episodeId: string): void;
-    /** Delete every episode's screenshot folder. */
-    removeAll(): void;
 }
 
 /** Episode ids are also folder names — anything that could leave the folder is refused. */
@@ -56,7 +58,16 @@ export class FileExperienceStore implements ExperienceStore {
         } catch {
             return;
         }
-        this.inner.load(this.parse(raw));
+        const snapshot = this.parse(raw);
+        // A snapshot in a schema this server does not know (a newer writer) parses to
+        // empty — absorbing it would let the next write destroy it. Refuse instead.
+        const schema = (raw as { schema?: unknown } | null)?.schema;
+        if (typeof schema === "string" && schema !== snapshot.schema) {
+            throw new Error(
+                `${this.file.path} is in schema "${schema}", which this server cannot read (it writes "${snapshot.schema}"). Upgrade the memory server; the file was left untouched.`,
+            );
+        }
+        this.inner.load(snapshot);
         changed.accept();
     }
 
@@ -123,7 +134,9 @@ export class FileExperienceStore implements ExperienceStore {
         return this.inner.snapshot();
     }
     async clear(): Promise<void> {
+        this.fresh();
+        const known = (await this.inner.snapshot()).episodes.map((e) => e.id).filter(isSafeExperienceId);
         await this.inner.clear();
-        this.folders.removeAll();
+        for (const id of known) this.folders.remove(id);
     }
 }

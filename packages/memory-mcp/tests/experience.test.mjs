@@ -162,3 +162,54 @@ test("nextExperienceVersion", () => {
   assert.equal(nextExperienceVersion("511"), "511+exp1");
   assert.equal(nextExperienceVersion("511+exp9"), "511+exp10");
 });
+
+test("a malformed step is refused at save time, and a secret value is never stored", async () => {
+  const dir = tmpDir();
+  const { call } = await toolsFor(path.join(dir, "memory.json"));
+
+  const noValue = episode("bad1");
+  noValue.steps[1] = { id: "s2", atMs: 5, action: { kind: "setValue", target: el("Amount", "Edit") } };
+  const refused = await call("episode_save", { episode: noValue });
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /steps\[1\]/);
+
+  const noTarget = episode("bad2");
+  noTarget.steps[0] = { id: "s1", atMs: 0, action: { kind: "click" } };
+  assert.equal((await call("episode_save", { episode: noTarget })).error, true);
+
+  const withSecret = episode("sec1");
+  withSecret.steps[1] = { id: "s2", atMs: 5, action: { kind: "setValue", target: el("Password", "Edit"), value: "hunter2", secret: true } };
+  assert.equal((await call("episode_save", { episode: withSecret })).error, false);
+  const stored = (await call("episode_get", { id: "sec1" })).json;
+  assert.equal(stored.steps[1].action.value, "");
+  assert.ok(!fs.readFileSync(path.join(dir, "experience.json"), "utf8").includes("hunter2"));
+
+  // A recorder that already sends an empty secret value is accepted as-is.
+  const emptySecret = episode("sec2");
+  emptySecret.steps[1] = { id: "s2", atMs: 5, action: { kind: "setValue", target: el("Password", "Edit"), value: "", secret: true } };
+  assert.equal((await call("episode_save", { episode: emptySecret })).error, false);
+});
+
+test("forgetting everything removes only the known episode folders", async () => {
+  const dir = tmpDir();
+  const { call, host } = await toolsFor(path.join(dir, "memory.json"));
+  await call("episode_save", { episode: episode("ep9") });
+  fs.mkdirSync(path.join(host.episodesDir, "ep9"), { recursive: true });
+  const unrelated = path.join(host.episodesDir, "not-an-episode");
+  fs.mkdirSync(unrelated, { recursive: true });
+  fs.writeFileSync(path.join(unrelated, "keep.txt"), "mine");
+
+  assert.equal((await call("experience_forget_all", { confirm: true })).json.forgotten, true);
+  assert.equal(fs.existsSync(path.join(host.episodesDir, "ep9")), false);
+  assert.equal(fs.readFileSync(path.join(unrelated, "keep.txt"), "utf8"), "mine");
+});
+
+test("a snapshot in an unknown schema is refused, never overwritten", async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, "experience.json");
+  const future = JSON.stringify({ schema: "evermind.experience/99", episodes: [{ id: "x" }] });
+  fs.writeFileSync(file, future);
+  const { call } = await toolsFor(path.join(dir, "memory.json"));
+  assert.equal((await call("episode_save", { episode: episode("ep1") })).error, true);
+  assert.equal(fs.readFileSync(file, "utf8"), future);
+});

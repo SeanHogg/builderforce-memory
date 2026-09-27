@@ -77,10 +77,14 @@ export async function trainExperience(
     if (passes === 0) return { status: "no_window", pending: docs.length, version };
 
     // Keep the model this pass started from, so one bad adaptation is one rename away
-    // from undone. The ledger is written only after the new model is on disk.
+    // from undone. The new model is written beside the old one and renamed into place,
+    // so a crash mid-write never leaves a truncated model. The ledger is written only
+    // after the new model is on disk.
     const previousModel = `${modelFile}.prev`;
     model.fs.copyFileSync(modelFile, previousModel);
-    model.fs.writeFileSync(modelFile, new Uint8Array(pkg.toBlob()));
+    const staged = `${modelFile}.next`;
+    model.fs.writeFileSync(staged, new Uint8Array(pkg.toBlob()));
+    model.fs.renameSync(staged, modelFile);
     await store.markLearned(learned, now);
     return { status: "trained", learned: learned.length, passes, loss: lossSum / passes, version: next, previousModel };
 }

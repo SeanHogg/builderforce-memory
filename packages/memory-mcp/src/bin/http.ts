@@ -48,6 +48,12 @@ const handler = createMemoryHttpHandler(backend, {
     experience: await createExperienceHost({ memoryFile }),
 });
 
+if (process.env["BUILDERFORCE_MEMORY_EXPERIENCE"] === "1" && !process.env["BUILDERFORCE_MEMORY_TOKEN"]) {
+    process.stderr.write(
+        "[builderforce-memory-mcp-http] experience tools stay off: they are served only to callers holding BUILDERFORCE_MEMORY_TOKEN\n",
+    );
+}
+
 const port = Number(process.env["PORT"] ?? 8787);
 
 http.createServer((req, res) => {

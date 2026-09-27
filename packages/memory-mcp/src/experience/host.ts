@@ -88,10 +88,6 @@ export async function createExperienceHost(opts: ExperienceHostOptions): Promise
         const inner = new engine.InMemoryExperienceStore(undefined, (s) => shared.write(JSON.stringify(s, null, 2)));
         const store = new FileExperienceStore(inner, shared, engine.parseSnapshot, {
             remove: (id) => fs.rmSync(path.join(episodesDir, id), { recursive: true, force: true }),
-            removeAll: () => {
-                fs.rmSync(episodesDir, { recursive: true, force: true });
-                fs.mkdirSync(episodesDir, { recursive: true });
-            },
         });
         const modelFile = env[MODEL_FILE_ENV] || undefined;
         const tokenizerFile = env[TOKENIZER_FILE_ENV] || undefined;

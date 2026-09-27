@@ -26,7 +26,7 @@ export { isIrreversibleLabel, elementLabel, needsApproval } from './approval.js'
 export { trainOnce, slug } from './trainOnce.js';
 export type { ReviewEdits } from './trainOnce.js';
 export { isDue, dueSkills } from './schedule.js';
-export { skillText, episodeText, experienceCorpus, experienceDocuments, packDocuments } from './corpus.js';
+export { experienceCorpus, experienceDocuments, packDocuments } from './corpus.js';
 export type { ExperienceDocument } from './corpus.js';
 export { EXPERIENCE_SCHEMA, MAX_RUNS, emptySnapshot, parseSnapshot, InMemoryExperienceStore } from './store.js';
 export type { ExperienceSnapshot, ExperienceStore } from './store.js';

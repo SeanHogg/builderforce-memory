@@ -89,6 +89,8 @@ export function createMemoryHttpHandler(
         // ── Resolve the per-request backend + a rate-limit key ────────────────
         let resolved: MemoryBackend | undefined;
         let rateKey: string;
+        // True only when the caller proved the owner's shared secret (see below).
+        let ownerAuthed = false;
 
         if (tenantIndex) {
             // Multi-tenant: token → that tenant's backend (hash-keyed lookup).
@@ -109,6 +111,7 @@ export function createMemoryHttpHandler(
             }
             resolved = backend;
             rateKey = `t:${hashToken(token)}`;
+            ownerAuthed = true;
         } else {
             // Open (trusted gateway): rate-limit by client IP.
             resolved = backend;
@@ -121,9 +124,11 @@ export function createMemoryHttpHandler(
             return;
         }
 
-        // Experience is ONE person's local store: it is served only alongside the
-        // single positional backend, never to a token-selected tenant.
-        const server = buildMcpServer(resolved, resolved === backend ? opts : { ...opts, experience: null });
+        // Experience is ONE person's local store (it can delete their recordings and
+        // rewrite their model), so it is served only to a caller holding the owner's
+        // shared secret — never to a token-selected tenant, and never in open mode,
+        // where anyone who can reach the port would get it.
+        const server = buildMcpServer(resolved, ownerAuthed ? opts : { ...opts, experience: null });
         // Stateless: no session id generator → a fresh transport per request.
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
