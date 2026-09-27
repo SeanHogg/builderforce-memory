@@ -35,6 +35,7 @@ export type {
 // ── Evermind (the .evermind artifact + the shared learning pipeline) ───────────
 export {
     EvermindModelPackage,
+    PACKAGE_HEADER_BYTES,
     adaptAndDiff,
     adaptPackage,
     EVERMIND_ADAPT_MAX_CHARS,

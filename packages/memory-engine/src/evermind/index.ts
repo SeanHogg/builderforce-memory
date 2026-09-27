@@ -3,7 +3,7 @@
  * artifact plus the learning pipeline every learner shares (adapt, diff wire
  * contract, FedAvg merge, pre/post-merge eval).
  */
-export { EvermindModelPackage } from "./package.js";
+export { EvermindModelPackage, PACKAGE_HEADER_BYTES } from "./package.js";
 export type {
   EvermindModelManifest,
   EvermindModelCard,

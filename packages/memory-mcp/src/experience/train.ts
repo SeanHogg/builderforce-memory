@@ -81,6 +81,7 @@ export async function trainExperience(
     }
     if (passes === 0) return { status: "no_window", pending: docs.length, version };
 
+    const loss = lossSum / passes;
     // Keep the model this pass started from, so one bad adaptation is one rename away
     // from undone. The new model is written beside the old one and renamed into place,
     // so a crash mid-write never leaves a truncated model. The ledger is written only
@@ -90,6 +91,6 @@ export async function trainExperience(
     const staged = `${modelFile}.next`;
     model.fs.writeFileSync(staged, new Uint8Array(pkg.toBlob()));
     model.fs.renameSync(staged, modelFile);
-    await store.markLearned(learned, experienceIndex(next));
-    return { status: "trained", learned: learned.length, passes, loss: lossSum / passes, version: next, previousModel };
+    await store.recordAdaptation({ index: experienceIndex(next), version: next, learned, passes, loss, at: Date.now() });
+    return { status: "trained", learned: learned.length, passes, loss, version: next, previousModel };
 }

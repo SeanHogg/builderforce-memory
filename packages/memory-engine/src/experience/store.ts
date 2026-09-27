@@ -7,11 +7,13 @@
  * is the reference implementation, and `ExperienceSnapshot` is the one serialized shape,
  * so a store on one runtime can be read by another.
  */
-import type { Episode, EpisodeSummary, Run, RunStepLog, Skill } from './types.js';
+import type { Adaptation, Episode, EpisodeSummary, Run, RunStepLog, Skill } from './types.js';
 
 export const EXPERIENCE_SCHEMA = 'evermind.experience/1';
 /** Runs kept, newest first — the audit trail is recent history, not an archive. */
 export const MAX_RUNS = 500;
+/** Adaptations kept, newest first — enough history to chart how learning went. */
+export const MAX_ADAPTATIONS = 200;
 
 export interface ExperienceSnapshot {
   schema: typeof EXPERIENCE_SCHEMA;
@@ -25,6 +27,8 @@ export interface ExperienceSnapshot {
    * discarded versions had learned.
    */
   learned: Record<string, number>;
+  /** Every adaptation's measurements, newest first (capped at {@link MAX_ADAPTATIONS}). */
+  adaptations: Adaptation[];
 }
 
 export interface ExperienceStore {
@@ -45,8 +49,12 @@ export interface ExperienceStore {
   getRun(id: string): Promise<Run | undefined>;
   listRuns(limit: number): Promise<Run[]>;
 
-  /** Record that adaptation number `adaptation` (the model's `+expN`) learned these items. */
-  markLearned(ids: string[], adaptation: number): Promise<void>;
+  /**
+   * Record one adaptation: its items join the learned ledger under its index (the
+   * model's `+expN`) and its measurements join the history — one write, so the ledger
+   * and the chart can never disagree.
+   */
+  recordAdaptation(adaptation: Adaptation): Promise<void>;
 
   snapshot(): Promise<ExperienceSnapshot>;
   /** Delete every episode, skill and run. */
@@ -54,7 +62,7 @@ export interface ExperienceStore {
 }
 
 export function emptySnapshot(): ExperienceSnapshot {
-  return { schema: EXPERIENCE_SCHEMA, episodes: [], skills: [], runs: [], learned: {} };
+  return { schema: EXPERIENCE_SCHEMA, episodes: [], skills: [], runs: [], learned: {}, adaptations: [] };
 }
 
 /** Parse a snapshot, tolerating a missing or foreign file as empty. */
@@ -67,6 +75,8 @@ export function parseSnapshot(raw: unknown): ExperienceSnapshot {
     skills: Array.isArray(s.skills) ? s.skills : [],
     runs: Array.isArray(s.runs) ? s.runs : [],
     learned: s.learned && typeof s.learned === 'object' && !Array.isArray(s.learned) ? s.learned : {},
+    // Optional within schema 1: snapshots written before the history existed have none.
+    adaptations: Array.isArray(s.adaptations) ? s.adaptations : [],
   };
 }
 
@@ -161,9 +171,10 @@ export class InMemoryExperienceStore implements ExperienceStore {
     return this.data.runs.slice(0, Math.max(0, limit));
   }
 
-  async markLearned(ids: string[], adaptation: number): Promise<void> {
-    if (ids.length === 0) return;
-    for (const id of ids) this.data.learned[id] = adaptation;
+  async recordAdaptation(adaptation: Adaptation): Promise<void> {
+    for (const id of adaptation.learned) this.data.learned[id] = adaptation.index;
+    this.data.adaptations.unshift(adaptation);
+    this.data.adaptations.length = Math.min(this.data.adaptations.length, MAX_ADAPTATIONS);
     await this.changed();
   }
 

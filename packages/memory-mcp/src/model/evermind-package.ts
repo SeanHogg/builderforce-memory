@@ -25,7 +25,12 @@ export interface EvermindPackageLike {
 
 /** Minimal structural view of the optional engine package. */
 interface PackageEngine {
-    EvermindModelPackage: { fromBlob(blob: ArrayBuffer): EvermindPackageLike };
+    EvermindModelPackage: {
+        fromBlob(blob: ArrayBuffer): EvermindPackageLike;
+        manifestEnd(header: ArrayBuffer): number;
+        readManifest(prefix: ArrayBuffer): EvermindPackageLike["manifest"];
+    };
+    PACKAGE_HEADER_BYTES: number;
     BPETokenizer: new () => { loadFromSpec(spec: unknown): void; loadHuggingFace(spec: unknown): void } & TextCodec;
 }
 
@@ -42,6 +47,39 @@ export interface LoadedEvermind {
     pkg: EvermindPackageLike;
     codec: TextCodec;
     fs: ModelFs;
+}
+
+type PrefixFs = {
+    openSync(path: string, flags: "r"): number;
+    readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position: number): number;
+    closeSync(fd: number): void;
+};
+
+/**
+ * The version in a `.evermind` file's manifest, reading only the header and manifest —
+ * never the checkpoint — so a caller can ask on every poll, and always sees the file
+ * as it is now (a model restored from `.prev` keeps the size and, on Windows, the
+ * modification time of the one it replaces). Null when there is no readable package.
+ */
+export async function readEvermindVersion(modelFile: string): Promise<string | null> {
+    let fd: number | undefined;
+    const fs = (await dynamicImport("node:fs")) as PrefixFs;
+    try {
+        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<PackageEngine>;
+        if (!engine?.EvermindModelPackage || !engine.PACKAGE_HEADER_BYTES) return null;
+        fd = fs.openSync(modelFile, "r");
+        const read = (n: number) => {
+            const buf = new Uint8Array(n);
+            const got = fs.readSync(fd!, buf, 0, n, 0);
+            return buf.buffer.slice(0, got) as ArrayBuffer;
+        };
+        const end = engine.EvermindModelPackage.manifestEnd(read(engine.PACKAGE_HEADER_BYTES));
+        return engine.EvermindModelPackage.readManifest(read(end)).version ?? "0";
+    } catch {
+        return null;
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
 }
 
 /**

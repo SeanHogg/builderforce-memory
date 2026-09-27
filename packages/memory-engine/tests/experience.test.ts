@@ -10,14 +10,19 @@ import { experienceCorpus, experienceDocuments, packDocuments, skillText } from 
 import { adaptPackage, EvermindModelPackage } from '../src/evermind/index';
 import { EvermindLM } from '../src/lm/evermind_lm';
 import { BPETokenizer } from '../src/tokenizer/bpe';
-import { InMemoryExperienceStore, parseSnapshot, EXPERIENCE_SCHEMA, MAX_RUNS } from '../src/experience/store';
-import type { ElementRef, Episode, RecordedStep, Run, Skill } from '../src/experience/types';
+import { InMemoryExperienceStore, parseSnapshot, EXPERIENCE_SCHEMA, MAX_RUNS, MAX_ADAPTATIONS } from '../src/experience/store';
+import { experienceOverview } from '../src/experience/overview';
+import type { Adaptation, ElementRef, Episode, RecordedStep, Run, Skill } from '../src/experience/types';
 
 const el = (name: string, controlType: string): ElementRef => ({
     name, automationId: '', controlType, className: '', windowTitle: 'Invoices', processName: 'ledger.exe', relX: 0, relY: 0,
 });
 
 const step = (id: string, action: RecordedStep['action']): RecordedStep => ({ id, atMs: 0, action });
+
+const adaptation = (index: number, learned: string[]): Adaptation => ({
+    index, version: `1+exp${index}`, learned, passes: 1, loss: 1, at: index,
+});
 
 const episode = (): Episode => ({
     id: 'ep',
@@ -191,11 +196,70 @@ describe('experience store', () => {
         await store.putEpisode(episode());
         const skill = trainOnce(episode());
         await store.putSkill(skill);
-        await store.markLearned(['ep', skill.id], 7);
+        await store.recordAdaptation(adaptation(7, ['ep', skill.id]));
         const copy = new InMemoryExperienceStore(JSON.parse(JSON.stringify(await store.snapshot())));
         expect((await copy.snapshot()).learned).toEqual({ ep: 7, [skill.id]: 7 });
+        expect((await copy.snapshot()).adaptations.map((a) => a.index)).toEqual([7]);
         await copy.deleteSkill(skill.id);
         expect((await copy.snapshot()).learned).toEqual({ ep: 7 });
+    });
+
+    it('keeps adaptation history newest first, capped, and reads older snapshots without one', async () => {
+        const store = new InMemoryExperienceStore();
+        for (let i = 1; i <= MAX_ADAPTATIONS + 3; i++) await store.recordAdaptation(adaptation(i, []));
+        const { adaptations } = await store.snapshot();
+        expect(adaptations).toHaveLength(MAX_ADAPTATIONS);
+        expect(adaptations[0].index).toBe(MAX_ADAPTATIONS + 3);
+        expect(parseSnapshot({ schema: EXPERIENCE_SCHEMA, episodes: [] }).adaptations).toEqual([]);
+    });
+});
+
+describe('experience overview', () => {
+    const DAY = 86_400_000;
+    const now = Date.UTC(2026, 8, 27, 12);
+
+    it('counts every region from the snapshot and charts the days, empty ones included', async () => {
+        const store = new InMemoryExperienceStore();
+        const ep = { ...episode(), startedAt: now - DAY };
+        await store.putEpisode(ep);
+        await store.putEpisode({ ...episode(), id: 'ep2', name: 'Other', startedAt: now });
+        const skill = { ...trainOnce(ep, {}, now), routine: { schedule: { every: 'minutes' as const, minutes: 5 }, values: {}, enabled: true } };
+        await store.putSkill(skill);
+        const run: Run = {
+            id: 'r1', skillId: skill.id, skillName: skill.name, trigger: 'manual', status: 'succeeded', startedAt: now, endedAt: now,
+            steps: [
+                { idx: 0, stepId: 's6', outcome: 'approved', at: now },
+                { idx: 0, stepId: 's6', outcome: 'ok', at: now },
+            ],
+        };
+        await store.putRun(run);
+        await store.recordAdaptation({ ...adaptation(1, [skill.id]), at: now, loss: 2.5 });
+
+        const o = experienceOverview(await store.snapshot(), { modelIndex: 1, now, utcOffsetMinutes: 0, days: 7 });
+        expect(o.regions).toEqual({ hippocampus: 2, basalGanglia: 1, amygdala: 1, hypothalamus: 1, neocortex: 1 });
+        // The skill is learned; ep2 (never compiled) is not. ep was compiled, so it is no document.
+        expect(o.learned).toBe(1);
+        expect(o.pending).toBe(1);
+        expect(o.runs.succeeded).toBe(1);
+        expect(o.approvals).toEqual({ approved: 1, denied: 0 });
+        expect(o.days).toHaveLength(7);
+        expect(o.days[6]).toEqual({ day: '2026-09-27', demonstrations: 1, skills: 1, runs: 1, learned: 1 });
+        expect(o.days[5].demonstrations).toBe(1);
+        expect(o.days[0]).toEqual({ day: '2026-09-21', demonstrations: 0, skills: 0, runs: 0, learned: 0 });
+        expect(o.recent[0].at).toBe(now);
+        expect(o.recent.map((e) => e.kind)).toContain('adaptation');
+    });
+
+    it('shows only what the loaded model knows after a rollback', async () => {
+        const store = new InMemoryExperienceStore();
+        await store.putEpisode(episode());
+        await store.recordAdaptation(adaptation(1, []));
+        await store.recordAdaptation(adaptation(2, ['ep']));
+        const o = experienceOverview(await store.snapshot(), { modelIndex: 1, now, utcOffsetMinutes: 0 });
+        expect(o.adaptations.map((a) => a.index)).toEqual([1]);
+        expect(o.learned).toBe(0);
+        expect(o.pending).toBe(1);
+        expect(o.regions.neocortex).toBe(0);
     });
 });
 

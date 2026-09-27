@@ -18,6 +18,8 @@ import { BPETokenizer } from "../tokenizer/bpe.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;
+/** magic, format version, manifest length — three u32s ahead of the manifest. */
+export const PACKAGE_HEADER_BYTES = 12;
 const PKG_VERSION = 1;
 
 /** The kinds of model an `.evermind` package can carry. */
@@ -257,7 +259,7 @@ export class EvermindModelPackage {
    */
   toBlob(): ArrayBuffer {
     const manifestBytes = new TextEncoder().encode(JSON.stringify(this.manifest));
-    const headerBytes = 12; // magic, version, manifestLen
+    const headerBytes = PACKAGE_HEADER_BYTES;
     const codecBytes = this.codec?.byteLength ?? 0;
     const tokBytes = this.tokenizer?.byteLength ?? 0;
     const out = new ArrayBuffer(
@@ -296,18 +298,29 @@ export class EvermindModelPackage {
   }
 
   /** Parse a `.evermind` blob. Throws on bad magic / truncation. */
+  /**
+   * How many leading bytes of a package hold its header and manifest, from its first
+   * {@link PACKAGE_HEADER_BYTES}. With {@link readManifest}, a host reads a model's
+   * identity (version, checksum) without loading the checkpoint. Throws on bad magic.
+   */
+  static manifestEnd(header: ArrayBuffer): number {
+    if (header.byteLength < PACKAGE_HEADER_BYTES) throw new Error("EvermindModelPackage: truncated (no header)");
+    const head = new Uint32Array(header, 0, 3);
+    if (head[0] !== PKG_MAGIC) throw new Error("EvermindModelPackage: bad magic (not an .evermind package)");
+    return PACKAGE_HEADER_BYTES + head[2]!;
+  }
+
+  /** The manifest of a package, from a prefix at least {@link manifestEnd} bytes long. */
+  static readManifest(prefix: ArrayBuffer): EvermindModelManifest {
+    const end = EvermindModelPackage.manifestEnd(prefix);
+    if (end > prefix.byteLength) throw new Error("EvermindModelPackage: truncated (manifest length exceeds blob)");
+    const bytes = new Uint8Array(prefix, PACKAGE_HEADER_BYTES, end - PACKAGE_HEADER_BYTES);
+    return JSON.parse(new TextDecoder().decode(bytes)) as EvermindModelManifest;
+  }
+
   static fromBlob(buffer: ArrayBuffer): EvermindModelPackage {
-    if (buffer.byteLength < 12) throw new Error("EvermindModelPackage.fromBlob: truncated (no header)");
-    const head = new Uint32Array(buffer, 0, 3);
-    if (head[0] !== PKG_MAGIC) throw new Error("EvermindModelPackage.fromBlob: bad magic (not an .evermind package)");
-    const manifestLen = head[2]!;
-    const headerBytes = 12;
-    if (headerBytes + manifestLen > buffer.byteLength) {
-      throw new Error("EvermindModelPackage.fromBlob: truncated (manifest length exceeds blob)");
-    }
-    const manifestBytes = new Uint8Array(buffer, headerBytes, manifestLen);
-    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as EvermindModelManifest;
-    const bodyStart = headerBytes + manifestLen;
+    const manifest = EvermindModelPackage.readManifest(buffer);
+    const bodyStart = EvermindModelPackage.manifestEnd(buffer);
     // Sections run checkpoint -> codec -> tokenizer, each present only when the
     // manifest says so. A section's length is explicit whenever another follows it;
     // the last section runs to end-of-blob. That keeps every package written before

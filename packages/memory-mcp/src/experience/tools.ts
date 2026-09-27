@@ -13,7 +13,7 @@ import type { Episode, ReviewEdits, Run, RunStatus, SkillRoutine, StepOutcome } 
 import { fail, okJson, type MemoryTool, type ToolResult } from "../tool-core.js";
 import { isSafeExperienceId } from "./file-store.js";
 import type { ExperienceHost } from "./host.js";
-import { pendingDocuments, trainExperience } from "./train.js";
+import { experienceIndex, pendingDocuments, trainExperience } from "./train.js";
 
 const DEFAULT_RUNS = 50;
 const MAX_RUNS_RETURNED = 500;
@@ -139,6 +139,21 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                     runs: snap.runs.length,
                     learned: Object.keys(snap.learned).length,
                 });
+            },
+        ),
+        tool(
+            "experience_overview",
+            "What experience says about the brain, for drawing it: counts per region (hippocampus = demonstrations, basalGanglia = skills, amygdala = approval decisions, hypothalamus = routines, neocortex = procedures the private model has learned), learned vs pending, run outcomes, every adaptation's measured loss, activity per local day, and the newest events.",
+            { days: z.number().int().min(1).max(365).optional() },
+            async (args) => {
+                const version = await host.modelVersion();
+                const overview = engine.experienceOverview(await store.snapshot(), {
+                    modelIndex: version ? experienceIndex(version) : 0,
+                    now: Date.now(),
+                    utcOffsetMinutes: localOffsetMinutes(),
+                    days: typeof args["days"] === "number" ? args["days"] : undefined,
+                });
+                return okJson({ modelVersion: version, ...overview });
             },
         ),
         tool(

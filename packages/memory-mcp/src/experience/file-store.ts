@@ -10,6 +10,7 @@
  */
 
 import type {
+    Adaptation,
     Episode,
     EpisodeSummary,
     ExperienceSnapshot,
@@ -124,9 +125,9 @@ export class FileExperienceStore implements ExperienceStore {
         return this.inner.listRuns(limit);
     }
 
-    async markLearned(ids: string[], adaptation: number): Promise<void> {
+    async recordAdaptation(adaptation: Adaptation): Promise<void> {
         this.fresh();
-        await this.inner.markLearned(ids, adaptation);
+        await this.inner.recordAdaptation(adaptation);
     }
 
     async snapshot(): Promise<ExperienceSnapshot> {

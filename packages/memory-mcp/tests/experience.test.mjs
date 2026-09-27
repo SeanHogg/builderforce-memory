@@ -152,7 +152,23 @@ test("experience_train adapts the private model once per procedure and keeps the
 
   // Roll back: the kept model (+exp1) never learned the skill, so it is pending again —
   // and only the skill; the episode learned at +exp1 still counts.
+  const trained = (await call("experience_overview", { days: 3 })).json;
+  assert.equal(trained.modelVersion, "7+exp2");
+  assert.deepEqual(trained.adaptations.map((a) => a.index), [1, 2]);
+  assert.ok(trained.adaptations.every((a) => Number.isFinite(a.loss) && a.loss > 0), "each adaptation keeps its measured loss");
+  assert.equal(trained.learned, 1);
+  assert.equal(trained.pending, 0);
+  assert.equal(trained.regions.hippocampus, 1);
+  assert.equal(trained.regions.basalGanglia, 1);
+  assert.equal(trained.days.length, 3);
+
   fs.copyFileSync(`${modelFile}.prev`, modelFile);
+  // The restored file is the same size (and on Windows keeps its modification time);
+  // the overview still reads the version it actually holds.
+  const rolledBack = (await call("experience_overview")).json;
+  assert.equal(rolledBack.modelVersion, "7+exp1");
+  assert.deepEqual(rolledBack.adaptations.map((a) => a.index), [1]);
+  assert.equal(rolledBack.pending, 1);
   assert.equal((await call("experience_train", { dryRun: true })).json.pending, 1);
   assert.equal((await call("experience_train")).json.version, "7+exp2");
 });

@@ -138,6 +138,22 @@ export interface Run {
   steps: RunStepLog[];
 }
 
+/**
+ * One adaptation of the private model on experience: what it learned and how the fit
+ * went. Measured when the adaptation ran, never estimated afterwards.
+ */
+export interface Adaptation {
+  /** N of the `+expN` version this adaptation wrote. */
+  index: number;
+  version: string;
+  /** Episode and skill ids it learned. */
+  learned: string[];
+  passes: number;
+  /** Mean fit loss over the passes. */
+  loss: number;
+  at: number;
+}
+
 /** A short random id — unique enough for one person's store. */
 export function newExperienceId(): string {
   const bytes = new Uint8Array(8);

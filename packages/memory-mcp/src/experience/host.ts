@@ -11,12 +11,13 @@ import type {
     InMemoryExperienceStore,
     ExperienceSnapshot,
     dueSkills,
+    experienceOverview,
     newExperienceId,
     trainOnce,
 } from "@seanhogg/builderforce-memory-engine";
 import { dynamicImport } from "../dynamic-import.js";
 import { MODEL_FILE_ENV, TOKENIZER_FILE_ENV } from "../embedding/index.js";
-import { loadEvermindPackage, type LoadedEvermind } from "../model/evermind-package.js";
+import { loadEvermindPackage, readEvermindVersion, type LoadedEvermind } from "../model/evermind-package.js";
 import { SharedJsonFile, type SharedFileFs } from "../persistence/shared-json-file.js";
 import { FileExperienceStore } from "./file-store.js";
 import type { TrainEngine } from "./train.js";
@@ -29,6 +30,7 @@ export interface ExperienceEngine extends TrainEngine {
     trainOnce: typeof trainOnce;
     dueSkills: typeof dueSkills;
     newExperienceId: typeof newExperienceId;
+    experienceOverview: typeof experienceOverview;
 }
 
 export interface ExperienceHost {
@@ -44,6 +46,8 @@ export interface ExperienceHost {
     modelFile?: string;
     /** Load the model fresh from disk (training rewrites it, so it is never cached). */
     loadModel(): Promise<LoadedEvermind | null>;
+    /** The model's version from its manifest alone, or null without a readable one. */
+    modelVersion(): Promise<string | null>;
 }
 
 type HostFs = SharedFileFs & {
@@ -91,6 +95,8 @@ export async function createExperienceHost(opts: ExperienceHostOptions): Promise
         });
         const modelFile = env[MODEL_FILE_ENV] || undefined;
         const tokenizerFile = env[TOKENIZER_FILE_ENV] || undefined;
+        const loadModel = async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile) : null);
+        const modelVersion = async () => (modelFile ? readEvermindVersion(modelFile) : null);
         return {
             store,
             engine: engine as ExperienceEngine,
@@ -98,7 +104,8 @@ export async function createExperienceHost(opts: ExperienceHostOptions): Promise
             file,
             episodesDir,
             modelFile,
-            loadModel: async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile) : null),
+            loadModel,
+            modelVersion,
         };
     } catch {
         return null;
