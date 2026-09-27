@@ -9,7 +9,7 @@
  */
 import type { EvermindModelPackage } from "./package.js";
 import { EvermindLMTrainer } from "../lm/evermind_lm.js";
-import { diffCheckpoints } from "../utils/delta.js";
+import { applyCheckpointDiff, diffCheckpoints } from "../utils/delta.js";
 import { tokenWindows } from "../bench/adaptation.js";
 
 /** Chars of text fed to one adaptation pass. */
@@ -58,4 +58,29 @@ export function adaptAndDiff(
   const history = new EvermindLMTrainer(lm, { epochs: opts.epochs ?? 1 }).fit(seqs);
   const loss = history.length > 0 ? history[history.length - 1]! : 0;
   return { diff: diffCheckpoints(pkg.checkpoint, lm.exportWeights()), loss, sequences: seqs.length };
+}
+
+/** The outcome of {@link adaptPackage}: the adapted package itself. */
+export interface AdaptedPackage {
+  pkg: EvermindModelPackage;
+  loss: number;
+  sequences: number;
+}
+
+/**
+ * The same recipe for a PRIVATE Evermind — a single local writer that keeps its own
+ * update instead of shipping it. The update is the exact diff {@link adaptAndDiff}
+ * would send, applied to the version it was fitted on, so a person's local model moves
+ * by the same step a shared writer would have taken from the same text.
+ */
+export function adaptPackage(
+  pkg: EvermindModelPackage,
+  tokenizer: AdaptTokenizer,
+  text: string,
+  version: string,
+  opts: AdaptOptions = {},
+): AdaptedPackage | null {
+  const r = adaptAndDiff(pkg, tokenizer, text, opts);
+  if (!r) return null;
+  return { pkg: pkg.withCheckpoint(applyCheckpointDiff(pkg.checkpoint, r.diff), version), loss: r.loss, sequences: r.sequences };
 }

@@ -23,6 +23,10 @@
  *   BUILDERFORCE_GATEWAY_URL      Gateway base URL (default https://api.builderforce.ai).
  *   BUILDERFORCE_API_KEY          `bfk_*` tenant key. When set, exposes the cost tools
  *                                 (token_usage, model_efficiency).
+ *   BUILDERFORCE_MEMORY_EXPERIENCE '1' to expose the experience tools (episodes, Train
+ *                                 Once skills, runs, experience_train). Kept beside the
+ *                                 snapshot in experience.json + episodes/; trains the
+ *                                 BUILDERFORCE_MEMORY_MODEL package.
  *
  * With no model configured recall ranks lexically (BM25) and the tool result SAYS
  * so ("Ranked by: lexical recall (fallback …)"), so a degrade is never silent.
@@ -30,6 +34,7 @@
 
 import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
 import { createRecallEmbedder } from "../embedding/index.js";
+import { createExperienceHost } from "../experience/host.js";
 import { resolveMemoryFile } from "../install/server-spec.js";
 import { runStdio } from "../transports/stdio.js";
 
@@ -49,4 +54,6 @@ await runStdio(backend, {
     // exposed when an API key is present; URL defaults to the public gateway.
     gatewayUrl: process.env["BUILDERFORCE_GATEWAY_URL"] ?? "https://api.builderforce.ai",
     gatewayApiKey: process.env["BUILDERFORCE_API_KEY"],
+    // Null unless BUILDERFORCE_MEMORY_EXPERIENCE=1 — Synapse's opt-in.
+    experience: await createExperienceHost({ memoryFile }),
 });

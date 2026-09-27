@@ -115,6 +115,31 @@ const backend = await createLocalMemoryStoreBackend({ runtime: ssmMemoryService.
 
 Either way, recall quality improves automatically as that model is adapted/distilled.
 
+## Experience — what Evermind has done (opt-in)
+
+Facts are one kind of learned item; **experience** is another. An *episode* is a
+recorded demonstration (a program and the UI steps a person took in it), a *skill* is
+what Train Once compiles from one (typed values become parameters, secrets never stored,
+irreversible clicks gated for approval), and a *run* is one execution with its audit
+trail. The domain lives in `@seanhogg/builderforce-memory-engine`; this server keeps it
+durable and exposes it.
+
+Set `BUILDERFORCE_MEMORY_EXPERIENCE=1` to register the tools (Synapse does). Off by
+default, so ordinary coding-agent installs never carry them in their tool list.
+
+| Tools | |
+|---|---|
+| `experience_info` | Snapshot file, screenshot folder, model path, counts. |
+| `experience_forget_all` | Delete every episode, screenshot, skill and run (`confirm: true`). Memories and the model are untouched. |
+| `episode_save` / `_list` / `_get` / `_forget` | Demonstrations. Screenshots go in `episodes/<id>/` and are deleted with the episode. |
+| `skill_preview` / `_compile` / `_list` / `_get` / `_forget` / `_schedule`, `skills_due` | Train Once and routines. |
+| `run_start` / `_step` / `_finish` / `_list` / `_get` | Runs and their audit trail (newest 500 kept). |
+| `experience_train` | Adapt the private model (`BUILDERFORCE_MEMORY_MODEL`) on every procedure it has not learned, through the engine's one adaptation recipe. The previous model is kept as `<model>.prev`. |
+
+Stored beside the memory snapshot as `experience.json` (shared across processes exactly
+like `memory.json`) plus `episodes/`. Never served to a token-selected tenant of the
+HTTP handler.
+
 ## One-shot install into any MCP host (not just Claude)
 
 ```bash

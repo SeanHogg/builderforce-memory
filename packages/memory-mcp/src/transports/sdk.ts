@@ -12,6 +12,7 @@
  */
 
 import type { MemoryBackend } from "../backend.js";
+import { dynamicImport } from "../dynamic-import.js";
 import { buildMemoryTools, type MemoryToolsOptions } from "../tools.js";
 
 export interface SdkServerOptions extends MemoryToolsOptions {
@@ -49,11 +50,7 @@ export async function createMemoryMcpServer(
     backend: MemoryBackend,
     opts: SdkServerOptions = {},
 ): Promise<SdkMcpServerConfig> {
-    const _import = (m: string): Promise<unknown> =>
-        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-        new Function("m", "return import(m)")(m) as Promise<unknown>;
-
-    const sdk = (await _import("@anthropic-ai/claude-agent-sdk")) as {
+    const sdk = (await dynamicImport("@anthropic-ai/claude-agent-sdk")) as {
         tool: (
             name: string,
             description: string,

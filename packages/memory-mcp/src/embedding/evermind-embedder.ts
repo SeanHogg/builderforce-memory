@@ -21,6 +21,9 @@
  * absent file (drop it and recompute — a cache is never the source of truth).
  */
 
+import { dynamicImport } from "../dynamic-import.js";
+import { loadEvermindPackage } from "../model/evermind-package.js";
+
 /** The seam `MemoryStore.recallRanked(query, k, runtime)` consumes. */
 export interface TextEmbedderLike {
     embed(text: string): Promise<Float32Array>;
@@ -66,25 +69,8 @@ export interface EvermindEmbedderOptions {
     flushDelayMs?: number;
 }
 
-/** Minimal structural view of the optional engine package. */
-interface EmbedEngine {
-    EvermindModelPackage: {
-        fromBlob(blob: ArrayBuffer): {
-            manifest: { modelType?: string; tokenizerFormat?: string };
-            loadLM(): unknown;
-            /** Present on engines that support the embedded-tokenizer section. */
-            loadTokenizer?(): { encode(t: string): number[] } | null;
-        };
-    };
-    BPETokenizer: {
-        new (): { loadFromSpec(spec: unknown): void; loadHuggingFace(spec: unknown): void; encode(t: string): number[] };
-    };
-    EvermindTextEmbedder: new (model: unknown, codec: unknown) => TextEmbedderLike;
-}
-
 type FsLike = {
     readFileSync(path: string, enc: "utf8"): string;
-    readFileSync(path: string): Uint8Array;
     writeFileSync(path: string, data: string): void;
     existsSync(path: string): boolean;
 };
@@ -98,24 +84,6 @@ interface VectorCacheFile {
     dimensions: number;
     /** [text, vector] pairs, least-recently-used first (insertion order is the LRU). */
     vectors: Array<[string, number[]]>;
-}
-
-/** Indirect import so the optional engine peer is never statically resolved. */
-function dynamicImport(m: string): Promise<unknown> {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-    return new Function("m", "return import(m)")(m) as Promise<unknown>;
-}
-
-/**
- * Load the tokenizer spec from `file`, accepting either `BPETokenizer.toObject()`
- * output or a Hugging Face `tokenizer.json`.
- */
-function loadCodec(engine: EmbedEngine, fs: FsLike, file: string): { encode(t: string): number[] } {
-    const spec = JSON.parse(fs.readFileSync(file, "utf8")) as { vocab?: unknown; merges?: unknown; model?: unknown };
-    const tok = new engine.BPETokenizer();
-    if (spec.vocab && spec.merges) tok.loadFromSpec(spec);
-    else tok.loadHuggingFace(spec);
-    return tok;
 }
 
 /**
@@ -132,32 +100,14 @@ export async function createEvermindEmbedder(
     opts: EvermindEmbedderOptions,
 ): Promise<PersistentTextEmbedder | null> {
     try {
-        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<EmbedEngine>;
-        if (!engine?.EvermindModelPackage || !engine.BPETokenizer || !engine.EvermindTextEmbedder) return null;
-
-        const fs = (await dynamicImport("node:fs")) as FsLike;
-        if (!fs.existsSync(opts.modelFile)) return null;
-
-        const bytes = fs.readFileSync(opts.modelFile);
-        const blob = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-        const pkg = (engine as EmbedEngine).EvermindModelPackage.fromBlob(blob);
-        if (pkg.manifest.modelType !== "evermind-lm") return null;
-
-        // Prefer the package's OWN tokenizer. It is checksummed and cross-checked
-        // against the checkpoint's vocab size at package time, so it cannot be the
-        // wrong vocabulary — which a separate file silently can be. Falling back to a
-        // file keeps every package written before the section existed working.
-        const embedded = pkg.loadTokenizer?.() ?? null;
-        let codec: { encode(t: string): number[] };
-        if (embedded) {
-            codec = embedded;
-        } else {
-            const tokenizerFile = opts.tokenizerFile ?? `${opts.modelFile}.tokenizer.json`;
-            if (!fs.existsSync(tokenizerFile)) return null;
-            codec = loadCodec(engine as EmbedEngine, fs, tokenizerFile);
-        }
-        const inner = new (engine as EmbedEngine).EvermindTextEmbedder(pkg.loadLM(), codec);
-        return new CachedTextEmbedder(inner, fs, opts);
+        const loaded = await loadEvermindPackage(opts.modelFile, opts.tokenizerFile);
+        if (!loaded) return null;
+        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as {
+            EvermindTextEmbedder?: new (model: unknown, codec: unknown) => TextEmbedderLike;
+        };
+        if (!engine?.EvermindTextEmbedder) return null;
+        const inner = new engine.EvermindTextEmbedder(loaded.pkg.loadLM(), loaded.codec);
+        return new CachedTextEmbedder(inner, loaded.fs, opts);
     } catch {
         // Any failure to stand the model up is a degrade, not a fault.
         return null;

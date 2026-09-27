@@ -31,7 +31,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test tests/install.test.mjs tests/tools.test.mjs tests/http.test.mjs tests/compaction.test.mjs tests/recall-method.test.mjs",
+    "test": "tsc && node --test tests/install.test.mjs tests/tools.test.mjs tests/http.test.mjs tests/compaction.test.mjs tests/recall-method.test.mjs tests/experience.test.mjs",
     "lint": "eslint src/",
     "prepublishOnly": "npm run build",
     "typecheck:native": "tsgo --noEmit"

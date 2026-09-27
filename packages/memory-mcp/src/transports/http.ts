@@ -121,7 +121,9 @@ export function createMemoryHttpHandler(
             return;
         }
 
-        const server = buildMcpServer(resolved, opts);
+        // Experience is ONE person's local store: it is served only alongside the
+        // single positional backend, never to a token-selected tenant.
+        const server = buildMcpServer(resolved, resolved === backend ? opts : { ...opts, experience: null });
         // Stateless: no session id generator → a fresh transport per request.
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 

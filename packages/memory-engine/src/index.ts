@@ -36,6 +36,7 @@ export type {
 export {
     EvermindModelPackage,
     adaptAndDiff,
+    adaptPackage,
     EVERMIND_ADAPT_MAX_CHARS,
     parseDeltaLearnPayload,
     buildDeltaLearnPayload,
@@ -53,6 +54,7 @@ export type {
     PackageMeta,
     ValidationResult,
     AdaptResult,
+    AdaptedPackage,
     AdaptOptions,
     AdaptTokenizer,
     DeltaLearnPayload,
@@ -363,3 +365,8 @@ export type {
 } from './limbic/index.js';
 
 export { LIMBIC_AFFECT_WGSL } from './kernels/limbic_affect.js';
+
+
+// ── Experience (demonstrations, Train Once skills, runs) ─────────────────────
+
+export * from './experience/index.js';

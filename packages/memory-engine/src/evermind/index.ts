@@ -13,8 +13,8 @@ export type {
   ValidationResult,
 } from "./package.js";
 
-export { adaptAndDiff, EVERMIND_ADAPT_MAX_CHARS } from "./adapt.js";
-export type { AdaptResult, AdaptOptions, AdaptTokenizer } from "./adapt.js";
+export { adaptAndDiff, adaptPackage, EVERMIND_ADAPT_MAX_CHARS } from "./adapt.js";
+export type { AdaptResult, AdaptedPackage, AdaptOptions, AdaptTokenizer } from "./adapt.js";
 
 export {
   parseDeltaLearnPayload,

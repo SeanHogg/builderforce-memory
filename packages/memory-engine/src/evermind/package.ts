@@ -280,6 +280,20 @@ export class EvermindModelPackage {
     return out;
   }
 
+  /**
+   * This package carrying a new checkpoint of the same model (an adapted copy): the
+   * checksum and the checkpoint's section length are recomputed, config, codec and
+   * tokenizer are kept, so the result validates and round-trips like the original.
+   */
+  withCheckpoint(checkpoint: ArrayBuffer, version: string = this.manifest.version): EvermindModelPackage {
+    const manifest: EvermindModelManifest = {
+      ...this.manifest,
+      version,
+      ...(this.manifest.checkpointBytes !== undefined ? { checkpointBytes: checkpoint.byteLength } : {}),
+      checksum: fnv1a(new Uint8Array(checkpoint)),
+    };
+    return new EvermindModelPackage(manifest, checkpoint, this.codec, this.tokenizer);
+  }
 
   /** Parse a `.evermind` blob. Throws on bad magic / truncation. */
   static fromBlob(buffer: ArrayBuffer): EvermindModelPackage {

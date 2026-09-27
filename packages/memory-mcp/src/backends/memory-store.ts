@@ -15,6 +15,8 @@
  */
 
 import type { MemoryBackend, RankedRecall, RecallHit, RememberInput } from "../backend.js";
+import { dynamicImport } from "../dynamic-import.js";
+import { SharedJsonFile, type SharedFileFs } from "../persistence/shared-json-file.js";
 
 // Structural views of the @seanhogg/builderforce-memory surface we use, so this package
 // type-checks without a hard dependency on the runtime package.
@@ -133,37 +135,8 @@ interface SnapshotEntry {
     importance?: number;
 }
 
-type FsLike = {
-    readFileSync(path: string, enc: "utf8"): string;
-    writeFileSync(path: string, data: string): void;
-    mkdirSync(path: string, opts: { recursive: boolean }): void;
-    existsSync(path: string): boolean;
-    statSync(path: string): { mtimeMs: number; size: number };
-};
+type FsLike = SharedFileFs & { mkdirSync(path: string, opts: { recursive: boolean }): void };
 type PathLike = { dirname(p: string): string };
-
-/** Identity of the snapshot file as this process last left it. */
-interface FileStamp {
-    mtimeMs: number;
-    size: number;
-    /** Digest of the exact bytes — settles the case where a file is touched but unchanged. */
-    hash: string;
-}
-
-/**
- * FNV-1a over the snapshot text. Non-cryptographic on purpose: this only has to
- * separate "someone rewrote the file" from "the mtime moved but the bytes are
- * ours", and node:crypto is deliberately not imported here (this module must stay
- * bundleable for the browser, where the disk path is never taken).
- */
-function contentHash(text: string): string {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) {
-        h ^= text.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
-    }
-    return (h >>> 0).toString(16);
-}
 
 /** Parse a snapshot's text into its durable entries, or null when unusable. */
 function parseSnapshot(text: string): SnapshotEntry[] | null {
@@ -194,19 +167,14 @@ function parseSnapshot(text: string): SnapshotEntry[] | null {
  * {@link DiskPersistedBackend.ensureFresh}, which re-hydrates the store from disk
  * when — and only when — the file changed underneath us.
  *
- * The loop guard is the {@link FileStamp} recorded immediately AFTER each of our own
- * writes: the next check stats the file, sees the same mtime+size, and returns
- * without reading a byte. A stat per call is the entire steady-state cost.
+ * The freshness check and the loop guard are {@link SharedJsonFile}'s — the one
+ * implementation every shared local store (memory, experience) uses.
  */
 class DiskPersistedBackend implements MemoryBackend {
-    /** How the file looked when this process last wrote or read it. */
-    private stamp: FileStamp | null = null;
-
     constructor(
         private readonly inner: MemoryStoreBackend,
         private readonly store: MemoryStoreLike,
-        private readonly file: string,
-        private readonly fs: FsLike,
+        private readonly file: SharedJsonFile,
     ) {}
 
     async recall(query: string, topK: number): Promise<RecallHit[]> {
@@ -252,38 +220,15 @@ class DiskPersistedBackend implements MemoryBackend {
      * two different paths.
      */
     async ensureFresh(): Promise<void> {
-        if (!this.fs.existsSync(this.file)) return;
-
-        let st: { mtimeMs: number; size: number };
-        try {
-            st = this.fs.statSync(this.file);
-        } catch {
-            return;
-        }
-        // Fast path: byte-for-byte what we last wrote. No read, no parse, no writes.
-        if (this.stamp && st.mtimeMs === this.stamp.mtimeMs && st.size === this.stamp.size) return;
-
-        let text: string;
-        try {
-            text = this.fs.readFileSync(this.file, "utf8");
-        } catch {
-            return;
-        }
-        const hash = contentHash(text);
-        // Touched (mtime moved) but identical content — re-stamp, don't re-hydrate.
-        if (this.stamp && hash === this.stamp.hash) {
-            this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash };
-            return;
-        }
-
-        const entries = parseSnapshot(text);
+        const changed = this.file.readIfChanged();
+        if (!changed) return;
+        const entries = parseSnapshot(changed.text);
         // Corrupt/partial snapshot (a half-written file, say): keep what we have
         // rather than wiping the live store, and leave the stamp alone so the next
         // call re-checks.
         if (!entries) return;
-
         await this.replaceStore(entries);
-        this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash };
+        changed.accept();
     }
 
     /**
@@ -310,16 +255,7 @@ class DiskPersistedBackend implements MemoryBackend {
             tags: e.tags,
             importance: e.importance,
         }));
-        const json = JSON.stringify(out, null, 2);
-        this.fs.writeFileSync(this.file, json);
-        // Stamp OUR write immediately — this is what stops the watch above from
-        // treating our own output as an external edit (and looping).
-        try {
-            const st = this.fs.statSync(this.file);
-            this.stamp = { mtimeMs: st.mtimeMs, size: st.size, hash: contentHash(json) };
-        } catch {
-            this.stamp = null;
-        }
+        this.file.write(JSON.stringify(out, null, 2));
     }
 }
 
@@ -330,18 +266,13 @@ class DiskPersistedBackend implements MemoryBackend {
  * wants a custom backend (or the HTTP thin-client) never has to install them.
  */
 export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = {}): Promise<MemoryBackend> {
-    // Indirect import prevents the bundler/tsc from resolving optional peers.
-    const _import = (m: string): Promise<unknown> =>
-        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-        new Function("m", "return import(m)")(m) as Promise<unknown>;
-
-    const memoryMod = (await _import("@seanhogg/builderforce-memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike };
+    const memoryMod = (await dynamicImport("@seanhogg/builderforce-memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike };
     const { MemoryStore } = memoryMod;
 
     // IndexedDB shim for Node. In the browser the global is used automatically.
     let idbFactory: unknown;
     try {
-        const fake = (await _import("fake-indexeddb")) as { IDBFactory: new () => unknown };
+        const fake = (await dynamicImport("fake-indexeddb")) as { IDBFactory: new () => unknown };
         idbFactory = new fake.IDBFactory();
     } catch {
         // Browser or a host that provides global indexedDB — MemoryStore handles it.
@@ -354,12 +285,12 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
 
     // Disk-mirror requested. node:fs/path are loaded indirectly so a browser
     // bundle of this module never statically pulls in Node builtins.
-    const fs = (await _import("node:fs")) as FsLike;
-    const path = (await _import("node:path")) as PathLike;
+    const fs = (await dynamicImport("node:fs")) as FsLike;
+    const path = (await dynamicImport("node:path")) as PathLike;
     const dir = path.dirname(opts.persistFile);
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const persisted = new DiskPersistedBackend(backend, store, opts.persistFile, fs);
+    const persisted = new DiskPersistedBackend(backend, store, new SharedJsonFile(opts.persistFile, fs));
     // Boot hydration IS the freshness check with no stamp yet — see ensureFresh().
     await persisted.ensureFresh();
     return persisted;

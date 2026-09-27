@@ -16,11 +16,13 @@
  *   BUILDERFORCE_MEMORY_VECTORS   Persistent vector-cache path.
  *   BUILDERFORCE_GATEWAY_URL      Gateway base URL (default https://api.builderforce.ai).
  *   BUILDERFORCE_API_KEY          `bfk_*` tenant key. When set, exposes the cost tools.
+ *   BUILDERFORCE_MEMORY_EXPERIENCE '1' to expose the experience tools.
  */
 
 import http from "node:http";
 import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
 import { createRecallEmbedder } from "../embedding/index.js";
+import { createExperienceHost } from "../experience/host.js";
 import { resolveMemoryFile } from "../install/server-spec.js";
 import { createMemoryHttpHandler } from "../transports/http.js";
 
@@ -28,6 +30,9 @@ const memoryFile = resolveMemoryFile();
 
 const backend = await createLocalMemoryStoreBackend({
     dbName: process.env["BUILDERFORCE_MEMORY_DB"],
+    // Durable like the stdio bin — without it every restart of this server lost the
+    // store even though BUILDERFORCE_MEMORY_FILE was documented as its snapshot.
+    persistFile: memoryFile,
     // Same embedder decision as the stdio bin, from the same helper — the two
     // servers must not rank recall differently.
     runtime: (await createRecallEmbedder({ memoryFile })) ?? undefined,
@@ -40,6 +45,7 @@ const handler = createMemoryHttpHandler(backend, {
     // exposed when an API key is present; URL defaults to the public gateway.
     gatewayUrl: process.env["BUILDERFORCE_GATEWAY_URL"] ?? "https://api.builderforce.ai",
     gatewayApiKey: process.env["BUILDERFORCE_API_KEY"],
+    experience: await createExperienceHost({ memoryFile }),
 });
 
 const port = Number(process.env["PORT"] ?? 8787);
