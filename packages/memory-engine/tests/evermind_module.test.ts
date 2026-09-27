@@ -7,19 +7,19 @@
  */
 import {
     adaptAndDiff,
-    EVERMIND_ADAPT_WINDOW_TOKENS,
     parseDeltaLearnPayload,
     buildDeltaLearnPayload,
     decodeDeltaPayload,
     deltaUnusableReason,
     MAX_DELTA_B64_CHARS,
-    DELTA_LABEL_MAX_CHARS,
     mergeCheckpointDiffs,
     meanEvalLoss,
-    sequenceLoss,
     EvermindModelPackage,
     type EvalExample,
 } from '../src/evermind/index';
+import { EVERMIND_ADAPT_WINDOW_TOKENS } from '../src/evermind/adapt';
+import { DELTA_LABEL_MAX_CHARS } from '../src/evermind/delta_wire';
+import { sequenceLoss } from '../src/evermind/eval';
 import { EvermindLM, EvermindLMTrainer } from '../src/lm/evermind_lm';
 import { BPETokenizer } from '../src/tokenizer/bpe';
 import { appendCrcTrailer, verifyCrcTrailer } from '../src/utils/crc32';

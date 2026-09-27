@@ -10,9 +10,6 @@
 export type { EvermindRecallItem, EvermindRecallResult } from './contract.js';
 export { EVERMIND_MIN_TEACH_CHARS } from './contract.js';
 export {
-    RECALL_STOPWORDS,
-    RECONCILE_OVERLAP,
-    recallTokens,
     rankEvermindRecall,
     hashRecallQuery,
     countReconciledMemories,

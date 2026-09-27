@@ -76,7 +76,7 @@ Metrics: held-out perplexity, bits-per-token, top-1/top-k next-token accuracy, a
 | `parseDeltaLearnPayload` / `buildDeltaLearnPayload` / `decodeDeltaPayload` | The wire contract of a pushed weight delta, including the `MAX_DELTA_B64_CHARS` cap. |
 | `deltaUnusableReason(delta, base)` | Structural check a delta must pass before it may join a merge batch. |
 | `mergeCheckpointDiffs(base, diffs, weights?)` | FedAvg-over-contributors merge of element-granular deltas. |
-| `meanEvalLoss` / `sequenceLoss` | Forward-only pre/post-merge regression check. |
+| `meanEvalLoss` | Forward-only pre/post-merge regression check. |
 | `bytesToBase64` / `base64ToBytes` | Isomorphic binary codec used by the wire contract. |
 
 ## Installation

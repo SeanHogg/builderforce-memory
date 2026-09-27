@@ -10,7 +10,7 @@
  */
 
 /** Tiny code+English stopword set — dropped so recall keys on meaningful terms. */
-export const RECALL_STOPWORDS: ReadonlySet<string> = new Set([
+const RECALL_STOPWORDS: ReadonlySet<string> = new Set([
     'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'is', 'are',
     'be', 'as', 'at', 'by', 'it', 'this', 'that', 'from', 'you', 'your', 'i', 'we',
     'they', 'he', 'she', 'can', 'will', 'how', 'do', 'does', 'what', 'why', 'when',
@@ -100,7 +100,7 @@ export function hashRecallQuery(query: string): string {
  * Fraction of a recalled memory's meaningful tokens an answer must restate for the
  * turn to count as RECONCILING (superseding) that memory.
  */
-export const RECONCILE_OVERLAP = 0.6;
+const RECONCILE_OVERLAP = 0.6;
 
 /**
  * How many recalled memories `answer` reconciles — restates enough of that the

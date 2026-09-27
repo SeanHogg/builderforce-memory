@@ -13,7 +13,7 @@ export type {
   ValidationResult,
 } from "./package.js";
 
-export { adaptAndDiff, EVERMIND_ADAPT_MAX_CHARS, EVERMIND_ADAPT_WINDOW_TOKENS } from "./adapt.js";
+export { adaptAndDiff, EVERMIND_ADAPT_MAX_CHARS } from "./adapt.js";
 export type { AdaptResult, AdaptOptions, AdaptTokenizer } from "./adapt.js";
 
 export {
@@ -22,12 +22,11 @@ export {
   decodeDeltaPayload,
   deltaUnusableReason,
   MAX_DELTA_B64_CHARS,
-  DELTA_LABEL_MAX_CHARS,
 } from "./delta_wire.js";
 export type { DeltaLearnPayload, DeltaParseResult } from "./delta_wire.js";
 
 export { mergeCheckpointDiffs } from "./merge.js";
 export type { MergeResult } from "./merge.js";
 
-export { meanEvalLoss, sequenceLoss, EVAL_MAX_TOKENS } from "./eval.js";
+export { meanEvalLoss } from "./eval.js";
 export type { EvalExample, EvalTokenizer } from "./eval.js";

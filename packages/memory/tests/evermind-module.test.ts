@@ -10,12 +10,12 @@ import {
     rankEvermindRecall,
     hashRecallQuery,
     countReconciledMemories,
-    recallTokens,
     formatEvermindMemoryBlock,
     EVERMIND_MIN_TEACH_CHARS,
     type RecallScorable,
     type EvermindRecallItem,
 } from '../src/evermind/index.js';
+import { recallTokens } from '../src/evermind/recall.js';
 
 const mk = (id: number, over: Partial<RecallScorable>): RecallScorable => ({
     id, kind: 'text', version: 1, at: id, weight: 1, ...over,

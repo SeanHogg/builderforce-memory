@@ -37,17 +37,13 @@ export {
     EvermindModelPackage,
     adaptAndDiff,
     EVERMIND_ADAPT_MAX_CHARS,
-    EVERMIND_ADAPT_WINDOW_TOKENS,
     parseDeltaLearnPayload,
     buildDeltaLearnPayload,
     decodeDeltaPayload,
     deltaUnusableReason,
     MAX_DELTA_B64_CHARS,
-    DELTA_LABEL_MAX_CHARS,
     mergeCheckpointDiffs,
     meanEvalLoss,
-    sequenceLoss,
-    EVAL_MAX_TOKENS,
 } from './evermind/index.js';
 export type {
     EvermindModelManifest,
