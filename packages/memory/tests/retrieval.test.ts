@@ -5,7 +5,8 @@
 
 import { chunkText } from '../src/retrieval/chunk.js';
 import { bm25Search, bm25Idf, bm25LengthNorm, bm25TermScore } from '../src/retrieval/bm25.js';
-import { reciprocalRankFusion, maximalMarginalRelevance } from '../src/retrieval/fusion.js';
+import { reciprocalRankFusion } from '../src/retrieval/fusion.js';
+import { maximalMarginalRelevance } from '../src/retrieval/mmr.js';
 import { hybridRetrieve } from '../src/retrieval/HybridRetriever.js';
 
 // ── chunkText ──────────────────────────────────────────────────────────────────

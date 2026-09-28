@@ -25,6 +25,7 @@
 import { SSMError } from '../errors/SSMError.js';
 import type { LlmUsage } from '../telemetry/types.js';
 import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
+import { readSseDataFrames } from '../wire/index.js';
 
 export interface VertexAIBridgeOptions {
     /** GCP project id. */
@@ -101,7 +102,8 @@ export class VertexAIBridge implements TransformerBridge {
         }
 
         let usage: LlmUsage | undefined;
-        for await (const event of parseSseJson(res.body)) {
+        for await (const frame of readSseDataFrames(res.body)) {
+            const event = frame as Record<string, unknown>;
             const text = readCandidateText(event);
             if (text) yield text;
             // Vertex repeats cumulative usage on each chunk; the last one wins.
@@ -263,35 +265,4 @@ function readVertexUsage(usage: unknown, model: string): LlmUsage | undefined {
         outputTokens: Number(u['candidatesTokenCount']) || 0,
         cachedInputTokens: cached,
     };
-}
-
-/** Parses an `alt=sse` stream into JSON events. */
-async function* parseSseJson(body: ReadableStream<Uint8Array>): AsyncIterable<Record<string, unknown>> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() as string;
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith('data:')) continue;
-                const payload = trimmed.slice(5).trim();
-                if (!payload || payload === '[DONE]') continue;
-                try {
-                    yield JSON.parse(payload) as Record<string, unknown>;
-                } catch {
-                    // Skip malformed SSE frames rather than failing the stream.
-                }
-            }
-        }
-    } finally {
-        reader.releaseLock();
-    }
 }

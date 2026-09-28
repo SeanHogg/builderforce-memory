@@ -1,20 +1,24 @@
 /**
- * DistillationEngine – JS-only online knowledge distillation.
+ * DistillationEngine – online knowledge distillation.
  *
- * The core insight: use a transformer as a *teacher* to generate high-quality
- * responses, then adapt the SSM *student* on those responses using WSLA.
- * This runs entirely in the browser with no Python or full-retraining required.
+ * A *teacher* (a frontier model) writes the ideal response; the *student* is adapted
+ * on it. Runs with no Python and no full retraining.
  *
  * Distillation flow:
- *   1. bridge.generate(input)  → teacher output
- *   2. runtime.adapt(teacherOutput, opts.adapt)  → SSM trains on it
- *   3. Return both results for inspection
+ *   1. teacher.generate(input)                → exemplar
+ *   2. quality gate (length / already-learned) → skip, or fall back to the caller's text
+ *   3. student.adapt(input + exemplar, + rehearsed past exemplars)
+ *   4. log the outcome
+ *
+ * Teacher and student are ports ({@link ./ports}). Passing an `SSMRuntime` and a
+ * `TransformerBridge` — the original pairing — still works unchanged.
  */
 
 import type { AdaptOptions, AdaptResult } from '../session/index.js';
 import type { SSMRuntime } from '../runtime/SSMRuntime.js';
-import type { TransformerBridge, BridgeGenerateOptions } from '../bridges/TransformerBridge.js';
+import type { BridgeGenerateOptions } from '../bridges/TransformerBridge.js';
 import { SSMError } from '../errors/SSMError.js';
+import { isDistillationStudent, ssmRuntimeStudent, type DistillationStudent, type DistillationTeacher } from './ports.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,25 +29,18 @@ export interface QualityGate {
      */
     minLength?     : number;
     /**
-     * Maximum SSM perplexity threshold.
-     * When the SSM already achieves perplexity below this value on the teacher
+     * Maximum student perplexity threshold (needs a student with `evaluate`).
+     * When the student already achieves perplexity below this value on the teacher
      * output, the content is considered already learned and adaptation is skipped.
      */
     maxPerplexity? : number;
 }
 
-export interface DistillOptions {
-    /**
-     * Options forwarded to `runtime.adapt()`.
-     * Default: { wsla: true, epochs: 3 }
-     * WSLA is preferred because it is fast and targets the selective
-     * projection rows — exactly the parameters that encode token routing.
-     */
-    adapt?       : AdaptOptions;
+export interface DistillOptions<O = AdaptOptions> {
+    /** Options forwarded to the student's `adapt()`. */
+    adapt?       : O;
 
-    /**
-     * Options forwarded to `bridge.generate()`.
-     */
+    /** Options forwarded to the teacher's `generate()` (system prompt, max tokens, …). */
     generate?    : BridgeGenerateOptions;
 
     /**
@@ -51,14 +48,27 @@ export interface DistillOptions {
      * already-learned inputs.
      */
     qualityGate? : QualityGate;
+
+    /**
+     * What to learn when the teacher yields nothing usable — it threw, or its output
+     * failed the `minLength` gate. Without it such an input is skipped (a teacher
+     * error is thrown); with it the student learns this text instead, so the
+     * contribution is never lost, and the result says it was not distilled.
+     */
+    fallbackText?: string;
+
+    /**
+     * Cap on the characters of `input` that prefix the exemplar in the training text,
+     * so a long input can never crowd the exemplar out of the student's window.
+     */
+    contextChars?: number;
 }
 
 /**
- * Catastrophic-forgetting guard (EVM-5). Online WSLA adapts a narrow set of
- * weights toward the newest exemplar, which can erode previously-learned
- * knowledge. A rehearsal (experience-replay) buffer mitigates this: each adapt
- * also trains on a sample of past exemplars, so old knowledge is continually
- * reinforced instead of overwritten.
+ * Catastrophic-forgetting guard (EVM-5). Online adaptation moves a narrow set of
+ * weights toward the newest exemplar, which can erode previously-learned knowledge.
+ * A rehearsal (experience-replay) buffer mitigates this: each adapt also trains on a
+ * sample of past exemplars, so old knowledge is continually reinforced.
  */
 export interface RehearsalOptions {
     /** Ring-buffer capacity of past exemplars. 0 disables rehearsal. Default 0. */
@@ -69,27 +79,33 @@ export interface RehearsalOptions {
     seed?: number;
 }
 
-export interface DistillResult {
+/** Why an input was not learned from a teacher exemplar. */
+export type DistillSkipReason = 'low_quality' | 'already_learned' | 'teacher_failed';
+
+export interface DistillResult<R = AdaptResult> {
     /** The input prompt that was distilled. */
     input        : string;
-    /** The teacher's (transformer bridge) response to the input. */
+    /** The teacher's response to the input ('' when the teacher failed). */
     teacherOutput: string;
-    /** The adapt() result from training the SSM on the teacher output. */
-    adaptResult  : AdaptResult;
-    /** Whether adaptation was skipped by the quality gate. */
+    /** The student's result — its skipped result when nothing was adapted. */
+    adaptResult  : R;
+    /** True when nothing was adapted at all. */
     skipped?     : boolean;
-    /** Reason adaptation was skipped, if applicable. */
-    skipReason?  : string;
+    /** True when the student learned the teacher's exemplar (not a fallback). */
+    distilled    : boolean;
+    /** Why the exemplar was not learned, when it was not. */
+    skipReason?  : DistillSkipReason;
+    /** What the teacher threw, when `skipReason` is `teacher_failed`. */
+    teacherError?: unknown;
     /** Number of past exemplars rehearsed alongside this one (EVM-5). */
     rehearsed?   : number;
     /** Student's pre-adapt perplexity on the teacher output, when the quality gate
-     *  measured it — a "how novel was this exemplar" signal. Kept even when the
-     *  exemplar was NOT skipped (previously discarded on the trained path). */
+     *  measured it — a "how novel was this exemplar" signal. */
     gatePerplexity?: number;
 }
 
-export interface DistillBatchResult {
-    results    : DistillResult[];
+export interface DistillBatchResult<R = AdaptResult> {
+    results    : DistillResult<R>[];
     /** Total number of adapt epochs run across all inputs. */
     totalEpochs: number;
     /** Wall-clock time for the entire batch in milliseconds. */
@@ -101,7 +117,9 @@ export interface DistillationLog {
     input              : string;
     teacherOutputLength: number;
     skipped            : boolean;
-    skipReason?        : string;
+    /** True when the exemplar (not a fallback) was learned. */
+    distilled          : boolean;
+    skipReason?        : DistillSkipReason;
     finalLoss?         : number;
     epochs             : number;
     /** Pre-adapt perplexity on the teacher output (when the quality gate measured it). */
@@ -113,9 +131,9 @@ const MAX_LOG_ENTRIES = 200;
 
 // ── DistillationEngine ────────────────────────────────────────────────────────
 
-export class DistillationEngine {
-    private readonly _runtime  : SSMRuntime;
-    private readonly _bridge   : TransformerBridge;
+export class DistillationEngine<R = AdaptResult, O = AdaptOptions> {
+    private readonly _student  : DistillationStudent<R, O>;
+    private readonly _teacher  : DistillationTeacher;
     private readonly _log      : DistillationLog[] = [];
 
     // ── Rehearsal buffer (EVM-5 catastrophic-forgetting guard) ─────────────────
@@ -125,16 +143,16 @@ export class DistillationEngine {
     private _rehearsalState         : number;
 
     /**
-     * @param runtime The SSMRuntime whose SSM will be trained as the student.
-     * @param bridge  The transformer bridge acting as teacher.
-     *                A bridge must be provided — distillation requires one.
-     * @param rehearsal Optional experience-replay config (EVM-5). When
-     *                `bufferSize > 0`, each adapt also trains on a sample of past
-     *                exemplars to guard against catastrophic forgetting.
+     * @param student  What learns: an `SSMRuntime`, or any {@link DistillationStudent}.
+     * @param teacher  What teaches: any `TransformerBridge`, or any {@link DistillationTeacher}.
+     * @param rehearsal Optional experience-replay config (EVM-5). When `bufferSize > 0`,
+     *                 each adapt also trains on a sample of past exemplars.
      */
-    constructor(runtime: SSMRuntime, bridge: TransformerBridge, rehearsal: RehearsalOptions = {}) {
-        this._runtime = runtime;
-        this._bridge  = bridge;
+    constructor(student: SSMRuntime | DistillationStudent<R, O>, teacher: DistillationTeacher, rehearsal: RehearsalOptions = {}) {
+        this._student = isDistillationStudent<R, O>(student)
+            ? student
+            : (ssmRuntimeStudent(student as SSMRuntime) as unknown as DistillationStudent<R, O>);
+        this._teacher = teacher;
         this._rehearsalSize = Math.max(0, rehearsal.bufferSize ?? 0);
         this._rehearsalK    = Math.max(0, rehearsal.sampleK ?? 2);
         this._rehearsalState = (rehearsal.seed ?? 1) >>> 0 || 1;
@@ -174,133 +192,88 @@ export class DistillationEngine {
      * Runs a single distillation pass:
      *   1. Teacher generates a response for `input`
      *   2. Quality gate is evaluated (if configured)
-     *   3. SSM is adapted on the teacher's output (WSLA by default)
+     *   3. Student is adapted on `input` + the teacher's output
      *
-     * The training signal is the teacher's full response — this teaches the
-     * SSM what a good response to that prompt looks like, without requiring
-     * labelled data or a loss function beyond the standard LM objective.
+     * The training signal is the teacher's full response — this teaches the student
+     * what a good response to that prompt looks like, without labelled data.
      */
-    async distill(input: string, opts: DistillOptions = {}): Promise<DistillResult> {
-        const adaptOpts: AdaptOptions = {
-            wsla        : true,
-            epochs      : 3,
-            ...opts.adapt,
-        };
-
-        let teacherOutput: string;
+    async distill(input: string, opts: DistillOptions<O> = {}): Promise<DistillResult<R>> {
+        let teacherOutput = '';
+        let teacherError: unknown;
         try {
-            teacherOutput = await this._bridge.generate(input, opts.generate);
+            teacherOutput = await this._teacher.generate(input, opts.generate);
         } catch (err) {
-            throw new SSMError(
-                'DISTILL_FAILED',
-                `Teacher bridge failed to generate for distillation: ${err instanceof Error ? err.message : String(err)}`,
-                err,
-            );
+            if (opts.fallbackText === undefined) {
+                throw new SSMError(
+                    'DISTILL_FAILED',
+                    `Teacher bridge failed to generate for distillation: ${err instanceof Error ? err.message : String(err)}`,
+                    err,
+                );
+            }
+            teacherError = err;
+        }
+        if (teacherError !== undefined) {
+            return this._learnFallback(input, '', 'teacher_failed', opts, teacherError);
         }
 
         // ── Quality gate ──────────────────────────────────────────────────────
 
-        // Pre-adapt novelty of this exemplar (student perplexity on the teacher output).
-        // Measured by the gate below; hoisted so it survives to the TRAINED path instead
-        // of being dropped for exactly the exemplars we go on to learn from.
+        // Pre-adapt novelty of this exemplar, hoisted so it survives to the TRAINED path.
         let gatePerplexity: number | undefined;
+        const gate = opts.qualityGate;
 
-        if (opts.qualityGate) {
-            const gate = opts.qualityGate;
+        if (gate?.minLength != null && teacherOutput.length < gate.minLength) {
+            if (opts.fallbackText !== undefined) return this._learnFallback(input, teacherOutput, 'low_quality', opts);
+            return this._skip(input, teacherOutput, 'low_quality');
+        }
 
-            if (gate.minLength != null && teacherOutput.length < gate.minLength) {
-                const result: DistillResult = {
-                    input,
-                    teacherOutput,
-                    adaptResult : { losses: [], epochCount: 0, durationMs: 0 },
-                    skipped     : true,
-                    skipReason  : 'low_quality',
-                };
-                this._appendLog({
-                    input,
-                    teacherOutputLength: teacherOutput.length,
-                    skipped    : true,
-                    skipReason : 'low_quality',
-                    epochs     : 0,
-                });
-                return result;
+        if (gate?.maxPerplexity != null && this._student.evaluate) {
+            try {
+                gatePerplexity = await this._student.evaluate(teacherOutput);
+            } catch {
+                // Evaluation failure is non-fatal — proceed with adaptation
             }
-
-            if (gate.maxPerplexity != null) {
-                try {
-                    gatePerplexity = await this._runtime.evaluate(teacherOutput);
-                } catch {
-                    // Evaluation failure is non-fatal — proceed with adaptation
-                }
-                if (gatePerplexity != null && gatePerplexity < gate.maxPerplexity) {
-                    const result: DistillResult = {
-                        input,
-                        teacherOutput,
-                        adaptResult : { losses: [], epochCount: 0, durationMs: 0 },
-                        skipped     : true,
-                        skipReason  : 'already_learned',
-                        gatePerplexity,
-                    };
-                    this._appendLog({
-                        input,
-                        teacherOutputLength: teacherOutput.length,
-                        skipped    : true,
-                        skipReason : 'already_learned',
-                        epochs     : 0,
-                        gatePerplexity,
-                    });
-                    return result;
-                }
+            if (gatePerplexity != null && gatePerplexity < gate.maxPerplexity) {
+                return this._skip(input, teacherOutput, 'already_learned', gatePerplexity);
             }
         }
 
-        // Train the SSM on the teacher's output, prepending the input so the model
-        // learns the (prompt → response) mapping. EVM-5: interleave a sample of
-        // past exemplars (experience replay) so this adapt reinforces prior
-        // knowledge instead of overwriting it (catastrophic-forgetting guard).
+        // Train on the (prompt → response) mapping. EVM-5: interleave a sample of past
+        // exemplars (experience replay) so this adapt reinforces prior knowledge
+        // instead of overwriting it.
         const rehearsed = this._sampleRehearsal();
-        const pairs = [...rehearsed, { input, teacherOutput }].map((p) => `${p.input}\n${p.teacherOutput}`);
-        const trainingText = pairs.join('\n\n');
+        const context = (i: string) => (opts.contextChars != null ? i.trim().slice(0, opts.contextChars) : i);
+        const trainingText = [...rehearsed, { input, teacherOutput }]
+            .map((p) => `${context(p.input)}\n${p.teacherOutput}`)
+            .join('\n\n');
 
-        let adaptResult: AdaptResult;
-        try {
-            adaptResult = await this._runtime.adapt(trainingText, adaptOpts);
-        } catch (err) {
-            throw new SSMError(
-                'DISTILL_FAILED',
-                `SSM adaptation failed during distillation: ${err instanceof Error ? err.message : String(err)}`,
-                err,
-            );
-        }
-
-        // Record the new exemplar for future rehearsal.
+        const adaptResult = await this._adapt(trainingText, opts);
         this._pushRehearsal(input, teacherOutput);
-
         this._appendLog({
             input,
             teacherOutputLength: teacherOutput.length,
             skipped    : false,
-            finalLoss  : adaptResult.losses.at(-1),
-            epochs     : adaptResult.epochCount,
+            distilled  : true,
+            ...this._student.describe(adaptResult),
             gatePerplexity,
         });
 
-        return { input, teacherOutput, adaptResult, skipped: false, rehearsed: rehearsed.length, gatePerplexity };
+        return { input, teacherOutput, adaptResult, skipped: false, distilled: true, rehearsed: rehearsed.length, gatePerplexity };
     }
 
     /**
      * Runs distillation for each input in sequence.
      * Aggregate statistics are returned alongside individual results.
      */
-    async distillBatch(inputs: string[], opts: DistillOptions = {}): Promise<DistillBatchResult> {
+    async distillBatch(inputs: string[], opts: DistillOptions<O> = {}): Promise<DistillBatchResult<R>> {
         const startMs = Date.now();
-        const results: DistillResult[] = [];
+        const results: DistillResult<R>[] = [];
         let totalEpochs = 0;
 
         for (const input of inputs) {
             const result = await this.distill(input, opts);
             results.push(result);
-            totalEpochs += result.adaptResult.epochCount;
+            totalEpochs += this._student.describe(result.adaptResult).epochs;
         }
 
         return {
@@ -318,6 +291,68 @@ export class DistillationEngine {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    private async _adapt(trainingText: string, opts: DistillOptions<O>): Promise<R> {
+        try {
+            return await this._student.adapt(trainingText, opts.adapt);
+        } catch (err) {
+            throw new SSMError(
+                'DISTILL_FAILED',
+                `SSM adaptation failed during distillation: ${err instanceof Error ? err.message : String(err)}`,
+                err,
+            );
+        }
+    }
+
+    /** No exemplar worth learning: learn the caller's fallback text instead. */
+    private async _learnFallback(
+        input: string,
+        teacherOutput: string,
+        skipReason: DistillSkipReason,
+        opts: DistillOptions<O>,
+        teacherError?: unknown,
+    ): Promise<DistillResult<R>> {
+        const adaptResult = await this._adapt(opts.fallbackText!, opts);
+        this._appendLog({
+            input,
+            teacherOutputLength: teacherOutput.length,
+            skipped   : false,
+            distilled : false,
+            skipReason,
+            ...this._student.describe(adaptResult),
+        });
+        return {
+            input,
+            teacherOutput,
+            adaptResult,
+            skipped: false,
+            distilled: false,
+            skipReason,
+            ...(teacherError !== undefined ? { teacherError } : {}),
+        };
+    }
+
+    /** Nothing adapted. */
+    private _skip(input: string, teacherOutput: string, skipReason: DistillSkipReason, gatePerplexity?: number): DistillResult<R> {
+        this._appendLog({
+            input,
+            teacherOutputLength: teacherOutput.length,
+            skipped   : true,
+            distilled : false,
+            skipReason,
+            epochs    : 0,
+            gatePerplexity,
+        });
+        return {
+            input,
+            teacherOutput,
+            adaptResult: this._student.skippedResult(),
+            skipped: true,
+            distilled: false,
+            skipReason,
+            ...(gatePerplexity !== undefined ? { gatePerplexity } : {}),
+        };
+    }
 
     private _appendLog(entry: Omit<DistillationLog, 'timestamp'>): void {
         this._log.push({ timestamp: Date.now(), ...entry });

@@ -15,7 +15,8 @@
  */
 
 import { bm25Search, type Bm25Options } from './bm25.js';
-import { reciprocalRankFusion, maximalMarginalRelevance, type MmrCandidate } from './fusion.js';
+import { reciprocalRankFusion } from './fusion.js';
+import { maximalMarginalRelevance, type MmrCandidate } from './mmr.js';
 import { denseSearch } from './hnsw.js';
 
 export interface RetrievalCandidate {

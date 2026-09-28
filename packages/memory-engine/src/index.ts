@@ -181,7 +181,7 @@ export {
 } from './import/index.js';
 export type { ImportOptions } from './import/index.js';
 
-// ── Foreign weight port (Falcon-Mamba / Codestral-Mamba → HybridMambaModel) ────
+// ── Foreign weight port (Mamba / Falcon-Mamba / Codestral-Mamba → HybridMambaModel) ──
 // Transformer checkpoints are NOT portable — distillation is the only route, and
 // `foreignMambaAdapterFor` rejects them saying so.
 
@@ -194,7 +194,11 @@ export {
     executePortPlan,
     normaliseSourceName,
     falconMambaAdapter,
+    mambaAdapter,
+    mamba1Adapter,
     codestralMambaAdapter,
+    mambaConfigFromTensors,
+    resizePortedVocab,
 } from './import/index.js';
 export type {
     ForeignConfig,
@@ -207,6 +211,7 @@ export type {
     PortedCheckpoint,
     PortedTensors,
     SynthesisedTarget,
+    ResizeVocabOptions,
 } from './import/index.js';
 
 // ── Benchmarking (held-out perplexity / accuracy / throughput + A/B) ──────────

@@ -597,7 +597,7 @@ After training:
     saveDlBtn.disabled  = true;
     saveStatus.textContent = 'Saving…';
     try {
-      const buf = model.exportWeights();
+      const buf = await model.exportWeights();
       await idbSave('mambacode-default', buf);
       saveStatus.textContent = '✓ Saved to browser storage (key: mambacode-default).';
     } catch (err) {
@@ -614,7 +614,7 @@ After training:
     saveDlBtn.disabled  = true;
     saveStatus.textContent = 'Preparing download…';
     try {
-      const buf  = model.exportWeights();
+      const buf  = await model.exportWeights();
       const blob = new Blob([buf], { type: 'application/octet-stream' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');

@@ -8,6 +8,7 @@
 import { SSMError } from '../errors/SSMError.js';
 import type { LlmUsage } from '../telemetry/types.js';
 import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
+import { readSseDataFrames, readUsageFields, AnthropicStreamUsage } from '../wire/index.js';
 
 export interface AnthropicBridgeOptions {
     /** Anthropic API key. */
@@ -110,30 +111,26 @@ export class AnthropicBridge implements TransformerBridge {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'Anthropic streaming response has no body.');
         }
 
-        const model = opts.model ?? this._model;
-        let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, reportedModel = model;
+        // `message_start` carries the input split; `message_delta` the running
+        // output count. Both are folded so the final usage is provider-measured.
+        const usage = new AnthropicStreamUsage();
+        for await (const frame of readSseDataFrames(res.body)) {
+            usage.observe(frame);
+            const ev = frame as { type?: unknown; delta?: { text?: unknown } };
+            // content_block_delta events carry the streamed text
+            if (ev.type === 'content_block_delta' && typeof ev.delta?.text === 'string' && ev.delta.text.length > 0) {
+                yield ev.delta.text;
+            }
+        }
 
-        yield* parseAnthropicStream(res.body, (event) => {
-            // `message_start` carries the input split; `message_delta` the running
-            // output count. Both are folded so the final usage is provider-measured.
-            const start = (event as any).message?.usage;
-            const delta = (event as any).usage;
-            const usage = start ?? delta;
-            if (!usage) return;
-            if (typeof (event as any).message?.model === 'string') reportedModel = (event as any).message.model;
-            input      = Math.max(input,      Number(usage.input_tokens) || 0);
-            output     = Math.max(output,     Number(usage.output_tokens) || 0);
-            cacheRead  = Math.max(cacheRead,  Number(usage.cache_read_input_tokens) || 0);
-            cacheWrite = Math.max(cacheWrite, Number(usage.cache_creation_input_tokens) || 0);
-        });
-
+        const totals = usage.result();
         this._lastCall = {
             usage: {
-                model: reportedModel,
-                inputTokens: input,
-                outputTokens: output,
-                cachedInputTokens: cacheRead,
-                cacheWriteTokens: cacheWrite,
+                model: totals.model ?? opts.model ?? this._model,
+                inputTokens: totals.inputTokens,
+                outputTokens: totals.outputTokens,
+                cachedInputTokens: totals.cacheReadTokens,
+                cacheWriteTokens: totals.cacheCreationTokens,
             },
         };
     }
@@ -171,48 +168,6 @@ export class AnthropicBridge implements TransformerBridge {
     }
 }
 
-// ── SSE parser (Anthropic event format) ──────────────────────────────────────
-
-async function* parseAnthropicStream(
-    body: ReadableStream<Uint8Array>,
-    onEvent?: (event: Record<string, unknown>) => void,
-): AsyncIterable<string> {
-    const reader  = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer    = '';
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() as string; // split() always yields ≥1 element → never undefined
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith('data: ')) continue;
-
-                const data = trimmed.slice(6);
-                try {
-                    const event = JSON.parse(data) as Record<string, unknown>;
-                    onEvent?.(event);
-                    // content_block_delta events carry the streamed text
-                    if (event['type'] === 'content_block_delta') {
-                        const text = (event as any).delta?.text;
-                        if (typeof text === 'string' && text.length > 0) yield text;
-                    }
-                } catch {
-                    // Skip malformed SSE lines
-                }
-            }
-        }
-    } finally {
-        reader.releaseLock();
-    }
-}
-
 /**
  * Maps an Anthropic `usage` object onto the canonical {@link LlmUsage} shape.
  * Absent when the response omits usage (an older gateway shim), in which case
@@ -220,12 +175,13 @@ async function* parseAnthropicStream(
  */
 function readAnthropicUsage(usage: unknown, model: string): LlmUsage | undefined {
     if (!usage || typeof usage !== 'object') return undefined;
-    const u = usage as Record<string, unknown>;
+    // Anthropic's `input_tokens` already excludes both cache counts.
+    const u = readUsageFields(usage);
     return {
         model,
-        inputTokens: Number(u['input_tokens']) || 0,
-        outputTokens: Number(u['output_tokens']) || 0,
-        cachedInputTokens: Number(u['cache_read_input_tokens']) || 0,
-        cacheWriteTokens: Number(u['cache_creation_input_tokens']) || 0,
+        inputTokens: u.promptTokens ?? 0,
+        outputTokens: u.completionTokens ?? 0,
+        cachedInputTokens: u.cacheReadTokens ?? 0,
+        cacheWriteTokens: u.cacheCreationTokens ?? 0,
     };
 }

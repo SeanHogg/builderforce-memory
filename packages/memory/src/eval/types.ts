@@ -80,6 +80,13 @@ export interface EvalGate {
     maxP95LatencyMs?: number;
     /** Maximum share of cases that may error outright. */
     maxErrorRate?: number;
+    /**
+     * Minimum `meanScore` as a fraction of a BASELINE report's on the same eval —
+     * "reach 90% of the model this replaces". Needs the baseline passed to
+     * {@link evaluateGate}; without one, or with a baseline from a different eval,
+     * the gate fails and says why.
+     */
+    minBaselineRatio?: number;
 }
 
 export interface GateVerdict {

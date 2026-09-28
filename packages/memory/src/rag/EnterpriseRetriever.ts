@@ -23,7 +23,8 @@
  */
 
 import type { TransformerBridge } from '../bridges/TransformerBridge.js';
-import { maximalMarginalRelevance, reciprocalRankFusion } from '../retrieval/fusion.js';
+import { reciprocalRankFusion } from '../retrieval/fusion.js';
+import { maximalMarginalRelevance } from '../retrieval/mmr.js';
 import type { Span, Tracer } from '../telemetry/Tracer.js';
 import {
     SOURCE_ID_FIELD,

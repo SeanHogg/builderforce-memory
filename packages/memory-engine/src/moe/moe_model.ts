@@ -188,18 +188,20 @@ export class LoadBalanceAccumulator {
     for (const e of route.experts) this.counts[e] = this.counts[e]! + 1;
     for (let e = 0; e < this.numExperts; e++) this.probSum[e] = this.probSum[e]! + route.probs[e]!;
   }
+  /** `f_e`: the fraction of all dispatches that went to each expert (sums to 1 once anything is observed). */
+  dispatchFractions(): Float32Array {
+    const dispatched = this.counts.reduce((a, b) => a + b, 0) || 1; // = tokens·topK
+    return Float32Array.from(this.counts, (c) => c / dispatched);
+  }
   /** The load-balance loss over everything observed so far (0 if no tokens). */
   loss(): number {
     if (this.tokens === 0) return 0;
-    const E = this.numExperts;
-    const dispatched = this.counts.reduce((a, b) => a + b, 0) || 1; // = tokens·topK
+    const f = this.dispatchFractions();
     let sum = 0;
-    for (let e = 0; e < E; e++) {
-      const f = this.counts[e]! / dispatched; // fraction of dispatches to e
-      const p = this.probSum[e]! / this.tokens; // mean router prob for e
-      sum += f * p;
+    for (let e = 0; e < this.numExperts; e++) {
+      sum += f[e]! * (this.probSum[e]! / this.tokens); // f_e · mean router prob for e
     }
-    return E * sum;
+    return this.numExperts * sum;
   }
 }
 

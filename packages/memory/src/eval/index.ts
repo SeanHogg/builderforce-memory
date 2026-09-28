@@ -24,3 +24,4 @@
 export * from './types.js';
 export * from './graders.js';
 export * from './EvalHarness.js';
+export * from './baseline.js';

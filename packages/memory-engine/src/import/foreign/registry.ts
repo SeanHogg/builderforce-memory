@@ -12,12 +12,13 @@ import type { NamedTensor } from "../../export/tensors.js";
 import type { HybridMambaModelConfig } from "../../model/mamba_model.js";
 import { safetensorsToTensors } from "../safetensors.js";
 import { executePortPlan, type PortDiscard, type PortedTensors, type SynthesisedTarget } from "./plan.js";
-import { falconMambaAdapter } from "./falcon_mamba.js";
+import { falconMambaAdapter, mambaAdapter } from "./falcon_mamba.js";
 import { codestralMambaAdapter } from "./codestral_mamba.js";
 import type { ForeignConfig, ForeignMambaAdapter } from "./adapter.js";
 
 /** Every foreign SSM architecture this engine can warm-start from. */
 export const FOREIGN_MAMBA_ADAPTERS: readonly ForeignMambaAdapter[] = [
+  mambaAdapter,
   falconMambaAdapter,
   codestralMambaAdapter,
 ];

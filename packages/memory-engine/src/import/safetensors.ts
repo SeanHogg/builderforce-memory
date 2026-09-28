@@ -4,7 +4,7 @@
  * The exact inverse of {@link ../export/safetensors.ts}: parse the 8-byte
  * little-endian u64 header length, the JSON header (name → {dtype, shape,
  * data_offsets}), then decode each tensor's raw bytes into a Float32Array.
- * F32 and F16 are supported (F16 is widened to f32 on read). This is the reader
+ * F32, F16 and BF16 are supported (both halves are widened to f32 on read). This is the reader
  * half of the warm-start / weight-port path — export was one-directional before.
  */
 
@@ -63,5 +63,12 @@ function decodeTensor(seg: Uint8Array, dtype: string, numel: number, name: strin
     for (let i = 0; i < numel; i++) data[i] = fp16ToFloat(dv.getUint16(i * 2, true));
     return data;
   }
-  throw new Error(`safetensors: unsupported dtype "${dtype}" for "${name}" (expected F32 or F16)`);
+  if (d === "BF16" || d === "BFLOAT16") {
+    // bfloat16 is the top half of an f32: shift it back into place.
+    if (seg.length < numel * 2) throw new Error(`safetensors: "${name}" BF16 bytes ${seg.length} < ${numel * 2}`);
+    const bits = new Uint32Array(data.buffer);
+    for (let i = 0; i < numel; i++) bits[i] = dv.getUint16(i * 2, true) << 16;
+    return data;
+  }
+  throw new Error(`safetensors: unsupported dtype "${dtype}" for "${name}" (expected F32, F16 or BF16)`);
 }

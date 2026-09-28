@@ -8,6 +8,7 @@
 import { SSMError } from '../errors/SSMError.js';
 import type { LlmUsage } from '../telemetry/types.js';
 import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
+import { readSseDataFrames, readUsageFields } from '../wire/index.js';
 
 export interface OpenAIBridgeOptions {
     /** OpenAI API key (or compatible service key). */
@@ -88,12 +89,14 @@ export class OpenAIBridge implements TransformerBridge {
         const model = opts.model ?? this._model;
         let usage: LlmUsage | undefined;
 
-        yield* parseOpenAIStream(res.body, (event) => {
-            // Only emitted because `_buildBody` sets `stream_options.include_usage`;
+        for await (const chunk of readSseDataFrames(res.body)) {
+            // Usage is only emitted because `_buildBody` sets `stream_options.include_usage`;
             // without it OpenAI streams no usage at all and cost would be a guess.
-            const reported = readOpenAIUsage((event as any).usage, (event as any).model ?? model);
+            const reported = readOpenAIUsage((chunk as any).usage, (chunk as any).model ?? model);
             if (reported) usage = reported;
-        });
+            const delta = (chunk as any).choices?.[0]?.delta?.content;
+            if (typeof delta === 'string' && delta.length > 0) yield delta;
+        }
 
         this._lastCall = usage ? { usage } : {};
     }
@@ -130,59 +133,17 @@ export class OpenAIBridge implements TransformerBridge {
     }
 }
 
-// ── SSE parser ────────────────────────────────────────────────────────────────
-
-async function* parseOpenAIStream(
-    body: ReadableStream<Uint8Array>,
-    onEvent?: (event: Record<string, unknown>) => void,
-): AsyncIterable<string> {
-    const reader  = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer    = '';
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() as string;   // keep the last (possibly partial) line; split() always yields ≥1 element
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith('data: ')) continue;
-
-                const data = trimmed.slice(6);
-                if (data === '[DONE]') return;
-
-                try {
-                    const chunk = JSON.parse(data) as Record<string, unknown>;
-                    onEvent?.(chunk);
-                    const delta = (chunk as any).choices?.[0]?.delta?.content;
-                    if (typeof delta === 'string' && delta.length > 0) yield delta;
-                } catch {
-                    // Malformed JSON in stream — skip silently
-                }
-            }
-        }
-    } finally {
-        reader.releaseLock();
-    }
-}
-
 /** Maps an OpenAI `usage` object onto the canonical {@link LlmUsage} shape. */
 function readOpenAIUsage(usage: unknown, model: string): LlmUsage | undefined {
     if (!usage || typeof usage !== 'object') return undefined;
-    const u = usage as Record<string, unknown>;
-    const cached = Number((u['prompt_tokens_details'] as Record<string, unknown> | undefined)?.['cached_tokens']) || 0;
-    const prompt = Number(u['prompt_tokens']) || 0;
+    const u = readUsageFields(usage);
+    const cached = u.cacheReadTokens ?? 0;
     return {
         model,
         // OpenAI reports `prompt_tokens` INCLUSIVE of cached tokens; the canonical
         // shape keeps them disjoint so the two rates are applied exactly once each.
-        inputTokens: Math.max(0, prompt - cached),
-        outputTokens: Number(u['completion_tokens']) || 0,
+        inputTokens: Math.max(0, (u.promptTokens ?? 0) - cached),
+        outputTokens: u.completionTokens ?? 0,
         cachedInputTokens: cached,
     };
 }

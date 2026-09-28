@@ -12,6 +12,7 @@ import { mapWithConcurrency } from '../ingest/IngestionPipeline.js';
 import { percentile } from '../telemetry/MetricsRegistry.js';
 import type { Tracer } from '../telemetry/Tracer.js';
 import { DEFAULT_RAG_GRADERS } from './graders.js';
+import { baselineRatio, meetsBaselineRatio, sameEvalProblem, type EvalReportSummary } from './baseline.js';
 import type {
     CaseResult,
     EvalDataset,
@@ -139,7 +140,7 @@ export class EvalHarness {
 }
 
 /** Applies a gate to a report. Pure, so a build can re-gate an archived report. */
-export function evaluateGate(report: EvalReport, gate: EvalGate): GateVerdict {
+export function evaluateGate(report: EvalReport, gate: EvalGate, baseline?: EvalReportSummary): GateVerdict {
     const failures: string[] = [];
     const thresholds = Object.entries(gate).filter(([, v]) => v !== undefined);
 
@@ -157,6 +158,16 @@ export function evaluateGate(report: EvalReport, gate: EvalGate): GateVerdict {
     }
     if (gate.maxP95LatencyMs !== undefined && report.p95LatencyMs > gate.maxP95LatencyMs) {
         failures.push(`p95 latency ${Math.round(report.p95LatencyMs)}ms > allowed ${gate.maxP95LatencyMs}ms`);
+    }
+    if (gate.minBaselineRatio !== undefined) {
+        const problem = baseline ? sameEvalProblem(report, baseline) : 'gate needs a baseline report to compare against';
+        const ratio = baseline ? baselineRatio(report.meanScore, baseline.meanScore) : null;
+        if (problem) failures.push(problem);
+        else if (!meetsBaselineRatio(ratio, gate.minBaselineRatio)) {
+            failures.push(ratio === null
+                ? 'baseline scored 0, so no ratio can be taken'
+                : `score is ${pct(ratio)} of the baseline < required ${pct(gate.minBaselineRatio)}`);
+        }
     }
     for (const [grader, minimum] of Object.entries(gate.minGraderScore ?? {})) {
         const actual = report.graderScores[grader];

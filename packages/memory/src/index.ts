@@ -473,15 +473,18 @@ export { publishToHuggingFace, writeExportToDir } from './publish/index.js';
 export type { HuggingFaceTarget, PublishOutcome, HubClient, FsLike } from './publish/index.js';
 
 // ── Distillation ──────────────────────────────────────────────────────────────
-export { DistillationEngine } from './distillation/DistillationEngine.js';
+export { DistillationEngine, ssmRuntimeStudent } from './distillation/index.js';
 export type {
     DistillOptions,
     DistillResult,
     DistillBatchResult,
     DistillationLog,
+    DistillSkipReason,
     QualityGate,
     RehearsalOptions,
-} from './distillation/DistillationEngine.js';
+    DistillationTeacher,
+    DistillationStudent,
+} from './distillation/index.js';
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 export { SSMAgent }  from './agent/SSMAgent.js';

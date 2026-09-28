@@ -10,7 +10,7 @@
 import nodeFs from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
-import { HOSTS, SERVER_KEY, type HostAdapter, type HostEnv } from "./hosts.js";
+import { HOSTS, SERVER_KEY, findHost, type HostAdapter, type HostEnv } from "./hosts.js";
 import { buildServerSpec, type ServerSpecOptions, type StdioServerSpec } from "./server-spec.js";
 
 export interface FsLike {
@@ -132,7 +132,7 @@ function installToml(fs: FsLike, file: string, spec: StdioServerSpec): InstallSt
 function resolveHosts(selector: HostSelector, fs: FsLike, hostEnv: HostEnv): HostAdapter[] {
     if (Array.isArray(selector)) {
         return selector.map((id) => {
-            const h = HOSTS.find((x) => x.id === id);
+            const h = findHost(id);
             if (!h) throw new Error(`unknown host "${id}" (known: ${HOSTS.map((x) => x.id).join(", ")})`);
             return h;
         });

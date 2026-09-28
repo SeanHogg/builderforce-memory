@@ -25,7 +25,11 @@ export {
   executePortPlan,
   normaliseSourceName,
   falconMambaAdapter,
+  mambaAdapter,
+  mamba1Adapter,
   codestralMambaAdapter,
+  mambaConfigFromTensors,
+  resizePortedVocab,
 } from "./foreign/index.js";
 export type {
   ForeignConfig,
@@ -38,4 +42,5 @@ export type {
   PortedCheckpoint,
   PortedTensors,
   SynthesisedTarget,
+  ResizeVocabOptions,
 } from "./foreign/index.js";

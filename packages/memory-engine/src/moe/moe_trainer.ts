@@ -8,7 +8,7 @@
  * WebGPU optimiser kernel would accelerate.
  */
 
-import { SharedExpertMoE } from "./moe_model.js";
+import { LoadBalanceAccumulator, SharedExpertMoE } from "./moe_model.js";
 import { AdamW } from "../optim/adamw.js";
 
 export interface MoESample {
@@ -87,7 +87,7 @@ export class MoETrainer {
       // Forward + task backward, retaining (x, probs) for the batch aux gradient.
       const xs: Float32Array[] = [];
       const probsList: Float32Array[] = [];
-      const counts = new Float32Array(numExperts);
+      const balance = new LoadBalanceAccumulator(numExperts);
       let batchLoss = 0;
 
       for (const s of batch) {
@@ -101,12 +101,11 @@ export class MoETrainer {
         this.model.backward(dOut, f.cache);
         xs.push(f.cache.x);
         probsList.push(f.route.probs);
-        for (const ex of f.route.experts) counts[ex] = counts[ex]! + 1;
+        balance.observe(f.route);
       }
 
       // Load-balancing aux gradient (batch-level): f = dispatch fractions.
-      const dispatched = counts.reduce((a, b) => a + b, 0) || 1;
-      const fVec = Float32Array.from(counts, (c) => c / dispatched);
+      const fVec = balance.dispatchFractions();
       const scale = (this.opt.auxWeight * numExperts) / batch.length;
       for (let i = 0; i < xs.length; i++) {
         this.model.auxGradStep(xs[i]!, probsList[i]!, fVec, scale);
@@ -117,9 +116,7 @@ export class MoETrainer {
       this.adam.step();
 
       epochLoss += batchLoss;
-      lastAux = numExperts * fVec.reduce((sum, f, e) => sum + f * (probsList.length
-        ? probsList.reduce((s, p) => s + p[e]!, 0) / probsList.length
-        : 0), 0);
+      lastAux = balance.loss();
     }
 
     return { loss: epochLoss / Math.max(1, samples.length), auxLoss: lastAux };

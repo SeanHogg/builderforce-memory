@@ -1,6 +1,9 @@
 /**
- * import/foreign/falcon_mamba.ts — weight port for Falcon-Mamba
- * (`FalconMambaForCausalLM`, `model_type: "falcon_mamba"`, Mamba-1 / S6).
+ * import/foreign/falcon_mamba.ts — weight port for the Mamba-1 / S6 family:
+ * Falcon-Mamba (`FalconMambaForCausalLM`, `model_type: "falcon_mamba"`) and the
+ * original Mamba (`MambaForCausalLM`, `model_type: "mamba"` — `state-spaces/mamba-*`).
+ * They share one tensor layout and one config vocabulary, so one rule table and one
+ * `describe` serve both ({@link mamba1Adapter}).
  *
  * Source layout confirmed against `tiiuae/falcon-mamba-7b`'s published
  * `config.json`, `model.safetensors.index.json` (643 tensors = 10 per layer × 64
@@ -34,6 +37,8 @@
  *   • Linear weights are `[out, in]` row-major on both sides (no transpose).
  *
  * Fidelity caveats recorded on the plan rather than hidden:
+ *   • (Falcon-Mamba only) the dt/B/C norms below. Plain Mamba has none, so its port
+ *     is exact.
  *   • `use_bias: false` upstream, so `in_proj` / `x_proj` / `out_proj` ship no
  *     bias; this engine's blocks always own one, and they are filled with zeros
  *     (an exact no-op, not an approximation).
@@ -58,8 +63,6 @@ import {
   type ForeignMambaAdapter,
   type PortTarget,
 } from "./adapter.js";
-
-const ID = "falcon_mamba";
 
 /** `backbone.embeddings` (HF) vs `backbone.embedding` (Mamba-SSM native). */
 const EMBEDDING_NAMES = ["backbone.embeddings.weight", "backbone.embedding.weight"];
@@ -131,43 +134,63 @@ function rules(a: {
   return out;
 }
 
-export const falconMambaAdapter: ForeignMambaAdapter = {
-  id: ID,
+/** A Mamba-1 family adapter: the shared rule table under one checkpoint family's identity. */
+export function mamba1Adapter(identity: {
+  id: string;
+  label: string;
+  modelTypes: readonly string[];
+  architectures: readonly string[];
+}): ForeignMambaAdapter {
+  const ID = identity.id;
+  return {
+    ...identity,
+
+    describe(config: ForeignConfig): PortTarget {
+      const dModel = requireInt(config, "hidden_size");
+      const numLayers = requireInt(config, "num_hidden_layers");
+      const vocabSize = requireInt(config, "vocab_size");
+      const dState = requireInt(config, "state_size");
+      const dConv = requireInt(config, "conv_kernel");
+      const dInner = readInnerSize(config, dModel);
+      const expand = expandFactor(dInner, dModel, identity.label);
+      const dtRank = readTimeStepRank(config, dModel);
+
+      const modelConfig: HybridMambaModelConfig = {
+        vocabSize,
+        dModel,
+        numLayers,
+        dState,
+        dConv,
+        expand,
+        // Every layer is a Mamba-1 mixer (the model's default schedule), but the
+        // dt rank and conv bias are per-block settings the shorthand can't carry.
+        defaultMamba1: { dtRank, biasConv: true },
+      };
+
+      const plan: PortPlan = {
+        adapter: ID,
+        rules: rules({ vocabSize, dModel, numLayers, dInner, dState, dConv, dtRank }),
+        // Nothing is partially consumed: every Mamba-1 tensor this plan
+        // touches is taken whole. `lm_head.weight` is untouched entirely and
+        // surfaces through `unmappedSources`.
+        discards: [],
+      };
+
+      return { modelConfig, plan };
+    },
+  };
+}
+
+export const falconMambaAdapter = mamba1Adapter({
+  id: "falcon_mamba",
   label: "Falcon-Mamba (Mamba-1 / S6)",
   modelTypes: ["falcon_mamba"],
   architectures: ["FalconMambaForCausalLM"],
+});
 
-  describe(config: ForeignConfig): PortTarget {
-    const dModel = requireInt(config, "hidden_size");
-    const numLayers = requireInt(config, "num_hidden_layers");
-    const vocabSize = requireInt(config, "vocab_size");
-    const dState = requireInt(config, "state_size");
-    const dConv = requireInt(config, "conv_kernel");
-    const dInner = readInnerSize(config, dModel);
-    const expand = expandFactor(dInner, dModel, "Falcon-Mamba");
-    const dtRank = readTimeStepRank(config, dModel);
-
-    const modelConfig: HybridMambaModelConfig = {
-      vocabSize,
-      dModel,
-      numLayers,
-      dState,
-      dConv,
-      expand,
-      // Every layer is a Mamba-1 mixer (the model's default schedule), but the
-      // dt rank and conv bias are per-block settings the shorthand can't carry.
-      defaultMamba1: { dtRank, biasConv: true },
-    };
-
-    const plan: PortPlan = {
-      adapter: ID,
-      rules: rules({ vocabSize, dModel, numLayers, dInner, dState, dConv, dtRank }),
-      // Nothing is partially consumed: every Falcon-Mamba tensor this plan
-      // touches is taken whole. `lm_head.weight` is untouched entirely and
-      // surfaces through `unmappedSources`.
-      discards: [],
-    };
-
-    return { modelConfig, plan };
-  },
-};
+export const mambaAdapter = mamba1Adapter({
+  id: "mamba",
+  label: "Mamba (Mamba-1 / S6)",
+  modelTypes: ["mamba"],
+  architectures: ["MambaForCausalLM"],
+});

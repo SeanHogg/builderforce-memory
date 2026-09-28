@@ -24,12 +24,14 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 /**
- * Cosine similarity between two vectors in the range [-1, 1] (0 when either is a
- * zero vector). Compares over the shorter length when lengths differ. Vectors
+ * Cosine similarity between two vectors in the range [-1, 1] (0 when either is empty
+ * or a zero vector). Compares over the shorter length when lengths differ. Vectors
  * from MambaSession.embed() are already L2-normalised — this reduces to a dot
- * product — but we normalise defensively for vectors from other sources.
+ * product — but we normalise defensively for vectors from other sources. Takes any
+ * numeric array, so a `Float32Array` embedding and a JSON-decoded `number[]` (a
+ * pgvector row, a KV entry) go through the same function.
  */
-export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
     const n = Math.min(a.length, b.length);
     let dot = 0, na = 0, nb = 0;
     for (let i = 0; i < n; i++) {

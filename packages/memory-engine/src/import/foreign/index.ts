@@ -6,7 +6,7 @@
  * to build plus a name-keyed set of weights, together with an explicit account of
  * anything that did not map cleanly.
  *
- * Supported: Falcon-Mamba (Mamba-1) and Codestral-Mamba (Mamba-2). Transformer
+ * Supported: Mamba and Falcon-Mamba (Mamba-1) and Codestral-Mamba (Mamba-2). Transformer
  * checkpoints are NOT portable at any tensor naming — distillation is the only
  * route, and {@link foreignMambaAdapterFor} says so when it rejects one.
  */
@@ -33,5 +33,8 @@ export type {
 
 export type { ForeignConfig, ForeignMambaAdapter, PortTarget } from "./adapter.js";
 
-export { falconMambaAdapter } from "./falcon_mamba.js";
+export { falconMambaAdapter, mambaAdapter, mamba1Adapter } from "./falcon_mamba.js";
+export { mambaConfigFromTensors } from "./infer.js";
+export { resizePortedVocab } from "./vocab.js";
+export type { ResizeVocabOptions } from "./vocab.js";
 export { codestralMambaAdapter } from "./codestral_mamba.js";

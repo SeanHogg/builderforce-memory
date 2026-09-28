@@ -95,13 +95,6 @@ class GraphBuilder {
   }
 }
 
-/** Transpose a 2-D row-major matrix [rows, cols] → [cols, rows]. */
-function transpose2d(data: Float32Array, rows: number, cols: number): Float32Array {
-  const out = new Float32Array(data.length);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) out[c * rows + r] = data[r * cols + c]!;
-  return out;
-}
-
 /** RMSNorm(x, gain) as graph ops. Returns the normalised value name. */
 function rmsNorm(g: GraphBuilder, x: string, gainInit: string, eps: string, axes: string): string {
   const sq = g.op("Mul", [x, x], "rms_sq");

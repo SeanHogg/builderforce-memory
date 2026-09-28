@@ -50,16 +50,20 @@ export function setInitSeed(seed: number | undefined): void {
     }
 }
 
-/** Box–Muller Gaussian sample from the active source. */
-export function randn(std = 1): number {
-    const u1 = Math.max(_next(), 1e-12);
-    const u2 = _next();
+/**
+ * Box–Muller Gaussian sample. Draws from the active init source unless `next` names
+ * another uniform [0,1) source — a caller-owned {@link SeededRng}, say, when the draw
+ * must be reproducible without touching the process-wide seed.
+ */
+export function randn(std = 1, next: () => number = _next): number {
+    const u1 = Math.max(next(), 1e-12);
+    const u2 = next();
     return std * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
 /** Returns a Float32Array of `n` Gaussian samples with the given standard deviation. */
-export function gaussianArray(n: number, std: number): Float32Array {
+export function gaussianArray(n: number, std: number, next?: () => number): Float32Array {
     const a = new Float32Array(n);
-    for (let i = 0; i < n; i++) a[i] = randn(std);
+    for (let i = 0; i < n; i++) a[i] = randn(std, next);
     return a;
 }

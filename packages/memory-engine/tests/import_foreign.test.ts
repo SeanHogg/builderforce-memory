@@ -155,7 +155,7 @@ test('the config selects the adapter by architectures, then by model_type', () =
     // the commonly mis-cited Codestral class name is still accepted
     expect(foreignMambaAdapterFor({ architectures: ['MambaCodestralForCausalLM'] }).id)
         .toBe('codestral_mamba');
-    expect(FOREIGN_MAMBA_ADAPTERS.map((a) => a.id)).toEqual(['falcon_mamba', 'codestral_mamba']);
+    expect(FOREIGN_MAMBA_ADAPTERS.map((a) => a.id)).toEqual(['mamba', 'falcon_mamba', 'codestral_mamba']);
 });
 
 test('an unknown architecture fails loudly and lists what IS supported', () => {
@@ -450,5 +450,5 @@ test('the port is reachable from the package entry point (not an orphan module)'
     expect(typeof pkg.portForeignMambaSafetensors).toBe('function');
     expect(typeof pkg.foreignMambaAdapterFor).toBe('function');
     expect(typeof pkg.applyPortedWeights).toBe('function');
-    expect(pkg.FOREIGN_MAMBA_ADAPTERS.map((a) => a.id)).toEqual(['falcon_mamba', 'codestral_mamba']);
+    expect(pkg.FOREIGN_MAMBA_ADAPTERS.map((a) => a.id)).toEqual(['mamba', 'falcon_mamba', 'codestral_mamba']);
 });
