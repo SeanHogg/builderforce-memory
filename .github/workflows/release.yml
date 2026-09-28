@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Re-run a release from its tag with the CURRENT workflow (a re-run of a failed
+  # run replays the workflow file as it was at the tag).
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -40,8 +43,19 @@ jobs:
 
       # Publishes @seanhogg/builderforce-memory-engine, @seanhogg/builderforce-memory, and @seanhogg/builderforce-memory-mcp.
       # pnpm resolves `workspace:^` peer/dep specifiers to real version ranges at pack time.
+      # Idempotent: a package whose version npm already has is skipped, so a re-run
+      # after a later step failed (the registry, say) does not die on a 409.
       - name: Publish
-        run: pnpm -r publish --access public --no-git-checks
+        run: |
+          for dir in packages/memory-engine packages/memory packages/memory-mcp; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+              echo "$name@$version is already on npm — skipping"
+            else
+              (cd "$dir" && pnpm publish --access public --no-git-checks)
+            fi
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -50,6 +64,22 @@ jobs:
       # already live, so this runs AFTER the npm publish above. OIDC auth means
       # no long-lived token: the `io.github.SeanHogg/*` namespace is proven by
       # this repository's own identity.
+      # The registry checks npm for the version, and npm's read replicas lag a
+      # fresh publish by up to a few minutes — publishing at once failed with a
+      # 404 on two releases running. Wait until npm serves it.
+      - name: Wait for npm to serve the new version
+        working-directory: packages/memory-mcp
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          for attempt in $(seq 1 40); do
+            if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+              echo "npm serves $name@$version"; exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::npm still does not serve $name@$version after 10 minutes"; exit 1
+
       - name: Install mcp-publisher
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
