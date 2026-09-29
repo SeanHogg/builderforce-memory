@@ -108,9 +108,9 @@ async function post(client: ChatClient, req: ChatRequest, stream: boolean, signa
     const res = await fetch(`${client.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${client.apiKey}`,
-            ...(stream ? { accept: 'text/event-stream' } : {}),
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${client.apiKey}`,
+            ...(stream ? { Accept: 'text/event-stream' } : {}),
         },
         body: chatBody(req, stream),
         signal: signal && timeout ? AbortSignal.any([signal, timeout]) : (signal ?? timeout),

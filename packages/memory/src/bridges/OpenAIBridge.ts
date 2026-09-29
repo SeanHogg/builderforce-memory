@@ -133,6 +133,10 @@ export class OpenAIBridge implements TransformerBridge {
     private _requestError(what: string, err: unknown): SSMError {
         if (err instanceof SSMError) return err;
         if (err instanceof ChatCompletionError) {
+            // A 2xx that still failed is a stream with no body: the server answered, badly.
+            if (err.status >= 200 && err.status < 300) {
+                return new SSMError('BRIDGE_RESPONSE_INVALID', `${what} returned no response body.`);
+            }
             return new SSMError('BRIDGE_REQUEST_FAILED', `${what} returned ${err.status}: ${err.body}`);
         }
         return new SSMError('BRIDGE_REQUEST_FAILED', `${what} request failed: ${err instanceof Error ? err.message : String(err)}`, err);

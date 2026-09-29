@@ -42,7 +42,7 @@ describe('chatComplete', () => {
 
         expect(spy.mock.calls[0][0]).toBe('https://gw.example/v1/chat/completions');
         const init = spy.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>).authorization).toBe('Bearer k');
+        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer k');
         // No sampling defaults, no model, no stream fields.
         expect(sentBody(spy)).toEqual({ messages: [{ role: 'user', content: 'q' }] });
         expect(result).toEqual({
@@ -132,7 +132,7 @@ describe('chatStream', () => {
         for await (const e of chatStream(client, { messages: [], includeUsage: true })) events.push(e);
 
         expect(sentBody(spy)).toEqual({ messages: [], stream: true, stream_options: { include_usage: true } });
-        expect((spy.mock.calls[0][1] as RequestInit).headers).toMatchObject({ accept: 'text/event-stream' });
+        expect((spy.mock.calls[0][1] as RequestInit).headers).toMatchObject({ Accept: 'text/event-stream' });
         expect(events.filter((e) => e.type === 'text-delta')).toEqual([
             { type: 'text-delta', delta: 'Hel' },
             { type: 'text-delta', delta: 'lo' },
