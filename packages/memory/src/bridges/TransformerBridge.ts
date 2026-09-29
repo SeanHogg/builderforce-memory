@@ -22,6 +22,12 @@ export interface BridgeGenerateOptions {
     systemPrompt? : string;
     /** Model string, overriding the adapter's default. */
     model?        : string;
+    /**
+     * Vendor extras merged into an OpenAI-compatible request body (a gateway's
+     * routing `provider`, `response_format`, …). Bridges that do not speak that
+     * wire format ignore it.
+     */
+    extra?        : Record<string, unknown>;
 }
 
 export interface TransformerBridge {

@@ -13,6 +13,8 @@
  * Zero-dependency and engine-free: the `@seanhogg/builderforce-memory/wire` subpath.
  */
 
-export { parseSseDataLine, parseSseDataFrames, readSseDataFrames, isSseDoneLine } from './sse.js';
+export { sseDataPayload, parseSseDataLine, parseSseDataFrames, readSseDataPayloads, readSseDataFrames, isSseDoneLine } from './sse.js';
 export { finiteNumber, readUsageFields, AnthropicStreamUsage } from './usage.js';
 export type { UsageFields, AnthropicUsageTotals } from './usage.js';
+export { chatComplete, chatStream, ChatCompletionError } from './chatClient.js';
+export type { ChatClient, ChatMessage, ChatToolSchema, ChatRequest, ChatToolCall, ChatResult, ChatStreamEvent } from './chatClient.js';

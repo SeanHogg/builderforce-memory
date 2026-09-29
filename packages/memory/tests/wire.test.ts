@@ -3,7 +3,7 @@
  * SSE framing and usage reading — the wire rules the bridges and the gateway share.
  */
 
-import { parseSseDataLine, parseSseDataFrames, readSseDataFrames, readUsageFields, AnthropicStreamUsage, finiteNumber } from '../src/wire/index.js';
+import { parseSseDataLine, parseSseDataFrames, readSseDataFrames, readSseDataPayloads, sseDataPayload, isSseDoneLine, readUsageFields, AnthropicStreamUsage, finiteNumber } from '../src/wire/index.js';
 
 function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
     const enc = new TextEncoder();
@@ -47,6 +47,38 @@ describe('parseSseDataFrames / readSseDataFrames', () => {
         const out: unknown[] = [];
         for await (const f of readSseDataFrames(streamOf(['data: {"n":1}\ndata: [DONE]\ndata: {"n":2}\n']))) out.push(f);
         expect(out).toEqual([{ n: 1 }]);
+    });
+});
+
+describe('sseDataPayload / readSseDataPayloads', () => {
+    it('returns the trimmed payload text of a data line only', () => {
+        expect(sseDataPayload('  data:  hello ')).toBe('hello');
+        expect(sseDataPayload('data:')).toBe('');
+        expect(sseDataPayload('event: ping')).toBeUndefined();
+        expect(isSseDoneLine('data:[DONE]')).toBe(true);
+        expect(isSseDoneLine('data: {"a":1}')).toBe(false);
+    });
+
+    it('yields raw payload text across split chunks, keeps non-JSON payloads, and stops at [DONE]', async () => {
+        const out: string[] = [];
+        for await (const d of readSseDataPayloads(streamOf(['data: plain te', 'xt\nevent: x\ndata:{"n":1}\n', 'data: [DONE]\ndata: after\n']))) out.push(d);
+        expect(out).toEqual(['plain text', '{"n":1}']);
+    });
+
+    it('yields an unterminated tail line, and nothing for a missing body', async () => {
+        const out: string[] = [];
+        for await (const d of readSseDataPayloads(streamOf(['data: a\ndata: b']))) out.push(d);
+        expect(out).toEqual(['a', 'b']);
+        const none: string[] = [];
+        for await (const d of readSseDataPayloads(null)) none.push(d);
+        for await (const d of readSseDataPayloads(undefined)) none.push(d);
+        expect(none).toEqual([]);
+    });
+
+    it('releases the reader lock when iteration stops early', async () => {
+        const body = streamOf(['data: a\ndata: b\n']);
+        for await (const _ of readSseDataPayloads(body)) break;
+        expect(body.locked).toBe(false);
     });
 });
 

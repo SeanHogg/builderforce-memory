@@ -231,3 +231,29 @@ test('FetchBridge uses custom baseUrl', async () => {
     );
     fetchSpy.mockRestore();
 });
+
+// ── serverDefaults / extra / timeoutMs ──────────────────────────────────────
+
+test('serverDefaults sends no model or sampling defaults, only what a call states', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+    );
+    const bridge = new FetchBridge({ baseUrl: 'https://gw.example/v1', serverDefaults: true });
+    await bridge.generate('q', { temperature: 0.1 });
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ messages: [{ role: 'user', content: 'q' }], temperature: 0.1 });
+    fetchSpy.mockRestore();
+});
+
+test('bridge defaults stay on without serverDefaults, and extra merges into the body', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeJsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+    );
+    const bridge = new OpenAIBridge({ apiKey: 'sk-test', timeoutMs: 30_000 });
+    await bridge.generate('q', { extra: { provider: 'openai' } });
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ model: 'gpt-4o-mini', max_tokens: 512, temperature: 0.7, top_p: 0.9, provider: 'openai' });
+    expect(init.signal).toBeDefined();
+    fetchSpy.mockRestore();
+});

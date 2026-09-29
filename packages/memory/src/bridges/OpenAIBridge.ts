@@ -3,12 +3,25 @@
  *
  * Supports both non-streaming and streaming (SSE) completions.
  * Compatible with any OpenAI-compatible endpoint via the `baseUrl` option.
+ *
+ * The request, error mapping and stream reading are the `/wire` chat client's — the
+ * same one a host uses for tool-calling turns — so this class only supplies the
+ * bridge's defaults and maps usage onto {@link LlmUsage}.
  */
 
 import { SSMError } from '../errors/SSMError.js';
 import type { LlmUsage } from '../telemetry/types.js';
 import type { TransformerBridge, BridgeGenerateOptions, BridgeCallInfo } from './TransformerBridge.js';
-import { readSseDataFrames, readUsageFields } from '../wire/index.js';
+import {
+    chatComplete,
+    chatStream,
+    ChatCompletionError,
+    readUsageFields,
+    type ChatClient,
+    type ChatMessage,
+    type ChatRequest,
+    type ChatStreamEvent,
+} from '../wire/index.js';
 
 export interface OpenAIBridgeOptions {
     /** OpenAI API key (or compatible service key). */
@@ -21,6 +34,13 @@ export interface OpenAIBridgeOptions {
     systemPrompt? : string;
     /** Default max tokens. Default: 512. */
     maxTokens?    : number;
+    /**
+     * Send only what a call states — no model, max-tokens, temperature or top-p
+     * defaults — so a routing gateway picks them. Default false.
+     */
+    serverDefaults?: boolean;
+    /** Abort a request after this long. */
+    timeoutMs?    : number;
 }
 
 export class OpenAIBridge implements TransformerBridge {
@@ -28,18 +48,22 @@ export class OpenAIBridge implements TransformerBridge {
 
     readonly supportsStreaming = true as const;
 
-    private readonly _apiKey      : string;
-    private readonly _model       : string;
-    private readonly _baseUrl     : string;
+    private readonly _client      : ChatClient;
+    private readonly _model       : string | undefined;
     private readonly _systemPrompt: string;
-    private readonly _maxTokens   : number;
+    private readonly _maxTokens   : number | undefined;
+    private readonly _serverDefaults: boolean;
 
     constructor(opts: OpenAIBridgeOptions) {
-        this._apiKey       = opts.apiKey;
-        this._model        = opts.model        ?? 'gpt-4o-mini';
-        this._baseUrl      = (opts.baseUrl     ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+        this._serverDefaults = opts.serverDefaults ?? false;
+        this._client = {
+            apiKey: opts.apiKey,
+            baseUrl: opts.baseUrl ?? 'https://api.openai.com/v1',
+            ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+        };
+        this._model        = opts.model ?? (this._serverDefaults ? undefined : 'gpt-4o-mini');
         this._systemPrompt = opts.systemPrompt ?? '';
-        this._maxTokens    = opts.maxTokens    ?? 512;
+        this._maxTokens    = opts.maxTokens ?? (this._serverDefaults ? undefined : 512);
     }
 
     /** Provider-reported usage for the last call — see {@link BridgeCallInfo}. */
@@ -48,88 +72,70 @@ export class OpenAIBridge implements TransformerBridge {
     }
 
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
-        const body = this._buildBody(prompt, opts, false);
-        const res  = await this._fetch(body);
-
-        if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            throw new SSMError(
-                'BRIDGE_REQUEST_FAILED',
-                `OpenAI API returned ${res.status}: ${text}`,
-            );
+        let result;
+        try {
+            result = await chatComplete(this._client, this._request(prompt, opts));
+        } catch (err) {
+            throw this._requestError('OpenAI API', err);
         }
-
-        const json = await res.json() as Record<string, unknown>;
-        const content = (json as any).choices?.[0]?.message?.content;
-        if (typeof content !== 'string') {
+        if (!result.hasTextContent) {
             throw new SSMError('BRIDGE_RESPONSE_INVALID', 'Unexpected OpenAI response shape.');
         }
         this._lastCall = {
-            usage: readOpenAIUsage((json as any).usage, (json as any).model ?? opts.model ?? this._model),
+            usage: readOpenAIUsage(result.usage, result.model ?? opts.model ?? this._model ?? ''),
         };
-        return content;
+        return result.content;
     }
 
     async *stream(prompt: string, opts: BridgeGenerateOptions = {}): AsyncIterable<string> {
-        const body = this._buildBody(prompt, opts, true);
-        const res  = await this._fetch(body);
-
-        if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            throw new SSMError(
-                'BRIDGE_REQUEST_FAILED',
-                `OpenAI streaming API returned ${res.status}: ${text}`,
-            );
+        let events;
+        try {
+            events = chatStream(this._client, { ...this._request(prompt, opts), includeUsage: true });
+            // The request is sent on the first pull; surface a failed request as a bridge error.
+            const first = await events.next();
+            if (first.done) return;
+            yield* this._text(first.value);
+        } catch (err) {
+            throw this._requestError('OpenAI streaming API', err);
         }
-
-        if (!res.body) {
-            throw new SSMError('BRIDGE_RESPONSE_INVALID', 'OpenAI streaming response has no body.');
-        }
-
-        const model = opts.model ?? this._model;
-        let usage: LlmUsage | undefined;
-
-        for await (const chunk of readSseDataFrames(res.body)) {
-            // Usage is only emitted because `_buildBody` sets `stream_options.include_usage`;
-            // without it OpenAI streams no usage at all and cost would be a guess.
-            const reported = readOpenAIUsage((chunk as any).usage, (chunk as any).model ?? model);
-            if (reported) usage = reported;
-            const delta = (chunk as any).choices?.[0]?.delta?.content;
-            if (typeof delta === 'string' && delta.length > 0) yield delta;
-        }
-
-        this._lastCall = usage ? { usage } : {};
+        for await (const event of events) yield* this._text(event);
     }
 
-    private _buildBody(prompt: string, opts: BridgeGenerateOptions, stream: boolean): string {
+    /** Text deltas out; the closing event records usage (sent because of `includeUsage`). */
+    private *_text(event: ChatStreamEvent): Generator<string> {
+        if (event.type === 'text-delta') yield event.delta;
+        else if (event.type === 'done') {
+            const usage = readOpenAIUsage(event.result.usage, event.result.model ?? this._model ?? '');
+            this._lastCall = usage ? { usage } : {};
+        }
+    }
+
+    private _request(prompt: string, opts: BridgeGenerateOptions): ChatRequest {
         const sys = opts.systemPrompt ?? this._systemPrompt;
-        const messages: { role: string; content: string }[] = [];
+        const messages: ChatMessage[] = [];
         if (sys) messages.push({ role: 'system', content: sys });
         messages.push({ role: 'user', content: prompt });
-
-        return JSON.stringify({
-            model      : opts.model     ?? this._model,
+        const d = !this._serverDefaults;
+        const model = opts.model ?? this._model;
+        const maxTokens = opts.maxTokens ?? this._maxTokens;
+        const temperature = opts.temperature ?? (d ? 0.7 : undefined);
+        const topP = opts.topP ?? (d ? 0.9 : undefined);
+        return {
             messages,
-            max_tokens : opts.maxTokens ?? this._maxTokens,
-            temperature: opts.temperature ?? 0.7,
-            top_p      : opts.topP        ?? 0.9,
-            stream,
-            // Without this the streaming response carries no usage block, so
-            // cost-per-request on streamed calls would silently fall back to an
-            // estimate. Non-streaming requests reject the field, hence the guard.
-            ...(stream ? { stream_options: { include_usage: true } } : {}),
-        });
+            ...(model ? { model } : {}),
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
+            ...(temperature !== undefined ? { temperature } : {}),
+            ...(topP !== undefined ? { topP } : {}),
+            ...(opts.extra ? { extra: opts.extra } : {}),
+        };
     }
 
-    private _fetch(body: string): Promise<Response> {
-        return fetch(`${this._baseUrl}/chat/completions`, {
-            method : 'POST',
-            headers: {
-                'Content-Type' : 'application/json',
-                'Authorization': `Bearer ${this._apiKey}`,
-            },
-            body,
-        });
+    private _requestError(what: string, err: unknown): SSMError {
+        if (err instanceof SSMError) return err;
+        if (err instanceof ChatCompletionError) {
+            return new SSMError('BRIDGE_REQUEST_FAILED', `${what} returned ${err.status}: ${err.body}`);
+        }
+        return new SSMError('BRIDGE_REQUEST_FAILED', `${what} request failed: ${err instanceof Error ? err.message : String(err)}`, err);
     }
 }
 
