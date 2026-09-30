@@ -245,8 +245,7 @@ describe("appraiseTask (initial affect from task text — cloud V3 / VS Code)", 
 describe("buildLimbicBlock", () => {
   it("renders the header then one bullet per directive", () => {
     const block = buildLimbicBlock({ ...neutralLimbicState(), valence: -0.8 });
-    const [header, ...bullets] = block.split("
-");
+    const [header, ...bullets] = block.split("\n");
     expect(header).toBe(LIMBIC_BLOCK_HEADER);
     expect(bullets.length).toBeGreaterThan(0);
     expect(bullets.every((b) => b.startsWith("- "))).toBe(true);
