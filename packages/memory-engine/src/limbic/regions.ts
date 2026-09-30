@@ -8,10 +8,9 @@
  * and learns the dynamics of that, in WebGPU, from experience.
  *
  * This file is the single source of truth for the affective state vector that
- * every other limbic module (model, trainer, runtime service) indexes into.
- * Keep the dimension ids in sync with the runtime compiler in
- * `agent-runtime/src/builderforce/limbic.ts` — the two are coupled solely by
- * these string ids and the {@link LIMBIC_DIM} indices.
+ * every other limbic module (model, trainer, the heuristic regions in
+ * `affect.ts`, every host) indexes into — and for the personality → setpoint
+ * mapping. There is no second copy anywhere.
  *
  * Region → state mapping (mirrors the labelled diagram):
  *   • Amygdala      → salience / threat appraisal → drives valence + arousal
@@ -146,10 +145,9 @@ export function recordToState(rec: Partial<Record<LimbicDimName, number>>): Floa
  * personality vector — only the dimensions that map to a limbic drive. All
  * optional; an omitted trait is treated as neutral (50).
  *
- * Keep the mapping in {@link personalitySetpoint} in sync with the runtime
- * compiler `deriveLimbicSetpoints` in `@builderforce/agent-tools` so the on-prem
- * runtime, the cloud engine, and this WebGPU trainer settle on the SAME baseline
- * for the same personality. The two are coupled only by this mapping.
+ * The ONE mapping from personality to resting affect: the heuristic regions, the
+ * trainable model and every host settle on the SAME baseline for the same
+ * personality because they all read it from here.
  */
 export interface PersonalityTraits {
   openness?: number;
@@ -174,11 +172,11 @@ function infl(s: number | undefined): number {
  * Derive the personality-conditioned resting SETPOINT from a trait vector — the
  * homeostatic target the limbic dynamics relax toward and that the trainable
  * affect model rides on top of ("personality = setpoints, limbic = dynamics").
- * Returns a fresh clamped 8-dim state vector. A fully-neutral trait vector yields
- * {@link NEUTRAL_STATE}. Mirrors `deriveLimbicSetpoints` in `@builderforce/agent-tools`.
+ * Labelled and full-precision; a fully-neutral trait vector yields
+ * {@link NEUTRAL_STATE}. {@link personalitySetpoint} is its dense form.
  */
-export function personalitySetpoint(traits: PersonalityTraits | undefined): Float32Array {
-  const s = neutralState();
+export function limbicSetpoints(traits: PersonalityTraits | undefined): Record<LimbicDimName, number> {
+  const s = stateToRecord(NEUTRAL_STATE);
   if (!traits) return s;
   const open = infl(traits.openness);
   const emo = infl(traits.emotionality);
@@ -189,13 +187,21 @@ export function personalitySetpoint(traits: PersonalityTraits | undefined): Floa
   const grit = infl(traits.grit);
   const stim = infl(traits.stimulation);
 
-  s[LIMBIC_DIM.driveCuriosity] = clampDim(LIMBIC_DIM.driveCuriosity, 0.5 + 0.35 * open + 0.15 * stim);
-  s[LIMBIC_DIM.exploration] = clampDim(LIMBIC_DIM.exploration, 0.4 + 0.3 * open + 0.25 * risk + 0.15 * reg);
-  s[LIMBIC_DIM.driveCaution] = clampDim(LIMBIC_DIM.driveCaution, 0.5 + 0.3 * consc - 0.3 * risk - 0.2 * reg + 0.15 * emo);
-  s[LIMBIC_DIM.arousal] = clampDim(LIMBIC_DIM.arousal, 0.2 + 0.2 * emo + 0.1 * extra);
-  s[LIMBIC_DIM.driveSocial] = clampDim(LIMBIC_DIM.driveSocial, 0.5 + 0.35 * extra);
-  s[LIMBIC_DIM.driveEffort] = clampDim(LIMBIC_DIM.driveEffort, 0.8 + 0.15 * grit + 0.1 * consc);
-  s[LIMBIC_DIM.valence] = clampDim(LIMBIC_DIM.valence, 0.0 + 0.1 * reg - 0.1 * emo);
-  s[LIMBIC_DIM.attention] = clampDim(LIMBIC_DIM.attention, 0.7 + 0.1 * consc);
+  const set = (name: LimbicDimName, v: number): void => {
+    s[name] = clampDim(LIMBIC_DIM[name], v);
+  };
+  set("driveCuriosity", 0.5 + 0.35 * open + 0.15 * stim);
+  set("exploration", 0.4 + 0.3 * open + 0.25 * risk + 0.15 * reg);
+  set("driveCaution", 0.5 + 0.3 * consc - 0.3 * risk - 0.2 * reg + 0.15 * emo);
+  set("arousal", 0.2 + 0.2 * emo + 0.1 * extra);
+  set("driveSocial", 0.5 + 0.35 * extra);
+  set("driveEffort", 0.8 + 0.15 * grit + 0.1 * consc);
+  set("valence", 0.0 + 0.1 * reg - 0.1 * emo);
+  set("attention", 0.7 + 0.1 * consc);
   return s;
+}
+
+/** The dense (model-facing) form of {@link limbicSetpoints}: a fresh clamped 8-dim vector. */
+export function personalitySetpoint(traits: PersonalityTraits | undefined): Float32Array {
+  return recordToState(limbicSetpoints(traits));
 }

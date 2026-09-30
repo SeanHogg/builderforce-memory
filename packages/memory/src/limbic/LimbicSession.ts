@@ -62,8 +62,8 @@ export interface LimbicSessionOptions {
    */
   personalityTraits?: PersonalityTraits;
   /**
-   * An explicit 8-dim resting setpoint (e.g. one already derived by the runtime's
-   * `deriveLimbicSetpoints`). Overrides {@link personalityTraits}. Clamped to bounds.
+   * An explicit 8-dim resting setpoint (e.g. one already derived with the
+   * engine's `limbicSetpoints`). Overrides {@link personalityTraits}. Clamped to bounds.
    */
   personalitySetpoint?: ArrayLike<number>;
 }

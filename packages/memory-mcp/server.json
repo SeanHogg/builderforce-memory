@@ -8,14 +8,14 @@
     "source": "github",
     "subfolder": "packages/memory-mcp"
   },
-  "version": "2026.9.32",
+  "version": "2026.9.33",
   "websiteUrl": "https://builderforce.ai",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@seanhogg/builderforce-memory-mcp",
-      "version": "2026.9.32",
+      "version": "2026.9.33",
       "transport": {
         "type": "stdio"
       },
