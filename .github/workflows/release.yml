@@ -33,13 +33,17 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Test
-        run: pnpm test
-
-      # Generated distribution artifacts (Claude Code plugin, MCP Registry
-      # manifest) must match their sources before anything ships.
-      - name: Distribution artifacts are in sync
-        run: pnpm plugin:check && pnpm registry:check
+      # The suite, and the check that the generated distribution artifacts (Claude
+      # Code plugin, MCP Registry manifest) match their sources, run concurrently —
+      # both must pass before anything ships.
+      - name: Test and check distribution artifacts
+        run: |
+          pnpm test & tests=$!
+          pnpm plugin:check && pnpm registry:check & artifacts=$!
+          status=0
+          wait "$tests" || status=1
+          wait "$artifacts" || status=1
+          exit "$status"
 
       # Publishes @seanhogg/builderforce-memory-engine, @seanhogg/builderforce-memory, and @seanhogg/builderforce-memory-mcp.
       # pnpm resolves `workspace:^` peer/dep specifiers to real version ranges at pack time.

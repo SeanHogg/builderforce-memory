@@ -7,8 +7,29 @@ on:
     branches: [main]
 
 jobs:
+  # Independent gates on their own runners, side by side. They ran one after another,
+  # and the memory package's jest suite ran TWICE — once in `pnpm test`, again under
+  # `pnpm test:coverage`. Now it runs once, with coverage.
   build-test:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Test (engine, mcp)
+            run: pnpm --filter @seanhogg/builderforce-memory-engine --filter @seanhogg/builderforce-memory-mcp test
+          # Enforce the coverage ratchet (memory package). The floor is set in
+          # packages/memory/package.json#jest.coverageThreshold and only goes up.
+          - name: Test + coverage (memory)
+            run: pnpm test:coverage
+          # The Claude Code plugin under plugins/ is GENERATED from the same source
+          # as the installer, so an edit to the hook script or a version bump can't
+          # ship a plugin that disagrees with it. And the MCP Registry rejects a
+          # manifest whose package version isn't on npm, so server.json must move
+          # with package.json.
+          - name: Generated artifacts in sync
+            run: pnpm plugin:check && pnpm registry:check
     steps:
       - uses: actions/checkout@v7
 
@@ -24,24 +45,10 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Every leg needs it: the packages resolve each other through dist, and the
+      # plugin check imports the built memory-mcp.
       - name: Build (core then runtime)
         run: pnpm build
 
-      - name: Test
-        run: pnpm test
-
-      # Enforce the coverage ratchet (memory package). The floor is set in
-      # packages/memory/package.json#jest.coverageThreshold and only goes up.
-      - name: Coverage
-        run: pnpm test:coverage
-
-      # The Claude Code plugin under plugins/ is GENERATED from the same source
-      # as the installer. Fail if the committed copy is stale, so an edit to the
-      # hook script or a version bump can't ship a plugin that disagrees with it.
-      - name: Claude Code plugin is in sync
-        run: pnpm plugin:check
-
-      # The MCP Registry rejects a manifest whose package version isn't on npm,
-      # so server.json must move with package.json.
-      - name: MCP Registry manifest is in sync
-        run: pnpm registry:check
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
