@@ -1,5 +1,7 @@
 # BuilderForce Agent Memory
 
+> Part of [Builderforce open source](https://builderforce.ai/open-source): the MIT projects Builderforce.ai is built on.
+
 A framework for giving **any AI agent** persistent, browser-trainable SSM memory. It is provider-neutral — swappable LLM bridges (Anthropic / OpenAI / Fetch), an inference router, online distillation, and a persistent memory store — so any agent or app can depend on it, not just BuilderForce.
 
 **[BuilderForce.ai](https://builderforce.ai) is the flagship deployment**, not the boundary: it trains a custom SSM in the browser, exports a model, and pushes it to an agent runtime where it runs as **Evermind — the model itself**, not just memory bolted onto someone else's LLM. Evermind is the whole brain: its own shared-expert generator (the *cortex* that does reasoning and language), a write-through knowledge memory (the *hippocampus*), and a trainable affective layer (the *limbic* system). A request can be served by Evermind directly — `evermind/<ref>` traffic is generated on-device, not forwarded to Claude/GPT — and external frontier models stay an *optional* routing choice rather than a hard dependency. The same framework is reusable by other agents off the shelf.
