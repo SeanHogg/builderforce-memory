@@ -125,7 +125,33 @@ export interface LocalBackendOptions {
      * see {@link DiskPersistedBackend} for the loop guard.
      */
     persistFile?: string;
+    /**
+     * Hard cap on stored facts. Each write evicts the lowest-value entries
+     * (expired first, then lowest importance, then oldest).
+     *
+     * This was left unset by the local backend, which passed only `dbName` to
+     * `MemoryStore` — and `maxEntries` is undefined-by-default there, so the store
+     * grew without bound: every `memory_remember` added a fact that was never
+     * evicted, and the mirror file grew forever. Unbounded is fine for a
+     * short-lived test, not for the long-lived MCP server this is the default
+     * backend for. Defaults to {@link DEFAULT_MAX_ENTRIES} rather than requiring
+     * every caller to remember to pass one.
+     */
+    maxEntries?: number;
+    /**
+     * Set false to keep recall lexical even when a model is configured. The local
+     * store otherwise wires in {@link createRecallEmbedder}, which only resolves
+     * when `BUILDERFORCE_MEMORY_MODEL` is set, so this is mostly for tests.
+     */
+    semanticRecall?: false;
 }
+
+/**
+ * Default cap on locally-stored facts. Large enough that a normal workspace never
+ * notices eviction, small enough that the IndexedDB shim, the embedding cache and
+ * the mirrored JSON file stay bounded on a host with no eviction policy of its own.
+ */
+export const DEFAULT_MAX_ENTRIES = 10_000;
 
 /** The on-disk snapshot shape — a flat array of durable entries. */
 interface SnapshotEntry {
@@ -278,8 +304,24 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
         // Browser or a host that provides global indexedDB — MemoryStore handles it.
     }
 
-    const store = new MemoryStore({ idbFactory, dbName: opts.dbName });
-    const backend = new MemoryStoreBackend(store, opts.runtime);
+    const maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES;
+
+    // A local store with no embedder degrades to lexical-only recall, which is why
+    // recall stopped finding paraphrases on a headless host. Wire the CPU Evermind
+    // embedder in when the caller supplied no runtime and a model is configured.
+    // `createRecallEmbedder` returns null when no model is set, or when the model
+    // fails to stand up — both are correct degrades, not failures to boot.
+    let runtime = opts.runtime;
+    if (runtime === undefined && opts.semanticRecall !== false) {
+        const embed = await import("../embedding/index.js");
+        runtime =
+            (await embed.createRecallEmbedder({
+                memoryFile: opts.persistFile ?? opts.dbName ?? "",
+            })) ?? undefined;
+    }
+
+    const store = new MemoryStore({ idbFactory, dbName: opts.dbName, maxEntries });
+    const backend = new MemoryStoreBackend(store, runtime);
 
     if (!opts.persistFile) return backend;
 
