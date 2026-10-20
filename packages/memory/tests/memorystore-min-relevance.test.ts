@@ -1,11 +1,10 @@
 /**
- * tests/memorystore-min-relevance.test.ts — recall relevance floor.
+ * tests/memorystore-min-relevance.test.ts — recall relevance floor (opt-in).
  *
- * Recall used to always return something: a query sharing no token with any
- * fact scored 0 on the Jaccard fallback and still came back as the "best"
- * match, so an unrelated fact was surfaced as if it were relevant. The store
- * now drops anything below `minRelevance` (default 0.05) on both the lexical
- * and the hybrid path, so a weak match returns nothing rather than noise.
+ * Recall always returns its best-ranked hits, even a zero-overlap one; that is
+ * the long-standing contract and stays the default (`minRelevance` 0). A store
+ * that would rather return nothing than noise opts in with a floor, which then
+ * applies on both the lexical and the hybrid path.
  */
 
 import 'fake-indexeddb/auto';
@@ -16,20 +15,28 @@ const freshStore = (opts: Record<string, unknown> = {}) =>
     new MemoryStore({ dbName: `minrel-${_db++}-${Date.now()}`, ...opts });
 
 describe('recall relevance floor', () => {
-    it('returns nothing for a query sharing no token with any fact', async () => {
+    it('is off by default: recall still returns its least-bad hit', async () => {
         const store = freshStore();
         await store.remember('k1', 'the quarterly revenue forecast');
         await store.remember('k2', 'deployment runbook for the api gateway');
 
-        // No embedding runtime → Jaccard path. Zero overlap scores 0, below the
-        // default 0.05 floor, so the old "always return the least-bad fact"
-        // behaviour is gone.
+        expect(await store.recallSimilar('xylophone zebra quokka', 5)).toHaveLength(2);
+        // Hybrid: a lexical match keeps its (small, RRF-scale) fused score unfiltered.
+        expect((await store.recallRanked('quarterly revenue', 5)).hits.map((h) => h.entry.key)).toEqual(['k1']);
+    });
+
+    it('opted in, returns nothing for a query sharing no token with any fact', async () => {
+        const store = freshStore({ minRelevance: 0.05 });
+        await store.remember('k1', 'the quarterly revenue forecast');
+        await store.remember('k2', 'deployment runbook for the api gateway');
+
+        // No embedding runtime → Jaccard path. Zero overlap scores 0, below the floor.
         expect(await store.recallSimilar('xylophone zebra quokka', 5)).toEqual([]);
         expect((await store.recallRanked('xylophone zebra quokka', 5)).hits).toEqual([]);
     });
 
-    it('still returns a genuine overlap above the floor', async () => {
-        const store = freshStore();
+    it('opted in, still returns a genuine overlap above the floor', async () => {
+        const store = freshStore({ minRelevance: 0.05 });
         await store.remember('k1', 'the quarterly revenue forecast');
         await store.remember('k2', 'deployment runbook for the api gateway');
 
@@ -45,7 +52,6 @@ describe('recall relevance floor', () => {
 
         const open = freshStore({ minRelevance: 0 });
         await open.remember('k1', 'alpha beta gamma');
-        // Floor disabled: even a zero-overlap query returns its least-bad hit.
         expect(await open.recallSimilar('xylophone zebra quokka', 5)).toHaveLength(1);
     });
 });

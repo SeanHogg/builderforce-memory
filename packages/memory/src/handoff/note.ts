@@ -1,5 +1,5 @@
 /**
- * The ONE assistant note that stands in for the dropped middle of a handed-off
+ * The ONE note that stands in for the dropped middle of a handed-off
  * transcript: an optional one-line hand-off note, then the first body source that
  * succeeds — the `summarize` result, else the `recall` memory block for the latest
  * directive, else an elision marker. A failing, timing-out or empty source falls through

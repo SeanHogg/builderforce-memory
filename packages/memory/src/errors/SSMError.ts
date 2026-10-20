@@ -11,6 +11,7 @@ export type SSMErrorCode =
     | 'BRIDGE_REQUEST_FAILED'    // fetch to transformer API returned non-OK
     | 'BRIDGE_RESPONSE_INVALID'  // unexpected shape in transformer API response
     | 'MEMORY_UNAVAILABLE'       // IndexedDB unavailable or operation called without a MemoryStore
+    | 'MEMORY_CONFLICT'          // compare-and-set memory write found a newer revision
     | 'DISTILL_FAILED'           // distillation pipeline threw an unexpected error
     | 'UNKNOWN';                 // unexpected error (original in .cause)
 

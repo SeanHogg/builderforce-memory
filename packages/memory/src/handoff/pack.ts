@@ -4,13 +4,22 @@
  * Shape of the result, mirroring Builderforce's `assembleCompacted`
  * (brain-embedded/src/workingTranscript.ts):
  *
- *   system message(s) · ONE assistant note for the dropped middle · the latest user
+ *   leading system message(s) · ONE note for the dropped middle · the latest user
  *   directive re-injected verbatim (only when it fell in the middle) · the verbatim tail
  *
+ * Only the LEADING run of system messages is the fixed prefix. A system message later in
+ * the conversation stays where it was: in the tail when the tail reaches it, else in the
+ * dropped middle — never hoisted to the front, where it would read as if it governed the
+ * whole conversation.
+ *
+ * The note's role keeps turns alternating: it is an `assistant` note when a user turn (the
+ * re-injected directive, or a tail that starts with one) follows it, and a `user` note
+ * when an assistant turn follows or nothing does — never two assistant turns in a row.
+ *
  * The tail is the longest run of whole units (see `segments.ts`) from the end that fits
- * what is left after the system message(s), the directive and room for an elision marker.
- * Whatever room the tail leaves is the note's: summary, else recall, else the marker.
- * The result never exceeds the budget unless the system message(s) + directive alone do.
+ * what is left after the prefix, the directive and room for an elision marker. Whatever
+ * room the tail leaves is the note's: summary, else recall, else the marker. The result
+ * never exceeds the budget unless the prefix + directive alone do.
  */
 
 import { defaultEstimateTokens, handoffBudget, messageTokens, tokensOf } from './budget.js';
@@ -22,6 +31,18 @@ interface Tail {
   /** Index in the non-system transcript where the verbatim tail begins. */
   start: number;
   tokens: number;
+}
+
+/** Length of the leading run of `system` messages. */
+function leadingSystemCount(all: readonly HandoffMessage[]): number {
+  let n = 0;
+  while (n < all.length && all[n]!.role === 'system') n += 1;
+  return n;
+}
+
+/** The note's role: `user` before an assistant turn (or at the end), else `assistant`. */
+function noteRole(next: HandoffMessage | undefined): 'user' | 'assistant' {
+  return next === undefined || next.role === 'assistant' ? 'user' : 'assistant';
 }
 
 /** Index of the last `user` message, or -1. */
@@ -85,8 +106,9 @@ export async function packHandoff(input: HandoffPackInput): Promise<HandoffPack>
   // Under budget: hand the transcript over untouched.
   if (tokensOf(all, estimate) <= budget) return result(all.slice(), 0, estimate);
 
-  const system = all.filter((m) => m.role === 'system');
-  const convo = all.filter((m) => m.role !== 'system');
+  const prefixLen = leadingSystemCount(all);
+  const system = all.slice(0, prefixLen);
+  const convo = all.slice(prefixLen);
   const systemTokens = tokensOf(system, estimate);
   const directiveIdx = latestDirectiveIndex(convo);
   const directive = directiveIdx >= 0 ? convo[directiveIdx] : undefined;
@@ -122,10 +144,11 @@ export async function packHandoff(input: HandoffPackInput): Promise<HandoffPack>
       })
     : null;
 
+  const after: HandoffMessage[] = reinject && directive ? [directive] : [];
+  after.push(...convo.slice(tail.start));
   const messages: HandoffMessage[] = [...system];
-  if (note) messages.push({ role: 'assistant', content: note.text });
-  if (reinject && directive) messages.push(directive);
-  messages.push(...convo.slice(tail.start));
+  if (note) messages.push({ role: noteRole(after[0]), content: note.text });
+  messages.push(...after);
   return result(messages, droppedMsgs.length, estimate, {
     summarized: note?.summarized ?? false,
     recalled: note?.recalled ?? false,

@@ -19,8 +19,26 @@
  *   - Sync-aware retention (M06): facts with `pendingSync` are never evicted by
  *     caps and are never dropped by import; TTL expiry is an intentional
  *     deletion and writes a tombstone when sync is enabled.
+ *
+ * The shared write rules live in `factMutations.ts`, retention in
+ * `factRetention.ts`, import in `factImport.ts`, sync acknowledgement in
+ * `syncJournal.ts`.
  */
 
+import { factsInScope, indexedFacts } from './factQueries.js';
+import {
+    WRITE_STORES,
+    bumpOp,
+    clearTombstone,
+    deleteWithTombstone,
+    journal,
+    readCounters,
+    writeCounters,
+    type MutationContext,
+} from './factMutations.js';
+import { importInto, type ImportResult } from './factImport.js';
+import * as retention from './factRetention.js';
+import * as syncJournal from './syncJournal.js';
 import {
     FACT_KEY_INDEX,
     FACT_TAG_INDEX,
@@ -32,18 +50,16 @@ import {
     type FactStoragePort,
     type JournalEntry,
     type MemoryScope,
-    type MetaCounters,
-    type StorageTransaction,
     type StoredFactRecord,
     type TombstoneRecord,
 } from './types.js';
 
 export interface ScopedFactRepositoryOptions {
     /**
-     * When true, mutations are journaled with `pendingSync`/`synced=false`
-     * until {@link markSynced} acknowledges them, deletes write tombstones, and
-     * cap eviction skips unsynced facts. When false (default — no sync target
-     * configured) retention behaves exactly like the legacy store.
+     * When true, mutations are journaled (unsynced) until {@link markSynced}
+     * acknowledges and prunes them, deletes write tombstones, and cap eviction
+     * skips unsynced facts. When false (default — no sync target configured)
+     * nothing is journaled and retention behaves exactly like the legacy store.
      */
     syncEnabled?: boolean;
     /** Identity of this repository context for opIds and change notes. */
@@ -78,24 +94,19 @@ export interface WriteOutcome {
     resurrected: boolean;
 }
 
-export interface ImportResult {
-    written: number;
-    skipped: number;
-}
-
-const COUNTERS_ID = 'counters';
+export type { ImportResult };
 
 export class ScopedFactRepository {
     private readonly _storage: FactStoragePort;
-    private readonly _syncEnabled: boolean;
-    private readonly _contextId: string;
-    private readonly _now: () => number;
+    private readonly _ctx: MutationContext;
 
     constructor(storage: FactStoragePort, opts: ScopedFactRepositoryOptions = {}) {
         this._storage = storage;
-        this._syncEnabled = opts.syncEnabled ?? false;
-        this._contextId = opts.contextId ?? 'repo';
-        this._now = opts.now ?? (() => Date.now());
+        this._ctx = {
+            syncEnabled: opts.syncEnabled ?? false,
+            contextId  : opts.contextId ?? 'repo',
+            now        : opts.now ?? (() => Date.now()),
+        };
     }
 
     get storage(): FactStoragePort {
@@ -103,21 +114,18 @@ export class ScopedFactRepository {
     }
 
     get contextId(): string {
-        return this._contextId;
+        return this._ctx.contextId;
     }
 
     get syncEnabled(): boolean {
-        return this._syncEnabled;
+        return this._ctx.syncEnabled;
     }
 
     // ── Reads ─────────────────────────────────────────────────────────────────
 
     /** Current durable store generation (0 on a fresh store). */
     async revision(): Promise<number> {
-        return this._storage.transact(['meta'], 'readonly', async (tx) => {
-            const counters = await this._counters(tx);
-            return counters.revision;
-        });
+        return this._storage.transact(['meta'], 'readonly', async (tx) => (await readCounters(tx)).revision);
     }
 
     /**
@@ -145,8 +153,7 @@ export class ScopedFactRepository {
             if (indexed !== undefined) {
                 return indexed.filter((r) => scopePartitionKey(r.scope) === partition);
             }
-            const all = await tx.getAll<StoredFactRecord>('facts');
-            return all.filter((r) => scopePartitionKey(r.scope) === partition && (r.tags?.includes(tag) ?? false));
+            return (await factsInScope(tx, scope)).filter((r) => r.tags?.includes(tag) ?? false);
         });
     }
 
@@ -155,11 +162,7 @@ export class ScopedFactRepository {
      * set. Expired records are included; TTL filtering is the caller's policy.
      */
     async getAll(scope: MemoryScope | undefined): Promise<StoredFactRecord[]> {
-        const partition = scopePartitionKey(scope);
-        return this._storage.transact(['facts'], 'readonly', async (tx) => {
-            const all = await tx.getAll<StoredFactRecord>('facts');
-            return all.filter((r) => scopePartitionKey(r.scope) === partition);
-        });
+        return this._storage.transact(['facts'], 'readonly', (tx) => factsInScope(tx, scope));
     }
 
     /** Tombstones, optionally narrowed to one scope partition. */
@@ -174,10 +177,7 @@ export class ScopedFactRepository {
 
     /** Journal entries not yet acknowledged by sync — the pending operation set. */
     async pendingOps(): Promise<JournalEntry[]> {
-        return this._storage.transact(['journal'], 'readonly', async (tx) => {
-            const all = await tx.getAll<JournalEntry>('journal');
-            return all.filter((j) => !j.synced);
-        });
+        return syncJournal.pendingOps(this._storage);
     }
 
     // ── Writes (unit of work: fact + journal + counters in one transaction) ───
@@ -190,67 +190,52 @@ export class ScopedFactRepository {
      */
     async remember(scope: MemoryScope | undefined, key: string, input: RememberRecordInput): Promise<WriteOutcome> {
         const id = scopedRecordId(scope, key);
-        const outcome = await this._storage.transact(
-            ['facts', 'tombstones', 'journal', 'meta'],
-            'readwrite',
-            async (tx): Promise<WriteOutcome> => {
-                const counters = await this._counters(tx);
-                const existing = await tx.get<StoredFactRecord>('facts', id);
-
-                // ── Compare-and-set gate ────────────────────────────────────
-                if (input.expectedRevision !== undefined) {
-                    const current = existing?.revision ?? null;
-                    if (current !== input.expectedRevision) {
-                        throw new MemoryStorageError(
-                            'STORAGE_CONFLICT',
-                            `Conflict writing "${key}": expected revision ${String(input.expectedRevision)}, found ${String(current)}. Re-read and reconcile instead of overwriting.`,
-                        );
-                    }
+        const outcome = await this._storage.transact(WRITE_STORES, 'readwrite', async (tx): Promise<WriteOutcome> => {
+            const counters = await readCounters(tx);
+            const existing = await tx.get<StoredFactRecord>('facts', id);
+            if (input.expectedRevision !== undefined) {
+                const current = existing?.revision ?? null;
+                if (current !== input.expectedRevision) {
+                    throw new MemoryStorageError(
+                        'STORAGE_CONFLICT',
+                        `Conflict writing "${key}": expected revision ${String(input.expectedRevision)}, found ${String(current)}. Re-read and reconcile instead of overwriting.`,
+                    );
                 }
-
-                const revision = counters.revision + 1;
-                const opSeq = counters.opSeq + 1;
-                const opId = input.opId ?? `${this._contextId}:${opSeq}`;
-                const seq = Math.max(counters.seq + 1, input.seq ?? 0);
-
-                const record: StoredFactRecord = {
-                    id,
-                    key,
-                    scope      : { ...(scope ?? {}) },
-                    content    : input.content,
-                    timestamp  : input.timestamp ?? this._now(),
-                    seq,
-                    revision,
-                    opId,
-                    ttlMs      : input.ttlMs,
-                    type       : input.type,
-                    tags       : input.tags,
-                    importance : input.importance,
-                    provenance : input.provenance,
-                    pendingSync: this._syncEnabled,
-                };
-                await tx.put('facts', record);
-
-                // A write resurrects the key: clear any tombstone in the same tx.
-                const tombstone = await tx.get<TombstoneRecord>('tombstones', id);
-                if (tombstone) await tx.delete('tombstones', id);
-
-                await tx.put('journal', {
-                    opId,
-                    kind         : 'remember',
-                    id,
-                    key,
-                    scope        : record.scope,
-                    revision,
-                    baseRevision : input.expectedRevision ?? undefined,
-                    timestamp    : record.timestamp,
-                    synced       : !this._syncEnabled,
-                } satisfies JournalEntry);
-
-                await tx.put('meta', { key: COUNTERS_ID, seq, revision, opSeq } satisfies MetaCounters);
-                return { record, resurrected: !!tombstone };
-            },
-        );
+            }
+            const bumped = bumpOp(counters, this._ctx);
+            const opId = input.opId ?? bumped.opId;
+            const next = { ...bumped.counters, seq: Math.max(counters.seq + 1, input.seq ?? 0) };
+            const record: StoredFactRecord = {
+                id,
+                key,
+                scope      : { ...(scope ?? {}) },
+                content    : input.content,
+                timestamp  : input.timestamp ?? this._ctx.now(),
+                seq        : next.seq,
+                revision   : next.revision,
+                opId,
+                ttlMs      : input.ttlMs,
+                type       : input.type,
+                tags       : input.tags,
+                importance : input.importance,
+                provenance : input.provenance,
+                pendingSync: this._ctx.syncEnabled,
+            };
+            await tx.put('facts', record);
+            const resurrected = await clearTombstone(tx, id);
+            await journal(tx, this._ctx, {
+                opId,
+                kind         : 'remember',
+                id,
+                key,
+                scope        : record.scope,
+                revision     : next.revision,
+                baseRevision : input.expectedRevision ?? undefined,
+                timestamp    : record.timestamp,
+            });
+            await writeCounters(tx, next);
+            return { record, resurrected };
+        });
         this._publish(scope, outcome.record.revision);
         return outcome;
     }
@@ -259,105 +244,37 @@ export class ScopedFactRepository {
      * Deletes a fact. With sync enabled the delete is a durable tombstone +
      * journal entry committed in the same transaction, so the deletion
      * propagates and a stale replica cannot resurrect the fact (M04). Without
-     * sync this is the legacy hard delete.
+     * sync this is the legacy hard delete. Deleting an absent key is a no-op.
      */
     async forget(scope: MemoryScope | undefined, key: string, opts: { expectedRevision?: number } = {}): Promise<boolean> {
         const id = scopedRecordId(scope, key);
-        let revision = 0;
-        const deleted = await this._storage.transact(
-            ['facts', 'tombstones', 'journal', 'meta'],
-            'readwrite',
-            async (tx): Promise<boolean> => {
-                const counters = await this._counters(tx);
-                const existing = await tx.get<StoredFactRecord>('facts', id);
-                if (!existing) {
-                    const hadTombstone = !!(await tx.get<TombstoneRecord>('tombstones', id));
-                    return hadTombstone ? false : false; // idempotent no-op
-                }
-                if (opts.expectedRevision !== undefined && existing.revision !== opts.expectedRevision) {
-                    throw new MemoryStorageError(
-                        'STORAGE_CONFLICT',
-                        `Conflict deleting "${key}": expected revision ${opts.expectedRevision}, found ${existing.revision}.`,
-                    );
-                }
-
-                revision = counters.revision + 1;
-                const opSeq = counters.opSeq + 1;
-                const opId = `${this._contextId}:${opSeq}`;
-                await tx.delete('facts', id);
-                if (this._syncEnabled) {
-                    await tx.put('tombstones', {
-                        id,
-                        key,
-                        scope      : existing.scope,
-                        deletedAt  : this._now(),
-                        revision,
-                        opId,
-                        pendingSync: true,
-                    } satisfies TombstoneRecord);
-                }
-                await tx.put('journal', {
-                    opId,
-                    kind         : 'forget',
-                    id,
-                    key,
-                    scope        : existing.scope,
-                    revision,
-                    baseRevision : opts.expectedRevision,
-                    timestamp    : this._now(),
-                    synced       : !this._syncEnabled,
-                } satisfies JournalEntry);
-                await tx.put('meta', { key: COUNTERS_ID, seq: counters.seq, revision, opSeq } satisfies MetaCounters);
-                return true;
-            },
-        );
-        if (deleted) this._publish(scope, revision);
-        return deleted;
+        const revision = await this._storage.transact(WRITE_STORES, 'readwrite', async (tx): Promise<number> => {
+            const existing = await tx.get<StoredFactRecord>('facts', id);
+            if (!existing) return 0;
+            if (opts.expectedRevision !== undefined && existing.revision !== opts.expectedRevision) {
+                throw new MemoryStorageError(
+                    'STORAGE_CONFLICT',
+                    `Conflict deleting "${key}": expected revision ${opts.expectedRevision}, found ${existing.revision}.`,
+                );
+            }
+            const next = await deleteWithTombstone(tx, this._ctx, existing, await readCounters(tx), opts.expectedRevision);
+            await writeCounters(tx, next);
+            return next.revision;
+        });
+        if (revision > 0) this._publish(scope, revision);
+        return revision > 0;
     }
 
     /** Removes every fact in the scope. Tombstones each deletion when sync is enabled. */
     async clear(scope: MemoryScope | undefined): Promise<number> {
-        const partition = scopePartitionKey(scope);
-        let revision = 0;
-        const removed = await this._storage.transact(
-            ['facts', 'tombstones', 'journal', 'meta'],
-            'readwrite',
-            async (tx): Promise<number> => {
-                const all = await tx.getAll<StoredFactRecord>('facts');
-                const mine = all.filter((r) => scopePartitionKey(r.scope) === partition);
-                if (mine.length === 0) return 0;
-                let counters = await this._counters(tx);
-                for (const record of mine) {
-                    counters = { ...counters, revision: counters.revision + 1, opSeq: counters.opSeq + 1 };
-                    const opId = `${this._contextId}:${counters.opSeq}`;
-                    await tx.delete('facts', record.id);
-                    if (this._syncEnabled) {
-                        await tx.put('tombstones', {
-                            id         : record.id,
-                            key        : record.key,
-                            scope      : record.scope,
-                            deletedAt  : this._now(),
-                            revision   : counters.revision,
-                            opId,
-                            pendingSync: true,
-                        } satisfies TombstoneRecord);
-                    }
-                    await tx.put('journal', {
-                        opId,
-                        kind     : 'forget',
-                        id       : record.id,
-                        key      : record.key,
-                        scope    : record.scope,
-                        revision : counters.revision,
-                        timestamp: this._now(),
-                        synced   : !this._syncEnabled,
-                    } satisfies JournalEntry);
-                }
-                revision = counters.revision;
-                await tx.put('meta', { key: COUNTERS_ID, ...counters } satisfies MetaCounters);
-                return mine.length;
-            },
-        );
+        const { removed, revision } = await this._storage.transact(WRITE_STORES, 'readwrite', async (tx) => {
+            const mine = await factsInScope(tx, scope);
+            if (mine.length === 0) return { removed: 0, revision: 0 };
+            let counters = await readCounters(tx);
+            for (const record of mine) counters = await deleteWithTombstone(tx, this._ctx, record, counters);
+            await writeCounters(tx, counters);
+            return { removed: mine.length, revision: counters.revision };
+        });
         if (removed > 0) this._publish(scope, revision);
         return removed;
     }
@@ -378,67 +295,9 @@ export class ScopedFactRepository {
         strategy: 'merge' | 'overwrite',
         importedFrom?: string,
     ): Promise<ImportResult> {
-        let revision = 0;
-        const result = await this._storage.transact(
-            ['facts', 'tombstones', 'journal', 'meta'],
-            'readwrite',
-            async (tx): Promise<ImportResult> => {
-                let counters = await this._counters(tx);
-                let written = 0;
-                let skipped = 0;
-                for (const incoming of records) {
-                    const id = scopedRecordId(scope, incoming.key);
-                    const existing = await tx.get<StoredFactRecord>('facts', id);
-                    if (strategy === 'merge' && existing && existing.timestamp >= incoming.timestamp) {
-                        skipped++;
-                        continue;
-                    }
-                    counters = {
-                        ...counters,
-                        revision : counters.revision + 1,
-                        opSeq    : counters.opSeq + 1,
-                        seq      : Math.max(counters.seq + 1, incoming.seq ?? 0),
-                    };
-                    const opId = `${this._contextId}:${counters.opSeq}`;
-                    const record: StoredFactRecord = {
-                        ...incoming,
-                        id,
-                        key         : incoming.key,
-                        scope       : { ...(scope ?? {}) },
-                        seq         : incoming.seq ?? counters.seq,
-                        revision    : counters.revision,
-                        opId,
-                        provenance  : {
-                            ...incoming.provenance,
-                            ...(importedFrom ? { importedFrom } : {}),
-                            originalTimestamp: incoming.provenance?.originalTimestamp ?? incoming.timestamp,
-                        },
-                        pendingSync : this._syncEnabled,
-                    };
-                    await tx.put('facts', record);
-                    const tombstone = await tx.get<TombstoneRecord>('tombstones', id);
-                    if (tombstone) await tx.delete('tombstones', id);
-                    await tx.put('journal', {
-                        opId,
-                        kind     : 'remember',
-                        id,
-                        key      : incoming.key,
-                        scope    : record.scope,
-                        revision : counters.revision,
-                        timestamp: record.timestamp,
-                        synced   : !this._syncEnabled,
-                    } satisfies JournalEntry);
-                    written++;
-                }
-                if (written > 0) {
-                    revision = counters.revision;
-                    await tx.put('meta', { key: COUNTERS_ID, ...counters } satisfies MetaCounters);
-                }
-                return { written, skipped };
-            },
-        );
-        if (result.written > 0) this._publish(scope, revision);
-        return result;
+        const { written, skipped, revision } = await importInto(this._storage, this._ctx, scope, records, strategy, importedFrom);
+        if (written > 0) this._publish(scope, revision);
+        return { written, skipped };
     }
 
     /** Exports every record in the scope, with scope/revision/provenance intact (M03). */
@@ -449,33 +308,12 @@ export class ScopedFactRepository {
     // ── Sync acknowledgement (M04/M06) ────────────────────────────────────────
 
     /**
-     * Acknowledges synced operations: journal entries flip to synced, and the
+     * Acknowledges synced operations: their journal entries are pruned and the
      * facts/tombstones they produced clear `pendingSync`, making cap eviction
      * eligible again. Only after this may retention touch those records.
      */
     async markSynced(opIds: string[]): Promise<void> {
-        if (opIds.length === 0) return;
-        const acked = new Set(opIds);
-        await this._storage.transact(['journal', 'facts', 'tombstones'], 'readwrite', async (tx) => {
-            const journal = await tx.getAll<JournalEntry>('journal');
-            for (const entry of journal) {
-                if (acked.has(entry.opId) && !entry.synced) {
-                    await tx.put('journal', { ...entry, synced: true });
-                }
-            }
-            const facts = await tx.getAll<StoredFactRecord>('facts');
-            for (const record of facts) {
-                if (acked.has(record.opId) && record.pendingSync) {
-                    await tx.put('facts', { ...record, pendingSync: false });
-                }
-            }
-            const tombstones = await tx.getAll<TombstoneRecord>('tombstones');
-            for (const tomb of tombstones) {
-                if (acked.has(tomb.opId) && tomb.pendingSync) {
-                    await tx.put('tombstones', { ...tomb, pendingSync: false });
-                }
-            }
-        });
+        await syncJournal.markSynced(this._storage, opIds);
     }
 
     // ── Retention (M06) ───────────────────────────────────────────────────────
@@ -492,27 +330,7 @@ export class ScopedFactRepository {
         maxEntries: number,
         isExpired: (record: StoredFactRecord) => boolean,
     ): Promise<string[]> {
-        const partition = scopePartitionKey(scope);
-        return this._storage.transact(['facts'], 'readwrite', async (tx) => {
-            const all = await tx.getAll<StoredFactRecord>('facts');
-            const mine = all.filter((r) => scopePartitionKey(r.scope) === partition);
-            if (mine.length <= maxEntries) return [];
-
-            const rank = (e: StoredFactRecord): [number, number, number, number] =>
-                [isExpired(e) ? 0 : 1, e.importance ?? 0.5, e.timestamp, e.seq];
-            const evictable = mine
-                .filter((r) => !r.pendingSync)
-                .sort((a, b) => {
-                    const ra = rank(a), rb = rank(b);
-                    for (let i = 0; i < ra.length; i++) {
-                        if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
-                    }
-                    return 0;
-                });
-            const victims = evictable.slice(0, Math.max(0, mine.length - maxEntries));
-            for (const v of victims) await tx.delete('facts', v.id);
-            return victims.map((v) => v.key);
-        });
+        return retention.evictForCap(this._storage, scope, maxEntries, isExpired);
     }
 
     /**
@@ -522,47 +340,7 @@ export class ScopedFactRepository {
      * number of records purged.
      */
     async purgeExpired(scope: MemoryScope | undefined, isExpired: (record: StoredFactRecord) => boolean): Promise<number> {
-        const partition = scopePartitionKey(scope);
-        let revision = 0;
-        const purged = await this._storage.transact(
-            ['facts', 'tombstones', 'journal', 'meta'],
-            'readwrite',
-            async (tx): Promise<number> => {
-                const all = await tx.getAll<StoredFactRecord>('facts');
-                const expired = all.filter((r) => scopePartitionKey(r.scope) === partition && isExpired(r));
-                if (expired.length === 0) return 0;
-                let counters = await this._counters(tx);
-                for (const record of expired) {
-                    counters = { ...counters, revision: counters.revision + 1, opSeq: counters.opSeq + 1 };
-                    const opId = `${this._contextId}:${counters.opSeq}`;
-                    await tx.delete('facts', record.id);
-                    if (this._syncEnabled) {
-                        await tx.put('tombstones', {
-                            id         : record.id,
-                            key        : record.key,
-                            scope      : record.scope,
-                            deletedAt  : this._now(),
-                            revision   : counters.revision,
-                            opId,
-                            pendingSync: true,
-                        } satisfies TombstoneRecord);
-                    }
-                    await tx.put('journal', {
-                        opId,
-                        kind     : 'forget',
-                        id       : record.id,
-                        key      : record.key,
-                        scope    : record.scope,
-                        revision : counters.revision,
-                        timestamp: this._now(),
-                        synced   : !this._syncEnabled,
-                    } satisfies JournalEntry);
-                }
-                revision = counters.revision;
-                await tx.put('meta', { key: COUNTERS_ID, ...counters } satisfies MetaCounters);
-                return expired.length;
-            },
-        );
+        const { purged, revision } = await retention.purgeExpired(this._storage, this._ctx, scope, isExpired);
         if (purged > 0) this._publish(scope, revision);
         return purged;
     }
@@ -579,7 +357,7 @@ export class ScopedFactRepository {
     subscribe(listener: (note: ConsistencyNote) => void): () => void {
         if (!this._storage.subscribe) return () => undefined;
         return this._storage.subscribe((note) => {
-            if (note.origin === this._contextId) return;
+            if (note.origin === this._ctx.contextId) return;
             listener(note);
         });
     }
@@ -589,39 +367,7 @@ export class ScopedFactRepository {
             kind    : 'facts-changed',
             scope   : scope ? { ...scope } : undefined,
             revision,
-            origin  : this._contextId,
+            origin  : this._ctx.contextId,
         });
     }
-
-    private async _counters(tx: { get<T>(store: 'meta', id: string): Promise<T | undefined> }): Promise<MetaCounters> {
-        const existing = await tx.get<MetaCounters>('meta', COUNTERS_ID);
-        return existing ?? { key: COUNTERS_ID, seq: 0, revision: 0, opSeq: 0 };
-    }
-}
-
-function dedupeById(records: StoredFactRecord[]): StoredFactRecord[] {
-    const seen = new Set<string>();
-    const out: StoredFactRecord[] = [];
-    for (const record of records) {
-        if (seen.has(record.id)) continue;
-        seen.add(record.id);
-        out.push(record);
-    }
-    return out;
-}
-
-/**
- * Index lookup. `undefined` means the named index is absent and the caller
- * must fall back. An empty array is a real miss — do not scan after it.
- * Multi-entry tag indexes can return the same record once per matching tag
- * occurrence, so hits are de-duplicated by id.
- */
-async function indexedFacts(
-    tx: StorageTransaction,
-    indexName: string,
-    query: string,
-): Promise<StoredFactRecord[] | undefined> {
-    if (!tx.getByIndex) return undefined;
-    const hits = await tx.getByIndex<StoredFactRecord>('facts', indexName, query);
-    return hits === undefined ? undefined : dedupeById(hits);
 }

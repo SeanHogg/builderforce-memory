@@ -19,6 +19,8 @@
  * durability claim.
  */
 
+import { SSMError, type SSMErrorCode } from '../errors/SSMError.js';
+
 /** Explicit ownership partition for a fact. All fields optional; absent = unbound. */
 export interface MemoryScope {
     account?: string;
@@ -218,7 +220,7 @@ export interface FactStoragePort {
     close?(): void | Promise<void>;
 }
 
-/** Error codes surfaced by the storage layer. */
+/** Detailed error codes surfaced by the storage layer (`MemoryStorageError.storageCode`). */
 export type StorageErrorCode =
     /** The durable backend is unavailable or faulted. */
     | 'STORAGE_UNAVAILABLE'
@@ -227,18 +229,34 @@ export type StorageErrorCode =
     /** A transaction aborted; no partial writes were committed. */
     | 'STORAGE_ABORTED';
 
-export class MemoryStorageError extends Error {
-    constructor(
-        public readonly code: StorageErrorCode,
-        message: string,
-        public readonly cause?: unknown,
-    ) {
-        super(message);
+/**
+ * The public {@link SSMError} code for each storage code. Callers that predate
+ * the storage layer branch on `code === 'MEMORY_UNAVAILABLE'` (what MemoryStore
+ * always rejected with when IndexedDB was missing or faulted), so unavailable
+ * and aborted storage keep that code; a CAS conflict is the new `MEMORY_CONFLICT`.
+ */
+const PUBLIC_CODE: Record<StorageErrorCode, SSMErrorCode> = {
+    STORAGE_UNAVAILABLE: 'MEMORY_UNAVAILABLE',
+    STORAGE_ABORTED    : 'MEMORY_UNAVAILABLE',
+    STORAGE_CONFLICT   : 'MEMORY_CONFLICT',
+};
+
+/**
+ * A storage-layer failure. It IS an {@link SSMError} whose `code` is the public
+ * contract (`MEMORY_UNAVAILABLE` / `MEMORY_CONFLICT`); `storageCode` keeps the
+ * detailed storage code for callers that need it.
+ */
+export class MemoryStorageError extends SSMError {
+    readonly storageCode: StorageErrorCode;
+
+    constructor(storageCode: StorageErrorCode, message: string, cause?: unknown) {
+        super(PUBLIC_CODE[storageCode], message, cause);
+        this.storageCode = storageCode;
         this.name = 'MemoryStorageError';
     }
 }
 
 /** Type guard for conflict errors so callers can reconcile instead of blindly retrying. */
 export function isStorageConflict(err: unknown): err is MemoryStorageError {
-    return err instanceof MemoryStorageError && err.code === 'STORAGE_CONFLICT';
+    return err instanceof MemoryStorageError && err.storageCode === 'STORAGE_CONFLICT';
 }

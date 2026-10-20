@@ -29,10 +29,20 @@ function expectWithinBudget(pack: HandoffPack, budget = 80): void {
   expect(pack.estimatedTokens).toBeLessThanOrEqual(budget);
 }
 
+/** The note (right after the leading system message); its role must alternate with what follows. */
 function noteOf(pack: HandoffPack): string {
   const note = pack.messages[1]!;
-  expect(note.role).toBe('assistant');
+  const next = pack.messages[2];
+  expect(note.role).toBe(next === undefined || next.role === 'assistant' ? 'user' : 'assistant');
   return note.content as string;
+}
+
+/** No two consecutive user turns and no two consecutive assistant turns. */
+function expectAlternating(messages: readonly HandoffMessage[]): void {
+  for (let i = 1; i < messages.length; i++) {
+    const [a, b] = [messages[i - 1]!.role, messages[i]!.role];
+    if (a === 'user' || a === 'assistant') expect(b).not.toBe(a);
+  }
 }
 
 describe('handoffBudget', () => {
@@ -70,7 +80,8 @@ describe('packHandoff', () => {
     expect(seen[0]!.some((m) => m.role === 'system')).toBe(false);
     // The tail is verbatim and ends on the last message.
     expect(pack.messages[pack.messages.length - 1]!.content).toBe(msg('assistant', 'a4').content);
-    expect(pack.messages.filter((m) => m.role === 'assistant' && m.content === 'the earlier work, summarized')).toHaveLength(1);
+    expect(pack.messages.filter((m) => m.content === 'the earlier work, summarized')).toHaveLength(1);
+    expectAlternating(pack.messages);
   });
 
   it('cuts an oversized summary to the room left instead of overflowing', async () => {
@@ -169,6 +180,45 @@ describe('packHandoff', () => {
     const pack = await packHandoff({ messages, ...BUDGET });
     expect(pack.messages.slice(0, 2)).toEqual([SYSTEM, extra]);
     expect(pack.messages.filter((m) => m.role === 'system')).toHaveLength(2);
+  });
+
+  it('keeps only LEADING system messages as the prefix; a mid-conversation one stays in place', async () => {
+    const mid = msg('system', 'mid policy');
+    // u1 a1 u2 a2 [mid] u3 a3 u4 a4 — the tail reaches back past `mid` at a large budget.
+    const messages = [...chat().slice(0, 5), mid, ...chat().slice(5)];
+    const wide = await packHandoff({ messages, targetContextTokens: 115, reserveOutputTokens: 0 });
+    expectWithinBudget(wide, 115);
+    expect(wide.messages[0]).toBe(SYSTEM);
+    expect(wide.messages[1]!.role).not.toBe('system');
+    const at = wide.messages.indexOf(mid);
+    expect(at).toBeGreaterThan(1);
+    expect(wide.messages[at + 1]!.content).toBe(msg('user', 'u3').content);
+
+    // At a small budget `mid` falls in the dropped middle: dropped, not hoisted.
+    const seen: HandoffMessage[][] = [];
+    const tight = await packHandoff({ messages, ...BUDGET, summarize: async (d) => { seen.push([...d]); return 'S'; } });
+    expectWithinBudget(tight);
+    expect(tight.messages.includes(mid)).toBe(false);
+    expect(tight.messages.filter((m) => m.role === 'system')).toEqual([SYSTEM]);
+    expect(seen[0]).toContain(mid);
+  });
+
+  it('makes the note a user turn when the verbatim tail starts with an assistant turn', async () => {
+    // Budget 80: the tail is a3 u4 a4, so an assistant note would sit next to a3.
+    const pack = await packHandoff({ messages: chat(), ...BUDGET, summarize: async () => 'S' });
+    expectWithinBudget(pack);
+    expect(pack.messages[2]!.role).toBe('assistant');
+    expect(pack.messages[1]).toEqual({ role: 'user', content: 'S' });
+    expectAlternating(pack.messages);
+  });
+
+  it('keeps the note an assistant turn when the re-injected directive follows it', async () => {
+    const directive = msg('user', 'fix the bug');
+    const messages: HandoffMessage[] = [SYSTEM, msg('user', 'old task'), msg('assistant', 'ok'), directive];
+    for (let i = 0; i < 10; i++) messages.push(msg('assistant', `step${i}`));
+    const pack = await packHandoff({ messages, ...BUDGET });
+    expect(pack.messages[1]!.role).toBe('assistant');
+    expect(pack.messages[2]).toBe(directive);
   });
 
   it('prefixes the note with a hand-off line only when from and to differ', async () => {

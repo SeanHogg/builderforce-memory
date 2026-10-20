@@ -11,9 +11,13 @@
  * Transaction semantics (M02/M05):
  *   - All transactions are serialized through one promise queue, so concurrent
  *     writers in this process interleave at transaction granularity.
- *   - Before every read-write transaction the file is re-read when another
- *     process changed it (mtime/size/hash freshness), so cross-process writers
- *     build on each other's commits instead of blindly overwriting.
+ *   - A read-write transaction holds an exclusive `<file>.lock` (see
+ *     `fileLock.ts`: atomic create, stale-lock reclamation by PID liveness,
+ *     bounded wait) across refresh + mutate + persist, so two processes can
+ *     never both build on the same stale document and lose a write.
+ *   - Under that lock, the file is re-read when another process changed it
+ *     (mtime/size freshness), so cross-process writers build on each other's
+ *     commits instead of blindly overwriting.
  *   - If the persist fails, the in-memory document is rolled back to the
  *     pre-transaction snapshot and the transaction rejects — no partial commits.
  *
@@ -25,28 +29,17 @@
  * bundle of this package never statically pulls in `node:fs`.
  */
 
+import { FileLock, type FileLockOptions } from './fileLock.js';
+import { FileTransaction, emptyDocument, type NodeFileDocument } from './fileTransaction.js';
 import {
-    FACT_KEY_INDEX,
-    FACT_TAG_INDEX,
     MemoryStorageError,
     type ConsistencyNote,
     type FactStoragePort,
-    type JournalEntry,
-    type MetaCounters,
     type StorageStoreName,
     type StorageTransaction,
-    type StoredFactRecord,
-    type TombstoneRecord,
 } from './types.js';
 
-/** The on-disk document shape. Versioned so future migrations are explicit. */
-export interface NodeFileDocument {
-    formatVersion: 1;
-    facts: StoredFactRecord[];
-    tombstones: TombstoneRecord[];
-    journal: JournalEntry[];
-    meta: MetaCounters;
-}
+export type { NodeFileDocument } from './fileTransaction.js';
 
 export interface NodeFileStorageAdapterOptions {
     /** Identity of this context for cross-context notes. Default: random. */
@@ -61,6 +54,8 @@ export interface NodeFileStorageAdapterOptions {
     fs?: NodeFs;
     /** Injectable path helpers. Default: node:path. */
     path?: NodePath;
+    /** Cross-process write lock tuning (timeout, liveness probe). */
+    lock?: FileLockOptions;
 }
 
 /** The subset of node:fs this adapter uses. */
@@ -88,84 +83,6 @@ function dynamicImport(m: string): Promise<unknown> {
     return new Function('m', 'return import(m)')(m) as Promise<unknown>;
 }
 
-function emptyDocument(): NodeFileDocument {
-    return {
-        formatVersion: 1,
-        facts: [],
-        tombstones: [],
-        journal: [],
-        meta: { key: 'counters', seq: 0, revision: 0, opSeq: 0 },
-    };
-}
-
-class FileTransaction implements StorageTransaction {
-    /** Lazy key/tag indexes over the in-memory document. Rebuilt after mutations. */
-    private _indexDirty = true;
-    private readonly _byKey = new Map<string, StoredFactRecord[]>();
-    private readonly _byTag = new Map<string, StoredFactRecord[]>();
-
-    constructor(private readonly _doc: NodeFileDocument) {}
-
-    private _table(store: StorageStoreName): Array<{ id?: string; opId?: string; key?: string }> {
-        return this._doc[store] as unknown as Array<{ id?: string; opId?: string; key?: string }>;
-    }
-
-    private _idField(store: StorageStoreName): 'id' | 'opId' | 'key' {
-        return store === 'journal' ? 'opId' : store === 'meta' ? 'key' : 'id';
-    }
-
-    async get<T>(store: StorageStoreName, id: string): Promise<T | undefined> {
-        const f = this._idField(store);
-        return this._table(store).find((r) => r[f] === id) as T | undefined;
-    }
-    async getAll<T>(store: StorageStoreName): Promise<T[]> {
-        return this._table(store).slice() as unknown as T[];
-    }
-    async put(store: StorageStoreName, value: unknown): Promise<void> {
-        const f = this._idField(store);
-        const table = this._table(store);
-        const id = (value as Record<string, string>)[f]!;
-        const idx = table.findIndex((r) => r[f] === id);
-        if (idx >= 0) table[idx] = value as never;
-        else table.push(value as never);
-        if (store === 'facts') this._indexDirty = true;
-    }
-    async delete(store: StorageStoreName, id: string): Promise<void> {
-        const f = this._idField(store);
-        const table = this._table(store);
-        const idx = table.findIndex((r) => r[f] === id);
-        if (idx >= 0) table.splice(idx, 1);
-        if (store === 'facts') this._indexDirty = true;
-    }
-
-    async getByIndex<T>(store: StorageStoreName, indexName: string, query: string): Promise<T[] | undefined> {
-        if (store !== 'facts') return undefined;
-        if (indexName !== FACT_KEY_INDEX && indexName !== FACT_TAG_INDEX) return undefined;
-        this._ensureFactIndexes();
-        const hits = indexName === FACT_KEY_INDEX
-            ? this._byKey.get(query)
-            : this._byTag.get(query);
-        return (hits ?? []).slice() as T[];
-    }
-
-    private _ensureFactIndexes(): void {
-        if (!this._indexDirty) return;
-        this._byKey.clear();
-        this._byTag.clear();
-        for (const fact of this._doc.facts) {
-            const keyHits = this._byKey.get(fact.key);
-            if (keyHits) keyHits.push(fact);
-            else this._byKey.set(fact.key, [fact]);
-            for (const tag of fact.tags ?? []) {
-                const tagHits = this._byTag.get(tag);
-                if (tagHits) tagHits.push(fact);
-                else this._byTag.set(tag, [fact]);
-            }
-        }
-        this._indexDirty = false;
-    }
-}
-
 export class NodeFileStorageAdapter implements FactStoragePort {
     readonly kind = 'node-file' as const;
 
@@ -179,6 +96,7 @@ export class NodeFileStorageAdapter implements FactStoragePort {
     private _watchTimer: ReturnType<typeof setInterval> | null = null;
     private readonly _listeners = new Set<(note: ConsistencyNote) => void>();
     private readonly _watchIntervalMs: number;
+    private readonly _lock: FileLock;
 
     private constructor(
         private readonly _filePath: string,
@@ -190,6 +108,7 @@ export class NodeFileStorageAdapter implements FactStoragePort {
         this._path = path;
         this._contextId = opts.contextId ?? `node-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
         this._watchIntervalMs = opts.watchIntervalMs ?? 1000;
+        this._lock = new FileLock(fs, `${_filePath}.lock`, opts.lock);
         this._doc = this._loadFromDisk();
     }
 
@@ -318,40 +237,49 @@ export class NodeFileStorageAdapter implements FactStoragePort {
     // ── Port ──────────────────────────────────────────────────────────────────
 
     /**
-     * Serialized unit of work. Read-write transactions: refresh from disk (so we
-     * build on other processes' commits), run `fn` against the live document,
-     * then persist atomically. Any failure rolls the in-memory document back to
-     * the pre-transaction snapshot — no partial commits, in memory or on disk.
+     * Serialized unit of work. Read-write transactions take the cross-process
+     * lock, refresh from disk (so we build on other processes' commits), run
+     * `fn` against the live document, then persist atomically before
+     * releasing. Any failure rolls the in-memory document back to the
+     * pre-transaction snapshot — no partial commits, in memory or on disk.
      */
     transact<T>(
-        stores: StorageStoreName[],
+        _stores: StorageStoreName[],
         mode: 'readonly' | 'readwrite',
         fn: (tx: StorageTransaction) => Promise<T> | T,
     ): Promise<T> {
-        const run = this._queue.then(async (): Promise<T> => {
-            if (mode === 'readwrite') this._refreshIfChanged();
-            const snapshot = mode === 'readwrite' ? JSON.stringify(this._doc) : null;
-            const tx = new FileTransaction(this._doc);
-            const result = await fn(tx);
-            if (mode === 'readwrite') {
-                try {
-                    this._persist();
-                } catch (err) {
-                    // Roll back: the caller must not observe a committed-looking
-                    // state that never reached disk.
-                    this._doc = JSON.parse(snapshot!) as NodeFileDocument;
-                    throw new MemoryStorageError(
-                        'STORAGE_ABORTED',
-                        `Failed to durably persist "${this._filePath}": ${err instanceof Error ? err.message : String(err)}`,
-                        err,
-                    );
-                }
-            }
-            return result;
-        });
+        const run = this._queue.then((): Promise<T> => mode === 'readwrite'
+            ? this._lock.run(() => this._readWrite(fn))
+            : Promise.resolve(fn(new FileTransaction(this._doc))));
         // Keep the queue alive across rejections.
         this._queue = run.catch(() => undefined);
         return run;
+    }
+
+    private async _readWrite<T>(fn: (tx: StorageTransaction) => Promise<T> | T): Promise<T> {
+        this._refreshIfChanged();
+        const snapshot = JSON.stringify(this._doc);
+        let result: T;
+        try {
+            result = await fn(new FileTransaction(this._doc));
+        } catch (err) {
+            // A unit of work that threw leaves nothing behind, in memory either.
+            this._doc = JSON.parse(snapshot) as NodeFileDocument;
+            throw err;
+        }
+        try {
+            this._persist();
+        } catch (err) {
+            // Roll back: the caller must not observe a committed-looking state
+            // that never reached disk.
+            this._doc = JSON.parse(snapshot) as NodeFileDocument;
+            throw new MemoryStorageError(
+                'STORAGE_ABORTED',
+                `Failed to durably persist "${this._filePath}": ${err instanceof Error ? err.message : String(err)}`,
+                err,
+            );
+        }
+        return result;
     }
 
     // ── Cross-process consistency seam (M05) ──────────────────────────────────

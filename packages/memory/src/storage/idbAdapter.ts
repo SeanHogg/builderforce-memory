@@ -28,7 +28,10 @@
  * Cross-context consistency (M05): when BroadcastChannel is available the
  * adapter publishes a change note after every committed write and delivers
  * foreign notes to subscribers, so sibling tabs/windows invalidate their caches
- * instead of serving stale recalls.
+ * instead of serving stale recalls. The channel opens lazily — on the first
+ * publish, or once the database is open for a subscriber — and is `unref()`ed
+ * where supported (Node), so a store that is never closed cannot keep the
+ * process alive.
  */
 
 import {
@@ -67,6 +70,8 @@ export interface BroadcastChannelLike {
     postMessage(message: unknown): void;
     close(): void;
     onmessage: ((event: { data: unknown }) => void) | null;
+    /** Node only: stop this channel from keeping the event loop alive. */
+    unref?(): void;
 }
 
 interface LegacyFactRecord {
@@ -159,6 +164,8 @@ export class IdbStorageAdapter implements FactStoragePort {
 
             req.onsuccess = () => {
                 this._db = req.result;
+                // Subscribers registered before the first open start listening now.
+                if (this._listeners.size > 0) this._ensureChannel();
                 resolve(req.result);
             };
             /* istanbul ignore next -- IDB open onerror fires only on storage faults; not reproducible with fake-indexeddb */
@@ -241,9 +248,14 @@ export class IdbStorageAdapter implements FactStoragePort {
         }
     }
 
+    /**
+     * Registers `listener` for foreign change notes. The channel itself opens
+     * when the database does (or on the first publish), not here: subscribing
+     * from a constructor must not open a global channel.
+     */
     subscribe(listener: (note: ConsistencyNote) => void): () => void {
         this._listeners.add(listener);
-        this._ensureChannel();
+        if (this._db) this._ensureChannel();
         return () => this._listeners.delete(listener);
     }
 
@@ -259,6 +271,7 @@ export class IdbStorageAdapter implements FactStoragePort {
                     if (note.origin === this._contextId) return; // our own write
                     for (const l of this._listeners) l(note);
                 };
+                channel.unref?.();
                 this._channel = channel;
             }
         } catch {
