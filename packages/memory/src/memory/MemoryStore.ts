@@ -1,9 +1,17 @@
 /**
  * MemoryStore – persistent key-value fact store and weight checkpoint helper.
  *
- * Uses IndexedDB with a dedicated 'ssmjs' database containing two object stores:
- *   - 'facts'   : MemoryEntry records keyed by the fact key string
- *   - 'weights' : a single ArrayBuffer keyed by `weightsKey`
+ * Persistence is delegated to a narrow {@link FactStoragePort} (M01) fronted by
+ * a {@link ScopedFactRepository} unit-of-work layer (M02–M06):
+ *   - Browser default: IndexedDB via {@link IdbStorageAdapter}; every write
+ *     resolves only after the transaction commits (M02).
+ *   - Node.js: pass `storage: await NodeFileStorageAdapter.open(path)` for real
+ *     durable storage. fake-indexeddb via `idbFactory` remains supported for
+ *     TESTS, but is never durable and is not presented as such.
+ *   - Facts live in an explicit {@link MemoryScope} partition (default: the
+ *     unbound, never-connected scope) with durable revisions, operation
+ *     identity, provenance and — when `sync: true` — a journaled tombstone
+ *     trail that caps/TTL will not sacrifice (M03/M04/M06).
  *
  * Weight save/load is delegated to the SSMRuntime passed to saveWeights/loadWeights.
  */
@@ -11,6 +19,18 @@
 import { SSMError } from '../errors/SSMError.js';
 import { tokenize, jaccardSimilarity } from '../similarity/index.js';
 import { hybridRetrieve, denseSearch, HnswIndex, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
+import { IdbStorageAdapter } from '../storage/idbAdapter.js';
+import { ScopedFactRepository } from '../storage/ScopedFactRepository.js';
+import {
+    MemoryStorageError,
+    type ConsistencyNote,
+    type FactProvenance,
+    type FactStoragePort,
+    type MemoryScope,
+    type StoredFactRecord,
+    type TombstoneRecord,
+    type JournalEntry,
+} from '../storage/types.js';
 
 export type FactType = 'text' | 'json' | 'number' | 'boolean';
 
@@ -34,6 +54,20 @@ export interface MemoryEntry {
     tags?      : string[];
     /** Importance weight in the range 0–1. Default: 0.5. */
     importance?: number;
+    /**
+     * Durable revision of this record (the store generation that wrote it).
+     * Present on every record written through the repository; absent only on
+     * entries fabricated by callers for import.
+     */
+    revision?  : number;
+    /** Durable identity of the operation that wrote this record. */
+    opId?      : string;
+    /** Ownership partition this entry was recalled from. */
+    scope?     : MemoryScope;
+    /** Where the fact came from; preserved across export/import (M06). */
+    provenance?: FactProvenance;
+    /** True while a sync acknowledgement for this record is outstanding. */
+    pendingSync?: boolean;
 }
 
 /**
@@ -62,20 +96,41 @@ export interface RememberOptions {
     type?      : FactType;
     tags?      : string[];
     importance?: number;
+    /** Provenance to record with the fact (surface, importer, source time). */
+    provenance?: FactProvenance;
+    /** Explicit source timestamp (import/replay). Default: now. */
+    timestamp? : number;
 }
 
 export interface MemoryStoreOptions {
-    /** IndexedDB database name. Default: 'ssmjs'. */
+    /** IndexedDB database name. Default: 'ssmjs'. Ignored when `storage` is supplied. */
     dbName?       : string;
     /** Key used for weight storage within the 'weights' object store. Default: 'ssmjs-weights'. */
     weightsKey?   : string;
     /**
-     * IDBFactory to use instead of the global `indexedDB`.
-     * Use this in Node.js environments with fake-indexeddb:
-     *   import { IDBFactory } from 'fake-indexeddb';
-     *   const idbFactory = new IDBFactory();
+     * IDBFactory to use instead of the global `indexedDB` (browser path only).
+     * fake-indexeddb is supported for tests, but it is IN-MEMORY: on Node.js,
+     * pass `storage` from `NodeFileStorageAdapter.open(...)` for durable facts.
      */
     idbFactory?   : IDBFactory;
+    /**
+     * Durable storage port backing this store (M01). When omitted, an
+     * IndexedDB adapter over `dbName` is used.
+     */
+    storage?      : FactStoragePort;
+    /**
+     * Explicit ownership partition for every fact in this store (M03).
+     * Default: the unbound scope — personal, never-connected memory.
+     */
+    scope?        : MemoryScope;
+    /**
+     * Enable the sync journal, tombstones and pendingSync tracking (M04/M06).
+     * Unsynced facts are then never evicted by `maxEntries`. Default: false
+     * (legacy retention semantics — nothing to sync, nothing pending).
+     */
+    sync?         : boolean;
+    /** Identity of this context for operation ids and cross-context notes. */
+    contextId?    : string;
     /**
      * Default TTL applied to new entries when no per-entry ttlMs is provided.
      * Entries with an expired TTL are filtered from recallAll() and related methods.
@@ -89,8 +144,9 @@ export interface MemoryStoreOptions {
     annThreshold? : number;
     /**
      * Hard cap on stored facts. When set, each write evicts the lowest-value
-     * entries (expired first, then lowest importance, then oldest) so the store
-     * stays bounded. Unset = unbounded (legacy). (EVM-7)
+     * SYNCED entries (expired first, then lowest importance, then oldest) so the
+     * store stays bounded. Facts with unsynced operations are never evicted
+     * (M06). Unset = unbounded (legacy). (EVM-7)
      */
     maxEntries?   : number;
     /**
@@ -98,18 +154,16 @@ export interface MemoryStoreOptions {
      * (EVM-8 — bounded LRU instead of clear-on-overflow.)
      */
     embedCacheMax?: number;
+    /**
+     * Minimum relevance (0..1) a hit must reach to be recalled by
+     * {@link recallSimilarScored} or {@link recallRanked}. Below it, a weak match
+     * returns nothing rather than noise — recall that always returns something is
+     * how an unrelated fact gets surfaced as if it were relevant. Default 0.05:
+     * an empty query or a query sharing no token with any fact scores 0 and is
+     * dropped, while a genuine overlap clears it. Pass 0 to disable.
+     */
+    minRelevance? : number;
 }
-
-const FACTS_STORE   = 'facts';
-const WEIGHTS_STORE = 'weights';
-const DB_VERSION    = 1;
-
-/**
- * Process-wide monotonic counter stamped onto each remembered entry. Strictly
- * increasing per write regardless of store instance, so it reliably breaks
- * `timestamp` ties (same-millisecond writes) in newest-first ordering.
- */
-let _writeSeq = 0;
 
 // Minimal interface to avoid importing SSMRuntime (circular dep)
 interface SaveLoadRuntime {
@@ -125,19 +179,29 @@ type SSMRuntimeRef = any;
 const EMBED_CACHE_MAX = 2000;
 
 export class MemoryStore {
-    private readonly _dbName     : string;
     private readonly _weightsKey : string;
-    private readonly _idb        : IDBFactory | undefined;
     private readonly _defaultTtl : number | undefined;
     private readonly _annThreshold : number;
     private readonly _maxEntries : number | undefined;
     private readonly _embedCacheMax : number;
-    private _db: IDBDatabase | null = null;
+    /** Below this a recall hit is noise, not a match. 0 disables the floor. */
+    private readonly _minRelevance : number;
+    private readonly _scope: MemoryScope;
+    /** The unit-of-work layer every durable operation flows through. */
+    readonly repository: ScopedFactRepository;
+    private readonly _storage: FactStoragePort;
+    private readonly _unsubscribe: (() => void) | undefined;
     private _sweepTimer: ReturnType<typeof setInterval> | null = null;
     /** Content → L2-normalised embedding cache, used by recallSimilar. */
     private readonly _embedCache = new Map<string, Float32Array>();
     /** Runtime whose embeddings populate `_embedCache`; a change invalidates it. */
     private _embedRuntime: unknown = null;
+    /**
+     * Last store generation observed from a FOREIGN context (another tab,
+     * window or process). Monotonic, in-memory only; lets readers notice
+     * cross-context writes without a storage round-trip per recall (M05).
+     */
+    private _foreignRevision = 0;
 
     // ── Persistent dense index (EVM-1b) ────────────────────────────────────────
     // Fact embeddings keyed by `${key}@${seq}` so an EDIT (seq bump) is a new key
@@ -152,119 +216,140 @@ export class MemoryStore {
     private _denseRuntime: unknown = null;
 
     constructor(opts: MemoryStoreOptions = {}) {
-        this._dbName     = opts.dbName     ?? 'ssmjs';
         this._weightsKey = opts.weightsKey ?? 'ssmjs-weights';
-        this._idb        = opts.idbFactory;
         this._defaultTtl = opts.defaultTtlMs;
         this._annThreshold = opts.annThreshold ?? 256;
         this._maxEntries = opts.maxEntries;
         this._embedCacheMax = opts.embedCacheMax ?? EMBED_CACHE_MAX;
+        this._minRelevance = opts.minRelevance ?? 0.05;
+        this._scope = opts.scope ? { ...opts.scope } : {};
+        this._storage = opts.storage ?? new IdbStorageAdapter(opts.dbName ?? 'ssmjs', {
+            idbFactory: opts.idbFactory,
+            contextId : opts.contextId,
+        });
+        this.repository = new ScopedFactRepository(this._storage, {
+            syncEnabled: opts.sync ?? false,
+            contextId  : opts.contextId,
+        });
+
+        // Cross-context invalidation (M05): a sibling tab/window/process that
+        // commits against the same storage invalidates this instance's derived
+        // caches — in-process serialization alone is not the consistency boundary.
+        this._unsubscribe = this.repository.subscribe((note) => this._onForeignChange(note));
     }
 
-    // ── Internal DB open ──────────────────────────────────────────────────────
+    /** The scope partition this store is bound to (never widened implicitly). */
+    get scope(): MemoryScope {
+        return { ...this._scope };
+    }
 
-    private _open(): Promise<IDBDatabase> {
-        if (this._db) return Promise.resolve(this._db);
+    /** The durable storage backend kind in use ('indexedDB' | 'node-file'). */
+    get storageKind(): FactStoragePort['kind'] {
+        return this._storage.kind;
+    }
 
-        return new Promise((resolve, reject) => {
-            const factory = this._idb ?? (typeof indexedDB !== 'undefined' ? indexedDB : undefined);
-            if (!factory) {
-                reject(new SSMError(
-                    'MEMORY_UNAVAILABLE',
-                    'IndexedDB is not available in this environment. Pass an idbFactory option (e.g. from fake-indexeddb) for Node.js support.',
-                ));
-                return;
-            }
-
-            const req = factory.open(this._dbName, DB_VERSION);
-
-            req.onupgradeneeded = (e) => {
-                const db = (e.target as IDBOpenDBRequest).result;
-                if (!db.objectStoreNames.contains(FACTS_STORE)) {
-                    db.createObjectStore(FACTS_STORE, { keyPath: 'key' });
-                }
-                if (!db.objectStoreNames.contains(WEIGHTS_STORE)) {
-                    db.createObjectStore(WEIGHTS_STORE);
-                }
-            };
-
-            req.onsuccess = () => {
-                this._db = req.result;
-                resolve(req.result);
-            };
-            /* istanbul ignore next -- IDB open onerror fires only on storage faults; not reproducible with fake-indexeddb */
-            req.onerror = () => reject(new SSMError(
-                'MEMORY_UNAVAILABLE',
-                `Failed to open IndexedDB "${this._dbName}": ${req.error?.message ?? 'unknown'}`,
-                req.error,
-            ));
-        });
+    /**
+     * Best-effort in-memory token that changes when another context writes to
+     * this store's database. Readers (e.g. EvermindCognition's recall cache)
+     * can fold it into their cache key so cross-context writes invalidate
+     * without a storage hit per recall.
+     */
+    get foreignRevision(): number {
+        return this._foreignRevision;
     }
 
     // ── TTL helpers ───────────────────────────────────────────────────────────
 
-    private _isExpired(entry: MemoryEntry): boolean {
+    private _isExpired(entry: { timestamp: number; ttlMs?: number }): boolean {
         if (entry.ttlMs == null) return false;
         return Date.now() > entry.timestamp + entry.ttlMs;
     }
 
+    private _toEntry(record: StoredFactRecord): MemoryEntry {
+        return {
+            key        : record.key,
+            content    : record.content,
+            timestamp  : record.timestamp,
+            seq        : record.seq,
+            ttlMs      : record.ttlMs,
+            type       : record.type,
+            tags       : record.tags,
+            importance : record.importance,
+            revision   : record.revision,
+            opId       : record.opId,
+            scope      : { ...record.scope },
+            provenance : record.provenance,
+            pendingSync: record.pendingSync,
+        };
+    }
+
+    private _onForeignChange(note: ConsistencyNote): void {
+        if (note.revision <= this._foreignRevision) return;
+        this._foreignRevision = note.revision;
+        // Derived caches describe a fact set another context just changed.
+        this._embedCache.clear();
+        this._denseVectors.clear();
+        this._denseIndex = null;
+        this._denseSig = '';
+    }
+
     // ── Semantic facts ────────────────────────────────────────────────────────
 
-    /** Stores or overwrites a fact. */
+    /**
+     * Stores or overwrites a fact. Resolves only after the underlying
+     * transaction commits durably (M02); the fact, its provenance and its sync
+     * journal entry commit atomically.
+     */
     async remember(key: string, content: string, opts?: RememberOptions): Promise<void> {
-        const db = await this._open();
-        const entry: MemoryEntry = {
-            key,
+        await this.repository.remember(this._scope, key, {
             content,
-            timestamp  : Date.now(),
-            seq        : ++_writeSeq,
+            timestamp  : opts?.timestamp,
             ttlMs      : opts?.ttlMs ?? this._defaultTtl,
             type       : opts?.type,
             tags       : opts?.tags,
             importance : opts?.importance,
-        };
-
-        const tx = db.transaction(FACTS_STORE, 'readwrite');
-        await requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to store fact "${key}"`, () => undefined);
-        // EVM-7: keep the store bounded — evict lowest-value entries past the cap.
-        if (this._maxEntries != null) await this._enforceCap();
-    }
-
-    /**
-     * Evicts the lowest-value entries until at most `maxEntries` remain. Eviction
-     * priority (removed first): expired → lowest importance → oldest. No-op when
-     * no cap is set or the store is under it. (EVM-7)
-     */
-    private async _enforceCap(): Promise<void> {
-        if (this._maxEntries == null) return;
-        const db = await this._open();
-        const tx = db.transaction(FACTS_STORE, 'readonly');
-        const all = await requestToPromise(
-            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
-            'Failed to scan facts for cap',
-            (r) => r,
-        );
-        if (all.length <= this._maxEntries) return;
-
-        // Ascending sort = worst first: expired (0) before live (1), then lower
-        // importance, then older timestamp, then lower write sequence.
-        const rank = (e: MemoryEntry): [number, number, number, number] =>
-            [this._isExpired(e) ? 0 : 1, e.importance ?? 0.5, e.timestamp, e.seq ?? 0];
-        const sorted = [...all].sort((a, b) => {
-            const ra = rank(a), rb = rank(b);
-            for (let i = 0; i < ra.length; i++) {
-                if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
-            }
-            return 0;
+            provenance : opts?.provenance,
         });
-        const victims = sorted.slice(0, all.length - this._maxEntries);
-        await Promise.all(victims.map((e) => this.forget(e.key)));
+        // EVM-7: keep the store bounded — evict lowest-value SYNCED entries past
+        // the cap; unsynced knowledge is never sacrificed to a cache cap (M06).
+        if (this._maxEntries != null) {
+            await this.repository.evictForCap(this._scope, this._maxEntries, (r) => this._isExpired(r));
+        }
     }
 
     /**
-     * Starts a background timer that periodically hard-deletes expired entries —
+     * Compare-and-set write (M04/M05): commits only if the record's current
+     * revision equals `expectedRevision` (`null` asserts the key is absent).
+     * Throws a STORAGE_CONFLICT MemoryStorageError otherwise — callers reconcile
+     * (re-read, re-evaluate evidence) instead of blindly overwriting a
+     * concurrent writer. Returns the committed entry.
+     */
+    async rememberCas(key: string, content: string, expectedRevision: number | null, opts?: RememberOptions): Promise<MemoryEntry> {
+        const { record } = await this.repository.remember(this._scope, key, {
+            content,
+            timestamp       : opts?.timestamp,
+            ttlMs           : opts?.ttlMs ?? this._defaultTtl,
+            type            : opts?.type,
+            tags            : opts?.tags,
+            importance      : opts?.importance,
+            provenance      : opts?.provenance,
+            expectedRevision,
+        });
+        return this._toEntry(record);
+    }
+
+    /** Fetches an entry WITH its durable revision, for CAS-based reconciliation. */
+    async recallVersioned(key: string): Promise<MemoryEntry | undefined> {
+        return this.recall(key);
+    }
+
+    /**
+     * Starts a background timer that periodically deletes expired entries —
      * TTL is otherwise only evaluated lazily on read, so an idle store would keep
      * dead entries forever. Idempotent; pair with {@link stopTtlSweeper}. (EVM-7)
+     *
+     * With sync enabled each expiry is a scoped deletion (tombstone + journal),
+     * not a silent drop (M06).
      */
     startTtlSweeper(intervalMs: number): void {
         if (this._sweepTimer) return;
@@ -287,35 +372,24 @@ export class MemoryStore {
     }
 
     /**
-     * Retrieves a fact by key.
+     * Retrieves a fact by key from this store's scope partition.
      * Returns `undefined` if the key does not exist or the entry has expired.
      */
     async recall(key: string): Promise<MemoryEntry | undefined> {
-        const db = await this._open();
-
-        const tx = db.transaction(FACTS_STORE, 'readonly');
-        return requestToPromise(
-            tx.objectStore(FACTS_STORE).get(key) as IDBRequest<MemoryEntry | undefined>,
-            `Failed to recall fact "${key}"`,
-            (entry) => (entry && this._isExpired(entry) ? undefined : entry),
-        );
+        const record = await this.repository.get(this._scope, key);
+        if (!record || this._isExpired(record)) return undefined;
+        return this._toEntry(record);
     }
 
-    /** Returns all non-expired stored facts, newest first. */
+    /** Returns all non-expired stored facts in this store's scope, newest first. */
     async recallAll(): Promise<MemoryEntry[]> {
-        const db = await this._open();
-
-        const tx = db.transaction(FACTS_STORE, 'readonly');
-        return requestToPromise(
-            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
-            'Failed to recall all facts',
-            (entries) => entries
-                .filter(e => !this._isExpired(e))
-                // Newest first; break same-millisecond ties by write sequence so
-                // ordering is deterministic (IndexedDB getAll() returns key order,
-                // which would otherwise surface same-ms writes oldest-first).
-                .sort((a, b) => b.timestamp - a.timestamp || (b.seq ?? 0) - (a.seq ?? 0)),
-        );
+        const records = await this.repository.getAll(this._scope);
+        return records
+            .filter(e => !this._isExpired(e))
+            // Newest first; break same-millisecond ties by the durable write
+            // sequence so ordering is deterministic (and survives restarts).
+            .sort((a, b) => b.timestamp - a.timestamp || b.seq - a.seq)
+            .map((r) => this._toEntry(r));
     }
 
     /**
@@ -329,10 +403,15 @@ export class MemoryStore {
 
     /**
      * Returns all non-expired entries that contain the given tag.
+     * Looks the tag up on the facts `byTag` index when the storage adapter has
+     * one; a full scan is used only when that index is missing.
      */
     async recallByTag(tag: string): Promise<MemoryEntry[]> {
-        const all = await this.recallAll();
-        return all.filter(e => e.tags?.includes(tag) ?? false);
+        const records = await this.repository.getByTag(this._scope, tag);
+        return records
+            .filter(e => !this._isExpired(e))
+            .sort((a, b) => b.timestamp - a.timestamp || b.seq - a.seq)
+            .map((r) => this._toEntry(r));
     }
 
     /**
@@ -376,7 +455,8 @@ export class MemoryStore {
                         : denseSearch(queryVec, synced.items, topK, this._annThreshold);
                     return hits
                         .map(h => { const entry = synced.byKey.get(h.id); return entry ? { entry, score: h.score } : null; })
-                        .filter((e): e is { entry: MemoryEntry; score: number } => !!e);
+                        .filter((e): e is { entry: MemoryEntry; score: number } => !!e)
+                        .filter(e => e.score >= this._minRelevance);
                 }
             }
             // Any failure falls through to the Jaccard path below.
@@ -391,7 +471,7 @@ export class MemoryStore {
         });
 
         scored.sort((a, b) => b.score - a.score);
-        return scored.slice(0, topK);
+        return scored.filter(s => s.score >= this._minRelevance).slice(0, topK);
     }
 
     /**
@@ -456,7 +536,8 @@ export class MemoryStore {
         return {
             hits: hits
                 .map(h => { const entry = byKey.get(h.id); return entry ? { entry, score: h.score } : null; })
-                .filter((h): h is ScoredMemory => !!h),
+                .filter((h): h is ScoredMemory => !!h)
+                .filter(h => h.score >= this._minRelevance),
             method: dense ? 'embedding' : 'lexical',
         };
     }
@@ -562,90 +643,110 @@ export class MemoryStore {
     }
 
     /**
-     * Hard-deletes all entries whose TTL has expired.
+     * Deletes all entries whose TTL has expired. With sync enabled each expiry
+     * commits a tombstone + journal entry in the same transaction, so expiries
+     * propagate instead of resurrecting from a replica (M06).
      * @returns The number of entries deleted.
      */
     async purgeExpired(): Promise<number> {
-        const db = await this._open();
-
-        // Load all raw entries (including expired ones) to check each
-        const tx = db.transaction(FACTS_STORE, 'readonly');
-        const all = await requestToPromise(
-            tx.objectStore(FACTS_STORE).getAll() as IDBRequest<MemoryEntry[]>,
-            'Failed to scan facts for purge',
-            (r) => r,
-        );
-
-        const expired = all.filter(e => this._isExpired(e));
-        if (expired.length === 0) return 0;
-
-        await Promise.all(expired.map(e => this.forget(e.key)));
-        return expired.length;
+        return this.repository.purgeExpired(this._scope, (r) => this._isExpired(r));
     }
 
-    /** Deletes a single fact. No-op if key does not exist. */
+    /**
+     * Deletes a single fact. No-op if key does not exist. With sync enabled the
+     * delete is a durable tombstone + journal entry committed atomically (M04).
+     */
     async forget(key: string): Promise<void> {
-        const db = await this._open();
-
-        const tx = db.transaction(FACTS_STORE, 'readwrite');
-        return requestToPromise(tx.objectStore(FACTS_STORE).delete(key), `Failed to forget fact "${key}"`, () => undefined);
+        await this.repository.forget(this._scope, key);
     }
 
-    /** Deletes all facts. Does not affect saved weights. */
+    /** Deletes all facts in this store's scope. Does not affect saved weights. */
     async clear(): Promise<void> {
-        const db = await this._open();
         // Drop the persistent dense index/vectors too (EVM-1b) — they describe a
         // fact set that no longer exists.
         this._denseVectors.clear();
         this._denseIndex = null;
         this._denseSig = '';
+        await this.repository.clear(this._scope);
+    }
 
-        const tx = db.transaction(FACTS_STORE, 'readwrite');
-        return requestToPromise(tx.objectStore(FACTS_STORE).clear(), 'Failed to clear facts', () => undefined);
+    // ── Sync protocol surface (M04) ───────────────────────────────────────────
+
+    /** Operations not yet acknowledged by sync — the pending knowledge set. */
+    async pendingOps(): Promise<JournalEntry[]> {
+        return this.repository.pendingOps();
+    }
+
+    /** Delete tombstones in this store's scope (or all scopes when omitted). */
+    async tombstones(scope?: MemoryScope): Promise<TombstoneRecord[]> {
+        return this.repository.tombstones(scope);
+    }
+
+    /**
+     * Acknowledges that the given operations reached the sync target. Their
+     * facts/tombstones stop being `pendingSync`, so retention may touch them
+     * again. Retention NEVER touches unacknowledged knowledge (M06).
+     */
+    async markSynced(opIds: string[]): Promise<void> {
+        await this.repository.markSynced(opIds);
+    }
+
+    /** The current durable store generation. */
+    async revision(): Promise<number> {
+        return this.repository.revision();
+    }
+
+    /** Releases cross-context subscriptions and the underlying connection. */
+    close(): void {
+        this.stopTtlSweeper();
+        this._unsubscribe?.();
+        this._storage.close?.();
     }
 
     // ── Cross-session memory merge ────────────────────────────────────────────
 
     /**
      * Returns all non-expired facts as a plain array for export.
-     * Suitable for serialisation and import into another MemoryStore instance.
+     * Scope, revision and provenance travel with each entry (M03).
      */
     async exportAll(): Promise<MemoryEntry[]> {
         return this.recallAll();
     }
 
     /**
-     * Imports entries from an external array.
+     * Imports entries from an external array INTO this store's scope partition.
+     * Source timestamps, sequences, tags, importance, TTL and provenance are
+     * preserved — import never rewrites source time (M06).
      *
      * - `'merge'`     : only writes an entry if no existing entry with the same
      *                   key exists, or if the incoming entry has a newer timestamp.
      * - `'overwrite'` : writes all entries unconditionally.
      */
-    async importAll(entries: MemoryEntry[], strategy: 'merge' | 'overwrite'): Promise<void> {
-        for (const entry of entries) {
-            if (strategy === 'overwrite') {
-                await this._putRaw(entry);
-            } else {
-                const existing = await this.recall(entry.key);
-                if (existing == null || entry.timestamp > existing.timestamp) {
-                    await this._putRaw(entry);
-                }
-            }
-        }
-    }
-
-    /** Writes a raw MemoryEntry directly (preserves original timestamp / metadata). */
-    private async _putRaw(entry: MemoryEntry): Promise<void> {
-        const db = await this._open();
-        const tx = db.transaction(FACTS_STORE, 'readwrite');
-        return requestToPromise(tx.objectStore(FACTS_STORE).put(entry), `Failed to import fact "${entry.key}"`, () => undefined);
+    async importAll(entries: MemoryEntry[], strategy: 'merge' | 'overwrite', importedFrom?: string): Promise<void> {
+        const records = entries.map((e): StoredFactRecord => ({
+            id         : '', // reassigned by the repository for this scope
+            key        : e.key,
+            scope      : this._scope,
+            content    : e.content,
+            timestamp  : e.timestamp,
+            seq        : e.seq ?? 0,
+            revision   : 0,
+            opId       : e.opId ?? '',
+            ttlMs      : e.ttlMs,
+            type       : e.type,
+            tags       : e.tags,
+            importance : e.importance,
+            provenance : e.provenance,
+            pendingSync: false,
+        }));
+        await this.repository.importRecords(this._scope, records, strategy, importedFrom);
     }
 
     // ── Weight persistence ────────────────────────────────────────────────────
 
     /**
      * Saves SSM weights via `runtime.save()`.
-     * The weights are stored under `weightsKey` in this store's IndexedDB,
+     * The weights are stored under `weightsKey` in the session's IndexedDB,
      * separate from MambaSession's own key.
      */
     async saveWeights(runtime: SaveLoadRuntime): Promise<void> {
@@ -661,27 +762,18 @@ export class MemoryStore {
     }
 }
 
-// ── IndexedDB helper ──────────────────────────────────────────────────────────
-
-/**
- * Wires an IDBRequest to a promise: resolves with `map(result)` on success,
- * rejects with a normalised MEMORY_UNAVAILABLE error on failure. Extracted so
- * the success/error wiring lives in one place instead of being duplicated across
- * every store method.
- *
- * The onerror branch fires only on IndexedDB storage faults (quota exceeded,
- * disk failure, corruption), which the in-memory fake-indexeddb used in tests
- * cannot reproduce — hence the istanbul ignore on that single line.
- */
-function requestToPromise<R, T>(req: IDBRequest<R>, failMsg: string, map: (result: R) => T): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-        req.onsuccess = () => resolve(map(req.result));
-        /* istanbul ignore next -- IDB storage-fault path; not reproducible with fake-indexeddb */
-        req.onerror = () => reject(new SSMError(
-            'MEMORY_UNAVAILABLE',
-            `${failMsg}: ${req.error?.message ?? 'unknown'}`,
-            req.error ?? undefined,
-        ));
-    });
-}
-
+// Re-export the storage seam so consumers reach it through the store's module.
+export {
+    IdbStorageAdapter,
+    ScopedFactRepository,
+    MemoryStorageError,
+};
+export type {
+    ConsistencyNote,
+    FactProvenance,
+    FactStoragePort,
+    JournalEntry,
+    MemoryScope,
+    StoredFactRecord,
+    TombstoneRecord,
+};
