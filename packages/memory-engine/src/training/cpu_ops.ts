@@ -15,6 +15,20 @@ export function sigmoid(x: number): number {
     return 1 / (1 + Math.exp(-x));
 }
 
+/** Numerically-stable softmax over a flat array. */
+export function softmax(logits: ArrayLike<number>): Float32Array {
+    let max = -Infinity;
+    for (let i = 0; i < logits.length; i++) if (logits[i]! > max) max = logits[i]!;
+    const out = new Float32Array(logits.length);
+    let sum = 0;
+    for (let i = 0; i < logits.length; i++) {
+        out[i] = Math.exp(logits[i]! - max);
+        sum += out[i]!;
+    }
+    for (let i = 0; i < logits.length; i++) out[i] = out[i]! / sum;
+    return out;
+}
+
 /** SiLU(x) = x * sigmoid(x) — mirrors `silu_forward`. */
 export function silu(x: number): number {
     return x / (1 + Math.exp(-x));

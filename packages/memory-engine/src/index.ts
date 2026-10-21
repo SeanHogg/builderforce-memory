@@ -45,6 +45,9 @@ export {
     deltaUnusableReason,
     MAX_DELTA_B64_CHARS,
     mergeCheckpointDiffs,
+    mergeCheckpointDiffsGated,
+    DELTA_TARGET_RE,
+    mlHeadTarget,
     meanEvalLoss,
 } from './evermind/index.js';
 export type {
@@ -61,6 +64,8 @@ export type {
     DeltaLearnPayload,
     DeltaParseResult,
     MergeResult,
+    GatedMergeResult,
+    MergeGateOptions,
     EvalExample,
     EvalTokenizer,
 } from './evermind/index.js';
@@ -103,7 +108,7 @@ export type {
 } from './training/mamba1_cpu.js';
 export {
     linearForward, linearBackward, rmsNormForward, rmsNormBackward,
-    silu, siluGrad, softplus, sigmoid, RMSNORM_EPS,
+    silu, siluGrad, softplus, sigmoid, softmax, RMSNORM_EPS,
 } from './training/cpu_ops.js';
 export {
     Tensor,
@@ -372,6 +377,9 @@ export {
     DEFAULT_LIMBIC_CONFIG,
     DEFAULT_LIMBIC_SEED,
     LimbicTrainer,
+    limbicHead,
+    LIMBIC_AFFECT_TASK,
+    limbicAffectPredictor,
 } from './limbic/index.js';
 export type {
     Region,
@@ -388,6 +396,8 @@ export type {
     LimbicParam,
     LimbicSample,
     LimbicTrainOptions,
+    LimbicAffectInput,
+    LimbicAffectOutput,
 } from './limbic/index.js';
 
 export { LIMBIC_AFFECT_WGSL } from './kernels/limbic_affect.js';
@@ -396,3 +406,7 @@ export { LIMBIC_AFFECT_WGSL } from './kernels/limbic_affect.js';
 // ── Experience (demonstrations, Train Once skills, runs) ─────────────────────
 
 export * from './experience/index.js';
+
+// ── ML task catalog (non-LLM learning: registry, runner, trainer, federation) ──
+
+export * from './ml/index.js';

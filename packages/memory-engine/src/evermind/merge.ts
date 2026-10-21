@@ -104,3 +104,56 @@ export function mergeCheckpointDiffs(
   const checkpoint = applyCheckpointDiff(baseCheckpoint, serializeRowDelta(merged));
   return { checkpoint, mergedRows: rows.length, contributors: parsed.length, deltaNorm: Math.sqrt(sumSq) };
 }
+
+/** A merge that passed (or failed) its held-out regression gate. */
+export interface GatedMergeResult extends MergeResult {
+  /** True when the merged checkpoint was kept. When false, `checkpoint` is the BASE. */
+  accepted: boolean;
+  /** Held-out loss of the base / the merged candidate (null when unscorable). */
+  baseLoss: number | null;
+  newLoss: number | null;
+  /** Why the merge was refused. */
+  refusedReason?: "nothing-merged" | "regressed" | "unscored";
+}
+
+export interface MergeGateOptions {
+  /** Loss increase still accepted (absolute). Default 0 — any regression refuses. */
+  tolerance?: number;
+  /** Refuse when either side cannot be scored. Default false (an unscored merge is kept). */
+  requireEval?: boolean;
+}
+
+/**
+ * {@link mergeCheckpointDiffs}, then the pre/post held-out check that LM merges
+ * record (`meanEvalLoss` of the previous vs the merged version) — enforced: a merge
+ * whose held-out loss rises by more than `tolerance` is refused and the base is
+ * returned unchanged. `score` maps a checkpoint to its held-out loss (lower is
+ * better); for an LM that is `meanEvalLoss` over the reloaded model, for a trained
+ * ML head its task's eval loss. Still the ONE merge — this only gates it.
+ */
+export function mergeCheckpointDiffsGated(
+  baseCheckpoint: ArrayBuffer,
+  diffs: ArrayBuffer[],
+  weights: number[] | undefined,
+  score: (checkpoint: ArrayBuffer) => number | null,
+  opts: MergeGateOptions = {},
+): GatedMergeResult {
+  const merged = mergeCheckpointDiffs(baseCheckpoint, diffs, weights);
+  const refuse = (refusedReason: GatedMergeResult["refusedReason"], baseLoss: number | null, newLoss: number | null): GatedMergeResult => ({
+    ...merged,
+    checkpoint: baseCheckpoint,
+    deltaNorm: 0,
+    accepted: false,
+    baseLoss,
+    newLoss,
+    refusedReason,
+  });
+  if (merged.mergedRows === 0) return refuse("nothing-merged", null, null);
+  const baseLoss = score(baseCheckpoint);
+  const newLoss = score(merged.checkpoint);
+  if (baseLoss == null || newLoss == null) {
+    return opts.requireEval ? refuse("unscored", baseLoss, newLoss) : { ...merged, accepted: true, baseLoss, newLoss };
+  }
+  if (newLoss > baseLoss + (opts.tolerance ?? 0)) return refuse("regressed", baseLoss, newLoss);
+  return { ...merged, accepted: true, baseLoss, newLoss };
+}

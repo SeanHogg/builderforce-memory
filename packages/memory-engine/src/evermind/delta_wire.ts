@@ -5,7 +5,9 @@
  * against that version (`diffCheckpoints`) and ships only the sparse diff; the single
  * writer then merges it (`mergeCheckpointDiffs`) instead of running the fit.
  * Everything the PRODUCER and the WRITER must agree on lives here, once:
- *   - the payload shape (`diff` base64 + integer `baseVersion`, optional weight/label);
+ *   - the payload shape (`diff` base64 + integer `baseVersion`, optional weight/label,
+ *     optional `target` naming WHICH checkpoint the diff is against — the model's own
+ *     weights, or one trained ML head carried in the manifest's `mlHeads`);
  *   - the size cap, so a producer can fall back before it is refused;
  *   - the structural check a delta must pass before it may join a merge batch.
  *
@@ -15,12 +17,21 @@
 import { deserializeRowDelta } from "../utils/delta.js";
 import { verifyCrcTrailer } from "../utils/crc32.js";
 import { base64ToBytes, bytesToBase64 } from "../utils/base64.js";
+import { ML_TASK_ID_RE } from "../ml/types.js";
 
 /** Max accepted base64 delta, in characters (~8 MiB). */
 export const MAX_DELTA_B64_CHARS = 8 * 1024 * 1024;
 
 /** Chars of provenance label kept — a diff carries no text, so the label is its only description. */
 export const DELTA_LABEL_MAX_CHARS = 800;
+
+/** A delta's target: absent = the model's own checkpoint; `ml:<task id>` = that trained ML head. */
+export const DELTA_TARGET_RE = new RegExp(`^ml:${ML_TASK_ID_RE.source.slice(1)}`);
+
+/** The delta target of the trained head for catalog task `taskId`. */
+export function mlHeadTarget(taskId: string): string {
+  return `ml:${taskId}`;
+}
 
 /** Standard base64 alphabet with optional padding. */
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -35,6 +46,11 @@ export interface DeltaLearnPayload {
   weight?: number;
   /** Provenance for the merged row (e.g. the run's task). */
   label?: string;
+  /**
+   * Which checkpoint the diff is against. Absent = the model's own weights (every
+   * delta written before heads federated); `ml:<task id>` = that trained ML head.
+   */
+  target?: string;
 }
 
 /** Why a body was refused: `invalid` (malformed) or `too-large` (over {@link MAX_DELTA_B64_CHARS}). */
@@ -65,9 +81,19 @@ export function parseDeltaLearnPayload(raw: unknown): DeltaParseResult {
   }
   const weight = typeof body.weight === "number" && Number.isFinite(body.weight) && body.weight > 0 ? body.weight : undefined;
   const label = typeof body.label === "string" && body.label.trim() ? body.label.trim().slice(0, DELTA_LABEL_MAX_CHARS) : undefined;
+  if (body.target !== undefined && (typeof body.target !== "string" || !DELTA_TARGET_RE.test(body.target))) {
+    return { ok: false, reason: "invalid", error: "target, when present, must be ml:<task id>" };
+  }
+  const target = body.target as string | undefined;
   return {
     ok: true,
-    payload: { diff, baseVersion, ...(weight !== undefined ? { weight } : {}), ...(label ? { label } : {}) },
+    payload: {
+      diff,
+      baseVersion,
+      ...(weight !== undefined ? { weight } : {}),
+      ...(label ? { label } : {}),
+      ...(target ? { target } : {}),
+    },
   };
 }
 
@@ -75,13 +101,21 @@ export function parseDeltaLearnPayload(raw: unknown): DeltaParseResult {
  * Build the payload for one computed diff. The caller owns the size guard (compare
  * `payload.diff.length` with {@link MAX_DELTA_B64_CHARS}) so it can choose a fallback.
  */
-export function buildDeltaLearnPayload(diff: ArrayBuffer, baseVersion: number, weight?: number, label?: string): DeltaLearnPayload {
+export function buildDeltaLearnPayload(
+  diff: ArrayBuffer,
+  baseVersion: number,
+  weight?: number,
+  label?: string,
+  target?: string,
+): DeltaLearnPayload {
   const trimmed = (label ?? "").trim();
+  if (target !== undefined && !DELTA_TARGET_RE.test(target)) throw new Error(`buildDeltaLearnPayload: bad target '${target}'`);
   return {
     diff: bytesToBase64(diff),
     baseVersion,
     ...(typeof weight === "number" && Number.isFinite(weight) && weight > 0 ? { weight } : {}),
     ...(trimmed ? { label: trimmed.slice(0, DELTA_LABEL_MAX_CHARS) } : {}),
+    ...(target ? { target } : {}),
   };
 }
 

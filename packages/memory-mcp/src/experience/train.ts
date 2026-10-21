@@ -14,7 +14,13 @@
  * N = 0) — a newly downloaded Evermind — gets every procedure again.
  */
 
-import type { adaptPackage, experienceDocuments, packDocuments, ExperienceStore } from "@seanhogg/builderforce-memory-engine";
+import type {
+    adaptPackage,
+    experienceDocuments,
+    packDocuments,
+    ExperienceDocument,
+    ExperienceStore,
+} from "@seanhogg/builderforce-memory-engine";
 import type { LoadedEvermind } from "../model/evermind-package.js";
 
 /** The engine functions training needs, passed in so the peer stays optional. */
@@ -28,6 +34,7 @@ export interface TrainEngine {
 export type TrainOutcome =
     | { status: "nothing_new"; pending: 0; version: string }
     | { status: "no_window"; pending: number; version: string }
+    | { status: "curated_out"; pending: number; version: string }
     | { status: "trained"; learned: number; passes: number; loss: number; version: string; previousModel: string };
 
 const EXP_SUFFIX = /\+exp(\d+)$/;
@@ -55,15 +62,28 @@ export async function pendingDocuments(store: ExperienceStore, engine: TrainEngi
     return engine.experienceDocuments(snap.episodes, snap.skills).filter((d) => !known(d.id));
 }
 
+export interface TrainExperienceOptions {
+    /**
+     * Opt-in curation between "what is new" and the adaptation passes — typically the
+     * engine's `curateExperience` (quality filter + near-duplicate removal, docs/ml-task-catalog.md
+     * §4.2). Absent ⇒ every pending procedure is learned, exactly as before. A procedure
+     * curation drops is NOT recorded as learned, so a later pass reconsiders it.
+     */
+    curate?: (docs: ExperienceDocument[]) => Promise<ExperienceDocument[]> | ExperienceDocument[];
+}
+
 export async function trainExperience(
     store: ExperienceStore,
     engine: TrainEngine,
     model: LoadedEvermind,
     modelFile: string,
+    opts: TrainExperienceOptions = {},
 ): Promise<TrainOutcome> {
     const version = model.pkg.manifest.version ?? "0";
-    const docs = await pendingDocuments(store, engine, version);
-    if (docs.length === 0) return { status: "nothing_new", pending: 0, version };
+    const pending = await pendingDocuments(store, engine, version);
+    if (pending.length === 0) return { status: "nothing_new", pending: 0, version };
+    const docs = opts.curate ? await opts.curate(pending) : pending;
+    if (docs.length === 0) return { status: "curated_out", pending: pending.length, version };
 
     const next = nextExperienceVersion(version);
     // The engine's package type; the structural view is what was loaded from disk.

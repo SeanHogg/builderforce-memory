@@ -25,6 +25,7 @@
 
 import { SeededRng } from "../utils/rng.js";
 import { quantizeFp16, dequantizeFp16 } from "../utils/quantization.js";
+import { softmax } from "../training/cpu_ops.js";
 
 export interface MoEConfig {
   /** Model (token) dimension — FFN input/output width. Default 64. */
@@ -462,16 +463,3 @@ export class SharedExpertMoE {
   }
 }
 
-/** Numerically-stable softmax over a flat array. */
-function softmax(logits: Float32Array): Float32Array {
-  let max = -Infinity;
-  for (let i = 0; i < logits.length; i++) if (logits[i]! > max) max = logits[i]!;
-  const out = new Float32Array(logits.length);
-  let sum = 0;
-  for (let i = 0; i < logits.length; i++) {
-    out[i] = Math.exp(logits[i]! - max);
-    sum += out[i]!;
-  }
-  for (let i = 0; i < logits.length; i++) out[i] = out[i]! / sum;
-  return out;
-}

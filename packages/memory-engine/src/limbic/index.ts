@@ -54,3 +54,8 @@ export type { LimbicModelConfig, LimbicForward, LimbicParam } from "./limbic_mod
 
 export { LimbicTrainer } from "./limbic_trainer.js";
 export type { LimbicSample, LimbicTrainOptions } from "./limbic_trainer.js";
+export { limbicHead } from "./limbic_trainer.js";
+
+// The ML catalog row for the affect head (`ml/`), registered by limbic itself.
+export { LIMBIC_AFFECT_TASK, limbicAffectPredictor } from "./limbic_task.js";
+export type { LimbicAffectInput, LimbicAffectOutput } from "./limbic_task.js";

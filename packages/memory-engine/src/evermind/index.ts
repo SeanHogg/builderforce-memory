@@ -11,6 +11,7 @@ export type {
   EvermindModality,
   PackageMeta,
   ValidationResult,
+  EvermindMlHead,
 } from "./package.js";
 
 export { adaptAndDiff, adaptPackage, EVERMIND_ADAPT_MAX_CHARS } from "./adapt.js";
@@ -22,11 +23,13 @@ export {
   decodeDeltaPayload,
   deltaUnusableReason,
   MAX_DELTA_B64_CHARS,
+  DELTA_TARGET_RE,
+  mlHeadTarget,
 } from "./delta_wire.js";
 export type { DeltaLearnPayload, DeltaParseResult } from "./delta_wire.js";
 
-export { mergeCheckpointDiffs } from "./merge.js";
-export type { MergeResult } from "./merge.js";
+export { mergeCheckpointDiffs, mergeCheckpointDiffsGated } from "./merge.js";
+export type { MergeResult, GatedMergeResult, MergeGateOptions } from "./merge.js";
 
 export { meanEvalLoss } from "./eval.js";
 export type { EvalExample, EvalTokenizer } from "./eval.js";

@@ -15,6 +15,9 @@ import { SharedExpertMoE, type MoEConfig } from "../moe/moe_model.js";
 import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
 import { VideoRVQCodec } from "../codec/video_rvq.js";
 import { BPETokenizer } from "../tokenizer/bpe.js";
+import { mlHeadUnusableReason, type EvermindMlHead } from "../ml/federate.js";
+
+export type { EvermindMlHead } from "../ml/federate.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;
@@ -87,6 +90,8 @@ export interface EvermindModelManifest {
   card: EvermindModelCard;
   /** ISO timestamp, caller-supplied (the engine avoids Date for determinism). */
   createdAt?: string;
+  /** Trained ML-catalog heads that travel (and merge) with this model. Absent ⇒ none. */
+  mlHeads?: EvermindMlHead[];
 }
 
 export interface PackageMeta {
@@ -297,6 +302,17 @@ export class EvermindModelPackage {
     return new EvermindModelPackage(manifest, checkpoint, this.codec, this.tokenizer);
   }
 
+  /**
+   * This package carrying `heads` as its trained ML heads (replacing any it had);
+   * checkpoint, codec and tokenizer are kept. An empty list removes the field.
+   */
+  withMlHeads(heads: readonly EvermindMlHead[]): EvermindModelPackage {
+    const manifest: EvermindModelManifest = { ...this.manifest };
+    delete manifest.mlHeads;
+    if (heads.length) manifest.mlHeads = [...heads];
+    return new EvermindModelPackage(manifest, this.checkpoint, this.codec, this.tokenizer);
+  }
+
   /** Parse a `.evermind` blob. Throws on bad magic / truncation. */
   /**
    * How many leading bytes of a package hold its header and manifest, from its first
@@ -404,6 +420,13 @@ export class EvermindModelPackage {
         }
       }
     }
+    for (const h of this.manifest.mlHeads ?? []) {
+      const why = mlHeadUnusableReason(h);
+      if (why) errors.push(`ml head '${String(h?.task)}': ${why}`);
+    }
+    if (new Set((this.manifest.mlHeads ?? []).map((h) => h.task)).size !== (this.manifest.mlHeads ?? []).length) {
+      errors.push("ml heads: a task appears more than once");
+    }
     return { ok: errors.length === 0, errors };
   }
 
@@ -462,3 +485,4 @@ export class EvermindModelPackage {
     return { lm: this.loadLM(), codec: VideoRVQCodec.deserialize(this.codec!), modality };
   }
 }
+
