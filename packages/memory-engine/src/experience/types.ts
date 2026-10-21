@@ -154,6 +154,25 @@ export interface Adaptation {
   at: number;
 }
 
+/**
+ * A procedure curation left out of an adaptation, kept so a later curation does not
+ * re-embed and re-judge it while the verdict still stands: a `duplicate` stands while
+ * the procedure it repeats (`of`) is learned by the loaded model; a `low-quality` one
+ * while its finished-run count is still `runs` (new runs are new evidence). An
+ * `excluded` one is recorded but always reconsidered — exclusion is the caller's call.
+ */
+export interface CuratedOut {
+  status: 'curated_out';
+  reason: 'duplicate' | 'low-quality' | 'excluded';
+  /** `duplicate`: the id of the procedure it repeats. */
+  of?: string;
+  /** Similarity (duplicate) or P(high) (low-quality). */
+  score?: number;
+  /** Finished runs of the procedure when it was judged. */
+  runs: number;
+  at: number;
+}
+
 /** A short random id — unique enough for one person's store. */
 export function newExperienceId(): string {
   const bytes = new Uint8Array(8);

@@ -195,16 +195,33 @@ test("experience_train { curate } drops near-copies — within the batch AND of 
   assert.equal(dup.reason, "duplicate");
   assert.deepEqual([dup.id, dup.of].sort(), ["ep1", "ep2"]);
 
-  // A third copy is a near-copy of what the model has ALREADY learned, so nothing is
-  // left to learn: the dropped copy from the first pass and the new one both go.
+  // The first pass's drop is persisted as `curated_out`, naming the copy it repeats.
+  const stored = () => JSON.parse(fs.readFileSync(path.join(dir, "experience.json"), "utf8")).curated;
+  assert.deepEqual(
+    { status: stored()[dup.id].status, reason: stored()[dup.id].reason, of: stored()[dup.id].of },
+    { status: "curated_out", reason: "duplicate", of: dup.of },
+  );
+
+  // Nothing new: the earlier drop still stands (what it repeats is learned), so it is
+  // skipped — not re-embedded, not dropped again.
+  const again = (await call("experience_train", { curate: true })).json;
+  assert.equal(again.status, "curated_out");
+  assert.equal(again.curation.dropped.length, 0);
+  assert.deepEqual(again.curation.alreadyDropped.map((d) => [d.id, d.reason, d.of]), [[dup.id, "duplicate", dup.of]]);
+
+  // A third copy is a near-copy of what the model has ALREADY learned: only it is judged
+  // and dropped; the earlier drop is still skipped.
   await call("episode_save", { episode: episode("ep3") });
   const second = (await call("experience_train", { curate: true })).json;
   assert.equal(second.status, "curated_out");
-  assert.equal(second.curation.dropped.length, 2);
-  assert.ok(second.curation.dropped.every((d) => d.reason === "duplicate" && d.of === dup.of));
+  assert.deepEqual(second.curation.dropped.map((d) => [d.id, d.reason, d.of]), [["ep3", "duplicate", dup.of]]);
+  assert.deepEqual(second.curation.alreadyDropped.map((d) => d.id), [dup.id]);
+  assert.equal(stored().ep3.status, "curated_out");
 
   // Curation is opt-in: without it every pending copy is learned, as before.
   assert.equal((await call("experience_train")).json.status, "trained");
+  // Learning a procedure clears its curation verdict.
+  assert.deepEqual(stored(), {});
 });
 
 test("training without a model says how to configure one", async () => {

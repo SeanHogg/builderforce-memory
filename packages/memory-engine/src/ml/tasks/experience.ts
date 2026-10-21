@@ -5,11 +5,12 @@
  * instead of every transcript. Curation only drops documents; it never rewrites one.
  */
 import { experienceDocuments, type ExperienceDocument } from "../../experience/corpus.js";
-import type { Episode, Run, Skill } from "../../experience/types.js";
+import type { CurationRecord } from "../../experience/store.js";
+import type { CuratedOut, Episode, Run, Skill } from "../../experience/types.js";
 import { KnnModel } from "../classical/knn.js";
 import { logScale, type TextEmbedder } from "../features.js";
 import { MlTaskRegistry } from "../registry.js";
-import { InMemoryMlModels, MlEngineUnavailableError, runMlTask, type MlRunContext } from "../run.js";
+import { InMemoryMlModels, MlEngineUnavailableError, runMlTask, type MlModelStore, type MlRunContext } from "../run.js";
 import { trainMlTask, type MlTrainExample } from "../train.js";
 import type { MlPrediction, MlPredictor, MlTask } from "../types.js";
 
@@ -83,6 +84,14 @@ export function experienceQualityLabel(i: ExperienceQualityInput): number | null
   return i.succeeded / i.runs >= 0.5 ? 1 : 0;
 }
 
+/**
+ * From this many finished runs, curation judges a procedure by its OBSERVED success
+ * rate (`succeeded / runs`) instead of the model: the label is then known, and better
+ * than any guess from neighbours. The model only scores procedures with 1–4 runs;
+ * never-run ones (0) are kept.
+ */
+export const QUALITY_OBSERVED_MIN_RUNS = 5;
+
 /** Labelled examples for `experience.quality` — only the inputs that have run outcomes. */
 export function experienceQualityExamples(inputs: readonly ExperienceQualityInput[]): MlTrainExample<ExperienceQualityInput>[] {
   return inputs.flatMap((input) => {
@@ -147,14 +156,23 @@ export interface CurationOptions {
   /** Cosine similarity at or above which a document duplicates a kept one. Default {@link DEFAULT_DEDUPE_THRESHOLD}. */
   dedupeThreshold?: number;
   /**
-   * Quality filter through the runner. A document whose P(high) is below `minPHigh`
-   * (default 0.5) is dropped; one the runner cannot score (no trained engine) is kept,
-   * and so is an UNSCORED one (`runs === 0` — never run is unknown, not bad).
+   * Quality filter. A document whose P(high) is below `minPHigh` (default 0.5) is
+   * dropped. P(high) is the OBSERVED success rate once it has
+   * {@link QUALITY_OBSERVED_MIN_RUNS} finished runs; with 1–4 it is the runner's
+   * answer, and one the runner cannot score (no trained engine) is kept. An UNSCORED
+   * document (`runs === 0` — never run is unknown, not bad) is always kept.
    */
   quality?: {
     ctx: MlRunContext;
     input: (doc: ExperienceDocument) => ExperienceQualityInput;
     minPHigh?: number;
+    /**
+     * The ids of the documents the quality model was trained on, in training order. A
+     * document among them is scored LEAVE-ONE-OUT — its own example does not vote, or
+     * a kNN would count it at similarity 1. Exact for the kNN engine (the one
+     * {@link curatePendingExperience} trains); another engine answers as fitted.
+     */
+    trainedIds?: readonly string[];
   };
   /** Document ids to leave out (e.g. those whose runs `run.anomaly` flagged). */
   exclude?: ReadonlySet<string>;
@@ -176,9 +194,34 @@ export interface CurationOptions {
  */
 export const CURATION_KNOWN_LIMIT = 200;
 
+/** One document curation left out, and why. */
+export interface CurationDrop {
+  id: string;
+  reason: CuratedOut["reason"];
+  of?: string;
+  score?: number;
+}
+
 export interface CurationResult {
   kept: ExperienceDocument[];
-  dropped: { id: string; reason: "duplicate" | "low-quality" | "excluded"; of?: string; score?: number }[];
+  dropped: CurationDrop[];
+  /**
+   * Documents an EARLIER curation left out whose verdict still stands (see
+   * {@link CuratedOut}) — skipped without being embedded or judged again. Only
+   * {@link curatePendingExperience} fills it, from the snapshot's `curated` records.
+   */
+  alreadyDropped?: CurationDrop[];
+}
+
+/** A model store whose kNN for `taskId` leaves the point at `index` out of every vote. */
+function leaveOneOut(models: MlModelStore, taskId: string, index: number): MlModelStore {
+  return {
+    get: (t, e) => {
+      const p = models.get(t, e);
+      return t === taskId && p instanceof KnnModel && index < p.size ? p.excluding(index) : p;
+    },
+    set: (t, e, p) => models.set(t, e, p),
+  };
 }
 
 /** Memoise an embedder for one call, so curation embeds each text once. */
@@ -196,6 +239,25 @@ function memoEmbedder(e: TextEmbedder): TextEmbedder {
 }
 
 /**
+ * P(high) of one quality input, or null when it cannot be judged (never run, or no
+ * trained engine). Observed rate from {@link QUALITY_OBSERVED_MIN_RUNS} runs; the
+ * runner's answer below that, leave-one-out when the document is training example
+ * `trainedIndex`.
+ */
+async function qualityScore(input: ExperienceQualityInput, ctx: MlRunContext, trainedIndex: number | undefined): Promise<number | null> {
+  // Never run ⇒ no outcome to judge it by: keep it rather than let a guess drop it.
+  if (input.runs <= 0) return null;
+  if (input.runs >= QUALITY_OBSERVED_MIN_RUNS) return input.succeeded / input.runs;
+  const runCtx = trainedIndex == null || !ctx.models ? ctx : { ...ctx, models: leaveOneOut(ctx.models, EXPERIENCE_QUALITY_TASK.id, trainedIndex) };
+  try {
+    return (await runMlTask<ExperienceQuality>(EXPERIENCE_QUALITY_TASK.id, input, runCtx)).output.pHigh;
+  } catch (error) {
+    if (!(error instanceof MlEngineUnavailableError)) throw error;
+    return null;
+  }
+}
+
+/**
  * Curate documents before they are packed into adaptation passes: drop excluded
  * ones, low-quality ones (when a quality filter is given), then near-duplicates of
  * an already-learned one (`known`) or an earlier kept one. Order is preserved, and
@@ -210,6 +272,7 @@ export async function curateExperience(docs: readonly ExperienceDocument[], opts
   const kept: ExperienceDocument[] = [];
   const dropped: CurationResult["dropped"] = [];
   const qctx = opts.quality ? { ...opts.quality.ctx, embedder } : null;
+  const trainedAt = new Map((opts.quality?.trainedIds ?? []).map((id, i) => [id, i] as const));
   const embedDoc = (doc: ExperienceDocument) => embedder.embed(EXPERIENCE_DEDUPE_TASK.features.text!(doc));
 
   for (const doc of opts.known ?? []) {
@@ -223,18 +286,10 @@ export async function curateExperience(docs: readonly ExperienceDocument[], opts
       continue;
     }
     if (opts.quality && qctx) {
-      const input = opts.quality.input(doc);
-      // Never run ⇒ no outcome to judge it by: keep it rather than let a guess drop it.
-      if (input.runs > 0) {
-        try {
-          const r = await runMlTask<ExperienceQuality>(EXPERIENCE_QUALITY_TASK.id, input, qctx);
-          if (r.output.pHigh < (opts.quality.minPHigh ?? 0.5)) {
-            dropped.push({ id: doc.id, reason: "low-quality", score: r.output.pHigh });
-            continue;
-          }
-        } catch (error) {
-          if (!(error instanceof MlEngineUnavailableError)) throw error;
-        }
+      const pHigh = await qualityScore(opts.quality.input(doc), qctx, trainedAt.get(doc.id));
+      if (pHigh != null && pHigh < (opts.quality.minPHigh ?? 0.5)) {
+        dropped.push({ id: doc.id, reason: "low-quality", score: pHigh });
+        continue;
       }
     }
     const x = await embedDoc(doc);
@@ -255,16 +310,36 @@ export interface ExperienceCurationSource {
   episodes: Episode[];
   skills: Skill[];
   runs: readonly Run[];
+  /** Earlier curations' verdicts (the snapshot's `curated`); a standing one is skipped. */
+  curated?: Readonly<Record<string, CuratedOut>>;
+}
+
+/**
+ * Whether an earlier `curated_out` verdict still stands (see {@link CuratedOut}): a
+ * duplicate while what it repeats is learned (in `learnedIds`), a low-quality one
+ * while its finished-run count is unchanged. An exclusion is always reconsidered.
+ */
+export function curationStands(verdict: CuratedOut | undefined, finishedRuns: number, learnedIds: ReadonlySet<string>): boolean {
+  if (!verdict || verdict.status !== "curated_out") return false;
+  if (verdict.reason === "duplicate") return verdict.of != null && learnedIds.has(verdict.of);
+  if (verdict.reason === "low-quality") return verdict.runs === finishedRuns;
+  return false;
 }
 
 /**
  * The whole curation step a host runs in front of the adaptation passes, so every
- * host wires it the same way: train `experience.quality` on the run outcomes there
- * are (it stays untrained below its `minSamples`, and then nothing is dropped for
- * quality), then {@link curateExperience} the pending documents with it,
- * de-duplicating against each other and against `known` — the already-learned
- * documents, MOST RECENTLY LEARNED FIRST; only the first {@link CURATION_KNOWN_LIMIT}
- * are embedded, so a host can pass its whole ledger.
+ * host wires it the same way:
+ *
+ *   1. skip each pending document whose earlier `curated_out` verdict still stands
+ *      ({@link curationStands}) — reported in `alreadyDropped`, never re-embedded;
+ *   2. train `experience.quality` on the run outcomes of at most
+ *      {@link CURATION_KNOWN_LIMIT} scored procedures — the pending ones, then the
+ *      learned ones most recently learned first (it stays untrained below its
+ *      `minSamples`, and then only the observed-rate rule drops for quality);
+ *   3. {@link curateExperience} the rest with it — leave-one-out for a document in
+ *      that training set — de-duplicating against each other and against `known`:
+ *      the already-learned documents, MOST RECENTLY LEARNED FIRST; only the first
+ *      {@link CURATION_KNOWN_LIMIT} are embedded, so a host can pass its whole ledger.
  */
 export async function curatePendingExperience(
   pending: readonly ExperienceDocument[],
@@ -275,19 +350,64 @@ export async function curatePendingExperience(
   const embedder = memoEmbedder(opts.embedder);
   const inputs = experienceQualityInputs(source.episodes, source.skills, source.runs);
   const byId = new Map(inputs.map((i) => [i.doc.id, i] as const));
+  // A document with no joined input (not in the snapshot) counts as never run.
+  const inputOf = (doc: ExperienceDocument): ExperienceQualityInput => byId.get(doc.id) ?? { doc, steps: 0, runs: 0, succeeded: 0, failed: 0 };
+
+  const learnedIds = new Set((opts.known ?? []).map((d) => d.id));
+  const alreadyDropped: CurationDrop[] = [];
+  const toCurate: ExperienceDocument[] = [];
+  for (const doc of pending) {
+    const verdict = source.curated?.[doc.id];
+    if (verdict && curationStands(verdict, inputOf(doc).runs, learnedIds)) {
+      alreadyDropped.push({ id: doc.id, reason: verdict.reason, ...(verdict.of != null ? { of: verdict.of } : {}), ...(verdict.score != null ? { score: verdict.score } : {}) });
+    } else toCurate.push(doc);
+  }
+
+  // The bounded training set: newest first (pending, then most recently learned),
+  // scored only, then reversed — trainMlTask holds out the chronological tail.
+  const recentFirst = [...pending, ...(opts.known ?? [])]
+    .map((d) => byId.get(d.id))
+    .filter((i): i is ExperienceQualityInput => i != null && experienceQualityLabel(i) != null)
+    .slice(0, CURATION_KNOWN_LIMIT);
+  const train = experienceQualityExamples(recentFirst.reverse());
+
   const registry = new MlTaskRegistry();
   registry.register(EXPERIENCE_QUALITY_TASK);
   const models = new InMemoryMlModels();
-  await trainMlTask(EXPERIENCE_QUALITY_TASK, experienceQualityExamples(inputs), { embedder, models });
-  return curateExperience(pending, {
+  const fitted = await trainMlTask(EXPERIENCE_QUALITY_TASK, train, { embedder, models });
+  const r = await curateExperience(toCurate, {
     embedder,
     ...(known ? { known } : {}),
     ...(opts.dedupeThreshold != null ? { dedupeThreshold: opts.dedupeThreshold } : {}),
     quality: {
       ctx: { registry, mode: "local-only", models },
-      // A document with no joined input (not in the snapshot) counts as never run.
-      input: (doc) => byId.get(doc.id) ?? { doc, steps: 0, runs: 0, succeeded: 0, failed: 0 },
+      input: inputOf,
       ...(opts.minPHigh != null ? { minPHigh: opts.minPHigh } : {}),
+      // The refit on all examples keeps their order, so kNN point i is train[i].
+      ...(fitted ? { trainedIds: train.map((e) => e.input.doc.id) } : {}),
     },
   });
+  return { ...r, alreadyDropped };
+}
+
+/**
+ * The `curated_out` records a host persists (`ExperienceStore.recordCuration`) for one
+ * curation result: each dropped document with its verdict and finished-run count, and
+ * the kept ids (whose earlier verdicts clear).
+ */
+export function curationRecords(result: CurationResult, source: Pick<ExperienceCurationSource, "runs">, at: number): CurationRecord {
+  const finished = new Map<string, number>();
+  for (const run of source.runs) if (run.status !== "running") finished.set(run.skillId, (finished.get(run.skillId) ?? 0) + 1);
+  const dropped: Record<string, CuratedOut> = {};
+  for (const d of result.dropped) {
+    dropped[d.id] = {
+      status: "curated_out",
+      reason: d.reason,
+      ...(d.of != null ? { of: d.of } : {}),
+      ...(d.score != null ? { score: d.score } : {}),
+      runs: finished.get(d.id) ?? 0,
+      at,
+    };
+  }
+  return { dropped, kept: result.kept.map((d) => d.id) };
 }

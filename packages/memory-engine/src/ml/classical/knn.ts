@@ -56,9 +56,12 @@ export class KnnModel implements MlPredictor {
     return this.metric === "cosine" ? cosine(a, b) : 1 / (1 + Math.sqrt(squaredDistance(a, b)));
   }
 
-  /** The `k` closest points, closest first. */
-  neighbours(x: Vec, k: number = this.k): Neighbour[] {
-    const all = this._x.map((p, index) => ({ index, similarity: this.similarity(x, p) }));
+  /** The `k` closest points, closest first — never the point at `exclude` (leave-one-out). */
+  neighbours(x: Vec, k: number = this.k, exclude?: number): Neighbour[] {
+    const all: Neighbour[] = [];
+    for (let index = 0; index < this._x.length; index++) {
+      if (index !== exclude) all.push({ index, similarity: this.similarity(x, this._x[index]!) });
+    }
     all.sort((a, b) => b.similarity - a.similarity || a.index - b.index);
     return all.slice(0, Math.min(k, all.length));
   }
@@ -73,10 +76,15 @@ export class KnnModel implements MlPredictor {
     return this._y[index]!;
   }
 
-  /** Class probabilities from similarity-weighted votes (uniform when empty). */
-  proba(x: Vec): number[] {
+  /**
+   * Class probabilities from similarity-weighted votes (uniform when empty). With
+   * `exclude`, the point at that index does not vote — the leave-one-out score of a
+   * point that is itself in the index, which would otherwise vote for itself at
+   * similarity 1.
+   */
+  proba(x: Vec, exclude?: number): number[] {
     const votes = new Array<number>(this.classes).fill(0);
-    for (const n of this.neighbours(x)) {
+    for (const n of this.neighbours(x, this.k, exclude)) {
       // Shift cosine into (0, 2] so an orthogonal neighbour still casts a small vote.
       const w = (this.metric === "cosine" ? n.similarity + 1 : n.similarity) * this._w[n.index]! + 1e-9;
       votes[this._y[n.index]!]! += w;
@@ -88,6 +96,17 @@ export class KnnModel implements MlPredictor {
   predict(x: Float32Array): MlPrediction {
     const scores = this.proba(x);
     return { scores, confidence: topProbability(scores) };
+  }
+
+  /** This index as a predictor that leaves the point at `index` out of every vote. */
+  excluding(index: number): MlPredictor {
+    if (!(index >= 0 && index < this._x.length)) throw new Error(`KnnModel.excluding: no point ${index} (size ${this._x.length})`);
+    return {
+      predict: (x: Float32Array): MlPrediction => {
+        const scores = this.proba(x, index);
+        return { scores, confidence: topProbability(scores) };
+      },
+    };
   }
 }
 

@@ -21,6 +21,7 @@ export type {
   RunStepLog,
   Run,
   Adaptation,
+  CuratedOut,
 } from './types.js';
 export { newExperienceId } from './types.js';
 export { isIrreversibleLabel, elementLabel, needsApproval } from './approval.js';
@@ -32,4 +33,4 @@ export type { ExperienceDocument } from './corpus.js';
 export { experienceOverview } from './overview.js';
 export type { ExperienceOverview, ExperienceRegion, ExperienceEvent, ExperienceDay, OverviewOptions } from './overview.js';
 export { EXPERIENCE_SCHEMA, MAX_RUNS, MAX_ADAPTATIONS, emptySnapshot, parseSnapshot, InMemoryExperienceStore } from './store.js';
-export type { ExperienceSnapshot, ExperienceStore } from './store.js';
+export type { ExperienceSnapshot, ExperienceStore, CurationRecord } from './store.js';

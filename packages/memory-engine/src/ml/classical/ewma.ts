@@ -10,7 +10,7 @@
  */
 import type { MlPrediction, MlPredictor, MlSample } from "../types.js";
 import { featureDim } from "./math.js";
-import { anomalyConfidence } from "./robust_z.js";
+import { anomalyConfidence, minScaleAt, type MinScale } from "./robust_z.js";
 
 export interface EwmaOptions {
   /** Smoothing factor in (0, 1]. Default 0.3. */
@@ -19,8 +19,8 @@ export interface EwmaOptions {
   threshold?: number;
   /** Smallest σ per feature, as a fraction of |μ| (plus 1e-9). Default 0.01. */
   minScaleFraction?: number;
-  /** Smallest σ per feature in absolute feature units. Default 0 (see `RobustZOptions.minScale`). */
-  minScale?: number;
+  /** Smallest σ in absolute feature units, one or per feature. Default 0 (see `RobustZOptions.minScale`). */
+  minScale?: MinScale;
 }
 
 export class EwmaModel implements MlPredictor {
@@ -30,14 +30,14 @@ export class EwmaModel implements MlPredictor {
     readonly alpha: number,
     readonly threshold: number,
     readonly minScaleFraction: number,
-    readonly minScale: number = 0,
+    readonly minScale: MinScale = 0,
   ) {
     if (!(alpha > 0 && alpha <= 1)) throw new Error(`EwmaModel: alpha must be in (0, 1] (got ${alpha})`);
   }
 
   zScores(x: ArrayLike<number>): number[] {
     return Array.from(this.mean, (m, i) => {
-      const sd = Math.max(Math.sqrt(this.variance[i]!), this.minScaleFraction * Math.abs(m) + 1e-9, this.minScale);
+      const sd = Math.max(Math.sqrt(this.variance[i]!), this.minScaleFraction * Math.abs(m) + 1e-9, minScaleAt(this.minScale, i));
       return Math.abs((x[i] ?? 0) - m) / sd;
     });
   }

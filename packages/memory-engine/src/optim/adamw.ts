@@ -138,20 +138,29 @@ export interface AdamWKernelStep {
   gradScale?: number;
 }
 
+/** Largest finite f32 — a moment above it would be stored as ±Inf. */
+const F32_MAX = 3.4028234663852886e38;
+
 /**
  * One AdamW step over a single parameter tensor — the exact CPU mirror of the
- * `adamw_update` entry point in `WEIGHT_UPDATE_WGSL`, including its two safety
+ * `adamw_update` entry point in `WEIGHT_UPDATE_WGSL`, including its safety
  * properties:
  *
- *   • the **NaN/Inf guard** — a non-finite step is dropped rather than written
- *     into a weight, so one bad gradient cannot permanently poison the model;
+ *   • the **non-finite gradient skip** — an element whose gradient is NaN/±Inf
+ *     (or whose new moments would overflow f32) is skipped ENTIRELY: m, v and the
+ *     weight keep their values (no decay either). Writing the moment first and
+ *     dropping only the step stored NaN in m/v, and every later step of that
+ *     element was then NaN too — silently dropped, so the weight froze forever;
+ *   • the **NaN/Inf step guard** — a non-finite step from finite moments is
+ *     dropped rather than written into a weight;
  *   • the **trust region** — `maxDelta` bounds how far a single step can move a
  *     weight, which is what keeps repeated write-through adapts reversible.
  *
  * Decoupled weight decay (`θ * (1 - lr·wd)`), matching the kernel — deliberately
  * NOT the coupled form {@link AdamW} uses for the MoE/EvermindLM trainers.
  *
- * `param`, `m` and `v` are updated in place.
+ * `param`, `m` and `v` are updated in place. Returns how many elements were skipped
+ * for a non-finite gradient (0 on a healthy step).
  */
 export function adamwUpdateInPlace(
   param: Float32Array,
@@ -159,15 +168,21 @@ export function adamwUpdateInPlace(
   m: Float32Array,
   v: Float32Array,
   hp: AdamWKernelStep,
-): void {
+): number {
   const { lr, beta1, beta2, eps, weightDecay, beta1_t, beta2_t, maxDelta } = hp;
   const gradScale = hp.gradScale ?? 1;
   const bc1 = 1 - beta1_t;
   const bc2 = 1 - beta2_t;
+  let skipped = 0;
   for (let i = 0; i < param.length; i++) {
     const g = grad[i]! * gradScale;
     const mNew = beta1 * m[i]! + (1 - beta1) * g;
     const vNew = beta2 * v[i]! + (1 - beta2) * g * g;
+    // NaN fails every comparison, so this also catches a NaN gradient.
+    if (!(Math.abs(mNew) <= F32_MAX && vNew <= F32_MAX)) {
+      skipped++;
+      continue;
+    }
     m[i] = mNew;
     v[i] = vNew;
 
@@ -177,4 +192,5 @@ export function adamwUpdateInPlace(
 
     param[i] = param[i]! * (1 - lr * weightDecay) - step;
   }
+  return skipped;
 }

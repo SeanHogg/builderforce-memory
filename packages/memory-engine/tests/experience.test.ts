@@ -212,6 +212,26 @@ describe('experience store', () => {
         expect(adaptations[0].index).toBe(MAX_ADAPTATIONS + 3);
         expect(parseSnapshot({ schema: EXPERIENCE_SCHEMA, episodes: [] }).adaptations).toEqual([]);
     });
+
+    it('persists curated_out verdicts until the item is kept, learned or forgotten', async () => {
+        const store = new InMemoryExperienceStore();
+        await store.putEpisode(episode());
+        await store.putEpisode({ ...episode(), id: 'ep2' });
+        await store.putEpisode({ ...episode(), id: 'ep3' });
+        const out = (of: string) => ({ status: 'curated_out' as const, reason: 'duplicate' as const, of, runs: 0, at: 1 });
+        await store.recordCuration({ dropped: { ep2: out('ep'), ep3: out('ep') }, kept: [] });
+        const copy = new InMemoryExperienceStore(JSON.parse(JSON.stringify(await store.snapshot())));
+        expect((await copy.snapshot()).curated).toEqual({ ep2: out('ep'), ep3: out('ep') });
+        await copy.recordCuration({ dropped: {}, kept: ['ep3'] });
+        expect(Object.keys((await copy.snapshot()).curated)).toEqual(['ep2']);
+        await copy.recordCuration({ dropped: { ep3: out('ep') }, kept: [] });
+        await copy.recordAdaptation(adaptation(1, ['ep2']));
+        expect(Object.keys((await copy.snapshot()).curated)).toEqual(['ep3']);
+        await copy.deleteEpisode('ep3');
+        expect((await copy.snapshot()).curated).toEqual({});
+        // Snapshots written before 2026.10.3 have none.
+        expect(parseSnapshot({ schema: EXPERIENCE_SCHEMA, episodes: [] }).curated).toEqual({});
+    });
 });
 
 describe('experience overview', () => {

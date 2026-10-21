@@ -14,6 +14,7 @@ import {
 import { trainMlTask, mlEvalLoss } from "../src/ml/train.js";
 import { DenseHead } from "../src/ml/dense_head.js";
 import { HeadTrainer } from "../src/ml/head_trainer.js";
+import { adamwUpdateInPlace } from "../src/optim/adamw.js";
 import { extractFeatures, logScale, clampRatio } from "../src/ml/features.js";
 import { engineKey, type InferenceMode, type MlPrediction, type MlPredictor, type MlTask } from "../src/ml/types.js";
 import type { TextEmbedder } from "../src/lm/text_embedder.js";
@@ -265,6 +266,7 @@ describe("trainMlTask (the ONE trainer seam)", () => {
     const t = task({ engines: [{ tier: "local", engine: "head", head: "mlp" }] });
     const r = (await trainMlTask(t, examples, { holdoutFraction: 0, head: { hiddenDim: 4, train: { epochs: 300, learningRate: 0.05 } } }))!;
     expect(r.predictor).toBeInstanceOf(DenseHead);
+    expect(r.skippedNonFinite).toBe(0); // a healthy fit skipped nothing
     expect(r.predictor.predict(Float32Array.of(3, 1.5)).scores[1]).toBeGreaterThan(0.9);
     expect(r.predictor.predict(Float32Array.of(-3, -1.5)).scores[0]).toBeGreaterThan(0.9);
   });
@@ -344,6 +346,35 @@ describe("DenseHead + HeadTrainer", () => {
     const before = Array.from(head.exportParams());
     await new HeadTrainer(head).train([{ x: Float32Array.of(Number.NaN), y: 1 }], { epochs: 3 });
     expect(Array.from(head.exportParams())).toEqual(before);
+  });
+
+  test("a NaN gradient skips the moments too, is counted, and training recovers on the next finite steps", async () => {
+    // The kernel mirror: the NaN element keeps m, v and the weight; the finite one steps.
+    const param = Float32Array.of(1, 1);
+    const m = Float32Array.of(0.5, 0.5);
+    const v = Float32Array.of(0.25, 0.25);
+    const hp = { lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weightDecay: 0.1, beta1_t: 0.9, beta2_t: 0.999, maxDelta: 0 };
+    expect(adamwUpdateInPlace(param, Float32Array.of(Number.NaN, 1), m, v, hp)).toBe(1);
+    expect([param[0], m[0], v[0]]).toEqual([1, 0.5, 0.25]);
+    expect(param[1]).not.toBe(1);
+    expect(adamwUpdateInPlace(param, Float32Array.of(Number.POSITIVE_INFINITY, 1), m, v, hp)).toBe(1);
+    expect(adamwUpdateInPlace(param, Float32Array.of(1, 1), m, v, hp)).toBe(0);
+    expect([...m, ...v].every(Number.isFinite)).toBe(true);
+
+    // Through the trainer: one NaN epoch, then finite ones — the loss still falls.
+    const head = new DenseHead({ inputDim: 1, hiddenDim: 0, outputDim: 1, objective: "mse", seed: 2 });
+    const data = [0, 1, 2, 3].map((x) => ({ x: Float32Array.of(x), y: 2 * x + 1 }));
+    const trainer = new HeadTrainer(head);
+    await trainer.train(data, { epochs: 5, learningRate: 0.05, maxGradNorm: 100 });
+    expect(trainer.skippedNonFinite).toBe(0);
+    await trainer.train([{ x: Float32Array.of(Number.NaN), y: 1 }], { epochs: 1 });
+    expect(trainer.skippedNonFinite).toBe(head.parameters().reduce((n, p) => n + p.numel, 0));
+    expect(trainer.diverged).toBe(true);
+    expect(Array.from(head.exportParams()).every(Number.isFinite)).toBe(true);
+    const after = await trainer.train(data, { epochs: 300, learningRate: 0.05, maxGradNorm: 100 });
+    expect(after.every(Number.isFinite)).toBe(true);
+    // Before the fix the NaN moments froze every weight here and the loss stayed flat.
+    expect(after[after.length - 1]!).toBeLessThan(after[0]! * 0.1);
   });
 
   test("the GPU step packs AdamParams exactly as WEIGHT_UPDATE_WGSL declares it", async () => {

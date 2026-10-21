@@ -11,6 +11,7 @@
 
 import type {
     Adaptation,
+    CurationRecord,
     Episode,
     EpisodeSummary,
     ExperienceSnapshot,
@@ -128,6 +129,10 @@ export class FileExperienceStore implements ExperienceStore {
     async recordAdaptation(adaptation: Adaptation): Promise<void> {
         this.fresh();
         await this.inner.recordAdaptation(adaptation);
+    }
+    async recordCuration(curation: CurationRecord): Promise<void> {
+        this.fresh();
+        await this.inner.recordCuration(curation);
     }
 
     async snapshot(): Promise<ExperienceSnapshot> {

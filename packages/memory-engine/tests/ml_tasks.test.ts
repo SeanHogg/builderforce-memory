@@ -18,7 +18,10 @@ import {
   createMlRegistry,
   curateExperience,
   curatePendingExperience,
+  curationRecords,
+  curationStands,
   CURATION_KNOWN_LIMIT,
+  QUALITY_OBSERVED_MIN_RUNS,
   RUN_ANOMALY_MIN_SCALE,
   experienceQualityInputs,
   experienceQualityExamples,
@@ -42,8 +45,8 @@ import {
 import { EvermindLM } from "../src/lm/evermind_lm.js";
 import { EvermindTextEmbedder } from "../src/lm/text_embedder.js";
 import { BPETokenizer } from "../src/tokenizer/bpe.js";
-import type { ExperienceDocument } from "../src/experience/corpus.js";
-import type { Episode, RecordedStep, Run, Skill } from "../src/experience/types.js";
+import { experienceDocuments, type ExperienceDocument } from "../src/experience/corpus.js";
+import type { CuratedOut, Episode, RecordedStep, Run, Skill } from "../src/experience/types.js";
 import type { TextEmbedder } from "../src/lm/text_embedder.js";
 
 const registry = createMlRegistry();
@@ -199,7 +202,8 @@ describe("experience.quality", () => {
       { doc: doc("l3", "Task: retry forever (cli.exe)\n1. Press Enter."), steps: 25, runs: 6, succeeded: 0, failed: 6 },
     ];
     const train = [...lows, high];
-    const copy: ExperienceQualityInput = { ...high, doc: doc("h2", high.doc.text) };
+    // 4 runs, so the model judges it (from QUALITY_OBSERVED_MIN_RUNS the observed rate does).
+    const copy: ExperienceQualityInput = { ...high, doc: doc("h2", high.doc.text), runs: 4, succeeded: 4 };
     const byId = new Map([...train, copy].map((i) => [i.doc.id, i] as const));
     const input = (d: ExperienceDocument) => byId.get(d.id)!;
 
@@ -238,6 +242,82 @@ describe("experience.quality", () => {
       expect(r.kept.map((d) => d.id)).toEqual(["u1"]);
       expect(r.dropped).toEqual([]);
     });
+  });
+});
+
+describe("experience.quality in curation: leave-one-out, the observed rate, standing verdicts", () => {
+  // Twelve learned skills with the same procedure, each 0/2 — the neighbours.
+  const failing = Array.from({ length: 12 }, (_, i) => skill(`f${i}`, "Wiggle mouse", `ef${i}`));
+  const failRuns = failing.flatMap((s) => [run(s.id, "failed", 0), run(s.id, "failed", 1)]);
+  const known = experienceDocuments([], failing);
+  const opts = { embedder: hashEmbedder, known, dedupeThreshold: 1.01 };
+  const succeeded = (id: string, n: number) => Array.from({ length: n }, (_, i) => run(id, "succeeded", i));
+
+  test("a 1/1 skill among failing neighbours is scored by its neighbours alone — it never votes for itself", async () => {
+    const t1 = skill("t1", "Wiggle mouse", "et1");
+    const r = await curatePendingExperience(experienceDocuments([], [t1]), { episodes: [], skills: [...failing, t1], runs: [...failRuns, ...succeeded("t1", 1)] }, opts);
+    // t1 is in the training set (pending + learned, scored). With its own example voting
+    // at similarity 1, k = 3 gave it ≈ 1/3; left out, only the failing neighbours vote.
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual([{ id: "t1", reason: "low-quality", score: expect.any(Number) }]);
+    expect(r.dropped[0]!.score!).toBeLessThan(0.01);
+  });
+
+  test("from QUALITY_OBSERVED_MIN_RUNS runs the observed rate decides: 5/5 is kept, 0/5 dropped, whatever the neighbours", async () => {
+    expect(QUALITY_OBSERVED_MIN_RUNS).toBe(5);
+    const t5 = skill("t5", "Wiggle mouse", "et5");
+    const good = await curatePendingExperience(experienceDocuments([], [t5]), { episodes: [], skills: [...failing, t5], runs: [...failRuns, ...succeeded("t5", 5)] }, opts);
+    expect(good.kept.map((d) => d.id)).toEqual(["t5"]);
+    expect(good.dropped).toEqual([]);
+
+    const okSkills = Array.from({ length: 12 }, (_, i) => skill(`g${i}`, "Wiggle mouse", `eg${i}`));
+    const b5 = skill("b5", "Wiggle mouse", "eb5");
+    const bad = await curatePendingExperience(
+      experienceDocuments([], [b5]),
+      { episodes: [], skills: [...okSkills, b5], runs: [...okSkills.flatMap((s) => succeeded(s.id, 2)), ...[0, 1, 2, 3, 4].map((i) => run("b5", "failed", i))] },
+      { ...opts, known: experienceDocuments([], okSkills) },
+    );
+    expect(bad.dropped).toEqual([{ id: "b5", reason: "low-quality", score: 0 }]);
+  });
+
+  test("an earlier curated_out verdict that still stands is skipped, not judged again", async () => {
+    const t1 = skill("t1", "Wiggle mouse", "et1");
+    const runs = [...failRuns, ...succeeded("t1", 1)];
+    const first = await curatePendingExperience(experienceDocuments([], [t1]), { episodes: [], skills: [...failing, t1], runs }, opts);
+    const records = curationRecords(first, { runs }, 42);
+    expect(records).toEqual({ dropped: { t1: { status: "curated_out", reason: "low-quality", score: expect.any(Number), runs: 1, at: 42 } }, kept: [] });
+
+    const again = await curatePendingExperience(experienceDocuments([], [t1]), { episodes: [], skills: [...failing, t1], runs, curated: records.dropped }, opts);
+    expect(again.dropped).toEqual([]);
+    expect(again.kept).toEqual([]);
+    expect(again.alreadyDropped).toEqual([{ id: "t1", reason: "low-quality", score: records.dropped.t1!.score }]);
+
+    // A new run is new evidence: the verdict no longer stands, so t1 is judged again.
+    const moreRuns = [...runs, run("t1", "succeeded", 7)];
+    const rejudged = await curatePendingExperience(experienceDocuments([], [t1]), { episodes: [], skills: [...failing, t1], runs: moreRuns, curated: records.dropped }, opts);
+    expect(rejudged.alreadyDropped).toEqual([]);
+    expect(rejudged.dropped.map((d) => d.id)).toEqual(["t1"]);
+  });
+
+  test("curationStands: a duplicate while what it repeats is learned; low-quality while its run count holds; exclusion never", () => {
+    const v = (over: Partial<CuratedOut>): CuratedOut => ({ status: "curated_out", reason: "duplicate", of: "a", runs: 0, at: 0, ...over });
+    expect(curationStands(v({}), 0, new Set(["a"]))).toBe(true);
+    expect(curationStands(v({}), 0, new Set())).toBe(false);
+    expect(curationStands(v({ reason: "low-quality", runs: 3 }), 3, new Set())).toBe(true);
+    expect(curationStands(v({ reason: "low-quality", runs: 3 }), 4, new Set())).toBe(false);
+    expect(curationStands(v({ reason: "excluded" }), 0, new Set(["a"]))).toBe(false);
+    expect(curationStands(undefined, 0, new Set())).toBe(false);
+  });
+
+  test("the quality-training set is bounded at CURATION_KNOWN_LIMIT scored procedures, newest first", async () => {
+    const many = Array.from({ length: CURATION_KNOWN_LIMIT + 20 }, (_, i) => skill(`m${i}`, `Thing ${i}`, `em${i}`));
+    const runs = many.flatMap((s, i) => [run(s.id, i % 2 ? "failed" : "succeeded", 0)]);
+    const seen = new Set<string>();
+    const counting: TextEmbedder = { ...hashEmbedder, embed: async (t: string) => (seen.add(t), hashEmbedder.embed(t)) };
+    // Learned most recently first; nothing pending, no known window beyond the limit embedded either.
+    await curatePendingExperience([], { episodes: [], skills: many, runs }, { embedder: counting, known: experienceDocuments([], many) });
+    expect(seen.size).toBe(CURATION_KNOWN_LIMIT);
+    expect([...seen].some((t) => t.includes(`Thing ${CURATION_KNOWN_LIMIT + 1}`))).toBe(false);
   });
 });
 
@@ -354,8 +434,8 @@ describe("run.anomaly", () => {
     expect(models.get("run.anomaly", "local:classical:anomaly-composite")).toBe(r.predictor);
     expect(r.predictor).toBeInstanceOf(AnomalyCompositeModel);
     const det = r.predictor as RunAnomalyDetector;
-    expect(det.population.scale.every((sc) => sc >= RUN_ANOMALY_MIN_SCALE)).toBe(true);
-    expect(det.trend.minScale).toBe(RUN_ANOMALY_MIN_SCALE);
+    expect(Array.from(det.population.scale).every((sc, i) => sc >= RUN_ANOMALY_MIN_SCALE[i]!)).toBe(true);
+    expect(det.trend.minScale).toEqual(RUN_ANOMALY_MIN_SCALE);
   });
 
   test("after 20 clean runs, one tool failure is NOT an anomaly — a large cost spike still is", async () => {
@@ -367,6 +447,29 @@ describe("run.anomaly", () => {
     expect(oneFailure.output.anomalous).toBe(false);
     const spike = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 5, durationMs: 61_000, toolFailures: 0 }, ctx);
     expect(spike.output.anomalous).toBe(true);
+  });
+
+  test("floors are per metric: a 10 s → 15 min run flags; a 1.5× duration wobble does not", async () => {
+    // Each metric has its own log reference, so one scalar floor was ~2× on cost but
+    // ~4.5× on duration — 10 s → 15 min scored z ≈ 3.0 and slipped under EWMA's 3.
+    expect(RUN_ANOMALY_MIN_SCALE[0]).toBeCloseTo(Math.log(3) / (3 * Math.log1p(1000)), 6);
+    expect(RUN_ANOMALY_MIN_SCALE[1]).toBeCloseTo(Math.log(3) / (3 * Math.log1p(3_600_000)), 6);
+    expect(RUN_ANOMALY_MIN_SCALE[2]).toBe(0.1);
+    const steady: RunMetrics[] = Array.from({ length: 20 }, () => ({ costUsd: 0.1, durationMs: 10_000, toolFailures: 0 }));
+    const models = new InMemoryMlModels();
+    await trainMlTask(RUN_ANOMALY_TASK, steady.map((input) => ({ input, label: 0 })), { models });
+    const ctx = { registry, mode: "local-only" as const, models };
+    const long = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.1, durationMs: 15 * 60_000, toolFailures: 0 }, ctx);
+    expect(long.output.anomalous).toBe(true);
+    const wobble = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.1, durationMs: 15_000, toolFailures: 0 }, ctx);
+    expect(wobble.output.anomalous).toBe(false);
+    const costWobble = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.15, durationMs: 10_000, toolFailures: 0 }, ctx);
+    expect(costWobble.output.anomalous).toBe(false);
+    // Failures keep 0.1: 1–2 after a clean history are normal, 3 flag.
+    const two = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.1, durationMs: 10_000, toolFailures: 2 }, ctx);
+    expect(two.output.anomalous).toBe(false);
+    const three = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.1, durationMs: 10_000, toolFailures: 3 }, ctx);
+    expect(three.output.anomalous).toBe(true);
   });
 
   test("experience run metrics come from the run log", () => {

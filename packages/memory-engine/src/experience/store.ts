@@ -7,7 +7,7 @@
  * is the reference implementation, and `ExperienceSnapshot` is the one serialized shape,
  * so a store on one runtime can be read by another.
  */
-import type { Adaptation, Episode, EpisodeSummary, Run, RunStepLog, Skill } from './types.js';
+import type { Adaptation, CuratedOut, Episode, EpisodeSummary, Run, RunStepLog, Skill } from './types.js';
 
 export const EXPERIENCE_SCHEMA = 'evermind.experience/1';
 /** Runs kept, newest first — the audit trail is recent history, not an archive. */
@@ -29,6 +29,18 @@ export interface ExperienceSnapshot {
   learned: Record<string, number>;
   /** Every adaptation's measurements, newest first (capped at {@link MAX_ADAPTATIONS}). */
   adaptations: Adaptation[];
+  /**
+   * Procedures curation left out, by id, until they are learned, forgotten or judged
+   * again — so a later curation skips them instead of re-embedding each one.
+   */
+  curated: Record<string, CuratedOut>;
+}
+
+/** What one curation call decided: the procedures it left out, and the ones it kept. */
+export interface CurationRecord {
+  dropped: Record<string, CuratedOut>;
+  /** Ids curation kept this time — any earlier verdict on them is cleared. */
+  kept: string[];
 }
 
 export interface ExperienceStore {
@@ -56,13 +68,20 @@ export interface ExperienceStore {
    */
   recordAdaptation(adaptation: Adaptation): Promise<void>;
 
+  /**
+   * Record one curation's verdicts: each dropped procedure is stored as `curated_out`
+   * (replacing an earlier verdict), each kept one loses any earlier verdict. Learning
+   * or forgetting a procedure also clears its verdict.
+   */
+  recordCuration(curation: CurationRecord): Promise<void>;
+
   snapshot(): Promise<ExperienceSnapshot>;
   /** Delete every episode, skill and run. */
   clear(): Promise<void>;
 }
 
 export function emptySnapshot(): ExperienceSnapshot {
-  return { schema: EXPERIENCE_SCHEMA, episodes: [], skills: [], runs: [], learned: {}, adaptations: [] };
+  return { schema: EXPERIENCE_SCHEMA, episodes: [], skills: [], runs: [], learned: {}, adaptations: [], curated: {} };
 }
 
 /** Parse a snapshot, tolerating a missing or foreign file as empty. */
@@ -77,6 +96,8 @@ export function parseSnapshot(raw: unknown): ExperienceSnapshot {
     learned: s.learned && typeof s.learned === 'object' && !Array.isArray(s.learned) ? s.learned : {},
     // Optional within schema 1: snapshots written before the history existed have none.
     adaptations: Array.isArray(s.adaptations) ? s.adaptations : [],
+    // Optional within schema 1 too: written from 2026.10.3.
+    curated: s.curated && typeof s.curated === 'object' && !Array.isArray(s.curated) ? s.curated : {},
   };
 }
 
@@ -130,6 +151,7 @@ export class InMemoryExperienceStore implements ExperienceStore {
   async deleteEpisode(id: string): Promise<boolean> {
     const ok = InMemoryExperienceStore.remove(this.data.episodes, id);
     delete this.data.learned[id];
+    delete this.data.curated[id];
     if (ok) await this.changed();
     return ok;
   }
@@ -147,6 +169,7 @@ export class InMemoryExperienceStore implements ExperienceStore {
   async deleteSkill(id: string): Promise<boolean> {
     const ok = InMemoryExperienceStore.remove(this.data.skills, id);
     delete this.data.learned[id];
+    delete this.data.curated[id];
     if (ok) await this.changed();
     return ok;
   }
@@ -172,9 +195,18 @@ export class InMemoryExperienceStore implements ExperienceStore {
   }
 
   async recordAdaptation(adaptation: Adaptation): Promise<void> {
-    for (const id of adaptation.learned) this.data.learned[id] = adaptation.index;
+    for (const id of adaptation.learned) {
+      this.data.learned[id] = adaptation.index;
+      delete this.data.curated[id];
+    }
     this.data.adaptations.unshift(adaptation);
     this.data.adaptations.length = Math.min(this.data.adaptations.length, MAX_ADAPTATIONS);
+    await this.changed();
+  }
+
+  async recordCuration(curation: CurationRecord): Promise<void> {
+    for (const id of curation.kept) delete this.data.curated[id];
+    Object.assign(this.data.curated, curation.dropped);
     await this.changed();
   }
 

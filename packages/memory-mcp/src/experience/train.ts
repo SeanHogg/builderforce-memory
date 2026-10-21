@@ -17,6 +17,7 @@
 import type {
     adaptPackage,
     curatePendingExperience,
+    curationRecords,
     experienceDocuments,
     packDocuments,
     CurationResult,
@@ -36,10 +37,16 @@ export interface TrainEngine {
     /** The opt-in curation step and the CPU embedder it scores with (engine ≥ 2026.10.2). */
     curatePendingExperience?: typeof curatePendingExperience;
     EvermindTextEmbedder?: typeof EvermindTextEmbedder;
+    /** The `curated_out` records to persist for a curation (engine ≥ 2026.10.3). */
+    curationRecords?: typeof curationRecords;
 }
 
-/** What curation left out of a pass, when it ran. */
-export type CurationReport = { dropped: CurationResult["dropped"] };
+/**
+ * What curation left out of a pass, when it ran: `dropped` this call, and
+ * `alreadyDropped` — left out by an earlier call, verdict still standing, so skipped
+ * without being embedded again.
+ */
+export type CurationReport = { dropped: CurationResult["dropped"]; alreadyDropped?: CurationResult["dropped"] };
 
 export type TrainOutcome =
     | { status: "nothing_new"; pending: 0; version: string }
@@ -103,8 +110,10 @@ export interface TrainExperienceOptions {
      * store's run outcomes, + near-duplicate removal against the batch AND the
      * recently learned procedures — docs/ml-task-catalog.md §4.2), scoring with the
      * model's own CPU embedder. Default false ⇒ every pending procedure is learned,
-     * exactly as before. A procedure curation drops is NOT recorded as learned, so a
-     * later pass reconsiders it.
+     * exactly as before. A procedure curation drops is NOT recorded as learned; it is
+     * recorded as `curated_out` (with the id it duplicates, or its quality score), and
+     * later curations skip it while that verdict stands — a duplicate until what it
+     * repeats is no longer learned, a low-quality one until it has new runs.
      */
     curate?: boolean;
 }
@@ -126,15 +135,20 @@ export async function trainExperience(
 
     let docs = pending;
     let curation: CurationReport | undefined;
+    /** The LM curation embedded with — untrained, loaded from `model.pkg` — reused by the first pass. */
+    let curationLm: ConstructorParameters<typeof EvermindTextEmbedder>[0] | undefined;
     if (opts.curate) {
         if (!engine.curatePendingExperience || !engine.EvermindTextEmbedder) throw new Error(CURATION_UNSUPPORTED);
         // The model being trained embeds for curation: its own notion of "the same procedure".
-        const lm = model.pkg.loadLM() as ConstructorParameters<typeof EvermindTextEmbedder>[0];
+        // Embedding never changes its weights, so the same LM is the first pass's copy.
+        curationLm = model.pkg.loadLM() as ConstructorParameters<typeof EvermindTextEmbedder>[0];
         const codec = model.codec as ConstructorParameters<typeof EvermindTextEmbedder>[1];
-        const embedder = new engine.EvermindTextEmbedder(lm, codec);
+        const embedder = new engine.EvermindTextEmbedder(curationLm, codec);
         const r = await engine.curatePendingExperience(pending, snap, { embedder, known });
         docs = r.kept;
-        curation = { dropped: r.dropped };
+        curation = { dropped: r.dropped, ...(r.alreadyDropped?.length ? { alreadyDropped: r.alreadyDropped } : {}) };
+        // Persist the verdicts, so the next call skips these instead of re-embedding them.
+        if (engine.curationRecords) await store.recordCuration(engine.curationRecords(r, snap, Date.now()));
     }
     if (docs.length === 0) return { status: "curated_out", pending: pending.length, version, curation: curation ?? { dropped: [] } };
 
@@ -145,8 +159,11 @@ export async function trainExperience(
     let lossSum = 0;
     let passes = 0;
     for (const pass of engine.packDocuments(docs, engine.EVERMIND_ADAPT_MAX_CHARS)) {
-        const r = engine.adaptPackage(pkg, model.codec, pass.map((d) => d.text).join("\n\n"), next);
-        if (!r) continue;
+        // Until a pass succeeds `pkg` is still `model.pkg`, so curation's untrained LM is its copy.
+        const lm = pkg === (model.pkg as unknown) ? curationLm : undefined;
+        const r = engine.adaptPackage(pkg, model.codec, pass.map((d) => d.text).join("\n\n"), next, lm ? { lm } : {});
+        if (!r) continue; // no trainable window: the LM was never touched
+        curationLm = undefined; // trained in place — spent
         pkg = r.pkg;
         lossSum += r.loss;
         passes++;

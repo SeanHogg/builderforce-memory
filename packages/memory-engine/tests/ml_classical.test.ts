@@ -70,6 +70,17 @@ describe("knn", () => {
     expect(m.predict(v(0.5)).scores[0]).toBeGreaterThan(0.9);
     expect(m.predict(v(10.5)).scores[1]).toBeGreaterThan(0.9);
   });
+
+  test("excluding(i): a point in the index never votes for itself (leave-one-out)", () => {
+    // Point 0 (label 1) sits among label-0 points; k = 2.
+    const m = fitKnn([s([1, 0], 1), s([0.99, 0.1], 0), s([0.98, 0.15], 0), s([0, 1], 1)], { k: 2 });
+    const self = m.predict(v(1, 0)).scores[1]!;
+    const loo = m.excluding(0).predict(v(1, 0)).scores[1]!;
+    expect(self).toBeGreaterThan(0.4); // its own vote at similarity 1
+    expect(loo).toBeLessThan(0.01); // only its neighbours
+    expect(m.neighbours(v(1, 0), 2, 0).map((n) => n.index)).toEqual([1, 2]);
+    expect(() => m.excluding(9)).toThrow(/no point 9/);
+  });
 });
 
 describe("naive-bayes (gaussian)", () => {
@@ -292,6 +303,18 @@ describe("robust-z / ewma: absolute minimum scale", () => {
     expect(fitRobustZ(zeros, { minScale: 0.1 }).scale[0]).toBe(0.1);
     expect(fitEwma(zeros, { minScale: 0.1 }).predict(v(0.18)).scores[0]).toBeLessThan(1);
     expect(fitEwma(zeros, { minScale: 0.1 }).predict(v(0.9)).scores[0]).toBeGreaterThan(1);
+  });
+
+  test("minScale may be per feature (a scalar still applies to all)", () => {
+    const zeros = Array.from({ length: 20 }, () => s([0, 0]));
+    const rz = fitRobustZ(zeros, { minScale: [0.1, 0.02] });
+    expect(Array.from(rz.scale)).toEqual([0.1, 0.02]);
+    expect(rz.zScores([0.1, 0.1])).toEqual([1, 5]);
+    const ew = fitEwma(zeros, { minScale: [0.1, 0.02] });
+    expect(ew.zScores([0.1, 0.1]).map((z) => Math.round(z * 1e6) / 1e6)).toEqual([1, 5]);
+    expect(Array.from(fitRobustZ(zeros, { minScale: 0.1 }).scale)).toEqual([0.1, 0.1]);
+    // A missing per-feature entry is no floor (the relative one still applies).
+    expect(fitRobustZ(zeros, { minScale: [0.1] }).scale[1]).toBeLessThan(1e-8);
   });
 
   test("anomaly-composite is one engine: max of both detectors", () => {

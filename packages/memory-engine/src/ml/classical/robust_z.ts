@@ -25,10 +25,20 @@ export interface RobustZOptions {
   /** Smallest scale per feature, as a fraction of |median| (plus 1e-9). Default 0.01. */
   minScaleFraction?: number;
   /**
-   * Smallest scale per feature in absolute feature units. Default 0 — the algorithm
-   * cannot know the units; a task on a fixed scale sets it (`run.anomaly` does).
+   * Smallest scale per feature in absolute feature units: one value for every
+   * feature, or one per feature (a missing entry is 0). Default 0 — the algorithm
+   * cannot know the units; a task on a fixed scale sets it (`run.anomaly` does,
+   * per feature, because each of its metrics is normalised by a different reference).
    */
-  minScale?: number;
+  minScale?: MinScale;
+}
+
+/** An absolute scale floor: one for every feature, or one per feature. */
+export type MinScale = number | readonly number[];
+
+/** The floor for feature `i` (a per-feature array's missing entry is 0). */
+export function minScaleAt(minScale: MinScale, i: number): number {
+  return typeof minScale === "number" ? minScale : (minScale[i] ?? 0);
 }
 
 export class RobustZModel implements MlPredictor {
@@ -58,7 +68,7 @@ export function fitRobustZ(samples: readonly MlSample[], opts: RobustZOptions = 
   const X = samples.map((s) => s.x);
   const d = featureDim(X);
   const minFrac = opts.minScaleFraction ?? 0.01;
-  const minAbs = opts.minScale ?? 0;
+  const minAbs: MinScale = opts.minScale ?? 0;
   const center = new Float64Array(d);
   const scale = new Float64Array(d);
   for (let i = 0; i < d; i++) {
@@ -68,7 +78,7 @@ export function fitRobustZ(samples: readonly MlSample[], opts: RobustZOptions = 
     let s = MAD_TO_SD * median(dev);
     if (!(s > 0)) s = MEANAD_TO_SD * (dev.reduce((a, b) => a + b, 0) / dev.length);
     center[i] = med;
-    scale[i] = Math.max(s, minFrac * Math.abs(med) + 1e-9, minAbs);
+    scale[i] = Math.max(s, minFrac * Math.abs(med) + 1e-9, minScaleAt(minAbs, i));
   }
   return new RobustZModel(center, scale, opts.threshold ?? 3.5);
 }

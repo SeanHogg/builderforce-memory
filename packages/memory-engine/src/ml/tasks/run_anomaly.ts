@@ -30,21 +30,52 @@ export interface RunAnomaly {
 
 export const RUN_ANOMALY_METRICS = ["cost", "duration", "toolFailures"] as const;
 
+/** The fixed log references: cost in cents ($10), duration in ms (one hour), tool failures (50). */
+const COST_REF_CENTS = 1000;
+const DURATION_REF_MS = 3_600_000;
+const FAILURES_REF = 50;
+
 /** Fixed log scales (a $10 run, a one-hour run, 50 failures map to 1). */
 export function runAnomalyFeatures(m: RunMetrics): number[] {
-  return [logScale(m.costUsd * 100, 1000), logScale(m.durationMs, 3_600_000), logScale(m.toolFailures, 50)];
+  return [
+    logScale(m.costUsd * 100, COST_REF_CENTS),
+    logScale(m.durationMs, DURATION_REF_MS),
+    logScale(m.toolFailures, FAILURES_REF),
+  ];
 }
 
 /**
- * The smallest per-metric scale (σ) both detectors use, in the fixed log units above.
- * A history with no tool failures has MAD = mean-AD = 0 and EWMA σ = 0, so without an
- * absolute floor ONE failure (log1p(1)/log1p(50) ≈ 0.18) scored as a huge outlier and
- * every run with any failure was flagged. At 0.1, one or two failures after a clean
- * history stay normal (z ≈ 1.8 / 2.8) and three or more flag (z ≥ 3.5); on cost, 0.1
- * is ~0.7 nats, so a constant-cost history flags a ~10× jump. (0.05 was too tight: it
- * still flagged a single failure.)
+ * The multiplicative jump in cost or duration that flags against a constant history.
+ * A constant history has MAD = mean-AD = 0 and EWMA σ = 0, so the floor below IS the
+ * scale both detectors divide by.
  */
-export const RUN_ANOMALY_MIN_SCALE = 0.1;
+export const RUN_ANOMALY_FLAG_RATIO = 3;
+
+/**
+ * The smallest per-metric scale (σ) both detectors use, in the fixed log units above —
+ * ONE PER METRIC, because each metric is divided by a different reference: a feature
+ * unit is log1p(ref) nats, i.e. log1p(1000) ≈ 6.909 nats for cost but log1p(3.6e6) ≈
+ * 15.096 nats for duration. One scalar floor (it was 0.1) therefore meant ~0.69 nats
+ * (2×) on cost but ~1.51 nats (4.5×) on duration, and a 10 s → 15 min run (4.5 nats,
+ * z ≈ 3.0) slipped under EWMA's 3.
+ *
+ * Derivation, cost and duration: for values well above 1, a k× jump moves log1p by
+ * ≈ ln k nats = ln k / log1p(ref) feature units. The composite flags at the smaller of
+ * the two thresholds (EWMA 3; robust z is 3.5), so the floor that flags a 3× jump is
+ *   floor = ln 3 / (3 · log1p(ref))
+ *   cost:     1.0986 / (3 · 6.9088)  ≈ 0.0530   (robust z alone flags from ≈ 3.6×)
+ *   duration: 1.0986 / (3 · 15.0964) ≈ 0.0243   (robust z alone flags from ≈ 3.6×)
+ * A 1.5× wobble (0.405 nats) scores z ≈ 1.1 on either — normal.
+ *
+ * Tool failures keep the absolute 0.1: from a clean history one or two failures
+ * (log1p(1|2)/log1p(50) ≈ 0.18 | 0.28) stay normal (z ≈ 1.8 / 2.8) and three or more
+ * (≈ 0.35) flag. (0.05 was too tight: it flagged a single failure.)
+ */
+export const RUN_ANOMALY_MIN_SCALE: readonly number[] = [
+  Math.log(RUN_ANOMALY_FLAG_RATIO) / (3 * Math.log1p(COST_REF_CENTS)),
+  Math.log(RUN_ANOMALY_FLAG_RATIO) / (3 * Math.log1p(DURATION_REF_MS)),
+  0.1,
+];
 
 /** The composite detector with `run.anomaly`'s metric names on its explanation. */
 export class RunAnomalyDetector extends AnomalyCompositeModel {
@@ -55,7 +86,7 @@ export class RunAnomalyDetector extends AnomalyCompositeModel {
   }
 }
 
-/** Fit both detectors on a chronological history of runs (as feature vectors), floored at {@link RUN_ANOMALY_MIN_SCALE}. */
+/** Fit both detectors on a chronological history of runs (as feature vectors), floored per metric at {@link RUN_ANOMALY_MIN_SCALE}. */
 export function fitRunAnomaly(samples: readonly MlSample[], opts: AnomalyCompositeOptions = {}): RunAnomalyDetector {
   return new RunAnomalyDetector(
     fitRobustZ(samples, { ...opts.robustZ, minScale: opts.robustZ?.minScale ?? RUN_ANOMALY_MIN_SCALE }),

@@ -9,6 +9,10 @@
  * NaN/Inf guard included), so training works everywhere (CI, Node without
  * @webgpu/node, a laptop with no GPU). Neither path bounds the step (maxDelta 0).
  *
+ * A non-finite gradient element is skipped by both paths — its moments and weight
+ * are left as they were, so the next finite step trains it again — and counted in
+ * {@link HeadTrainer.skippedNonFinite}, so a caller can see a run that diverged.
+ *
  * The head owns its forward/backward and its loss (MSE for regression, BCE /
  * softmax cross-entropy for classification); this file owns only the loop:
  * zero → accumulate per sample → average → clip → AdamW step.
@@ -86,6 +90,7 @@ export class HeadTrainer<S> {
   readonly device: GPUDevice | null;
   private _moments: AdamMoment[] | null = null;
   private _step = 0;
+  private _skippedNonFinite = 0;
   private readonly _adamwPipeline: GPUComputePipeline | null;
 
   constructor(
@@ -99,6 +104,19 @@ export class HeadTrainer<S> {
     this._adamwPipeline = device
       ? createComputePipeline(device, WEIGHT_UPDATE_WGSL, "adamw_update")
       : null;
+  }
+
+  /**
+   * Parameter elements whose gradient was non-finite (NaN/±Inf) and whose update was
+   * therefore skipped, summed over every step this trainer has taken. 0 on a healthy run.
+   */
+  get skippedNonFinite(): number {
+    return this._skippedNonFinite;
+  }
+
+  /** Whether any step had to skip a non-finite gradient element. */
+  get diverged(): boolean {
+    return this._skippedNonFinite > 0;
   }
 
   /** Whether the optimiser step runs on the GPU. */
@@ -173,12 +191,12 @@ export class HeadTrainer<S> {
     return total / samples.length;
   }
 
-  /** AdamW on the CPU via the kernel's shared mirror (`adamwUpdateInPlace`). */
+  /** AdamW on the CPU via the kernel's shared mirror (`adamwUpdateInPlace`), which counts its skips. */
   private _adamwStepCpu(grads: HeadParam[], hp: AdamWKernelStep): void {
     const params = this.head.parameters();
     for (let pi = 0; pi < params.length; pi++) {
       const mom = this._moments![pi]!;
-      adamwUpdateInPlace(params[pi]!.data, grads[pi]!.data, mom.m, mom.v, hp);
+      this._skippedNonFinite += adamwUpdateInPlace(params[pi]!.data, grads[pi]!.data, mom.m, mom.v, hp);
     }
   }
 
@@ -191,6 +209,8 @@ export class HeadTrainer<S> {
     for (let pi = 0; pi < params.length; pi++) {
       const p = params[pi]!;
       const mom = this._moments![pi]!;
+      // The kernel skips these elements too; it cannot count, so count them here.
+      this._skippedNonFinite += countNonFinite(grads[pi]!.data);
       const paramBuf = createStorageBuffer(device, p.data, true);
       const gradBuf = createStorageBuffer(device, grads[pi]!.data, false);
       const mBuf = createStorageBuffer(device, mom.m, true);
@@ -212,16 +232,35 @@ export class HeadTrainer<S> {
   }
 }
 
-/** Clip grads to `maxNorm` in place; returns the PRE-clip L2 norm (the signal). */
+/** Elements of `a` that are NaN or ±Inf. */
+function countNonFinite(a: Float32Array): number {
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i]!)) n++;
+  return n;
+}
+
+/**
+ * Clip grads to `maxNorm` in place; returns the PRE-clip L2 norm (the signal — NaN
+ * or Inf when any element is). The clip itself uses the norm of the FINITE elements:
+ * those are skipped by the optimiser anyway, and one NaN must not exempt the rest
+ * from clipping.
+ */
 function clipGradients(grads: HeadParam[], maxNorm: number): number {
   let normSq = 0;
-  for (const g of grads) for (let i = 0; i < g.data.length; i++) normSq += g.data[i]! * g.data[i]!;
-  const norm = Math.sqrt(normSq);
-  if (norm > maxNorm && norm > 0) {
-    const scale = maxNorm / norm;
+  let finiteSq = 0;
+  for (const g of grads) {
+    for (let i = 0; i < g.data.length; i++) {
+      const sq = g.data[i]! * g.data[i]!;
+      normSq += sq;
+      if (Number.isFinite(sq)) finiteSq += sq;
+    }
+  }
+  const finiteNorm = Math.sqrt(finiteSq);
+  if (finiteNorm > maxNorm && finiteNorm > 0) {
+    const scale = maxNorm / finiteNorm;
     for (const g of grads) for (let i = 0; i < g.data.length; i++) g.data[i]! *= scale;
   }
-  return norm;
+  return Math.sqrt(normSq);
 }
 
 /** Concatenate a head's parameters into one flat vector (the federation unit). */

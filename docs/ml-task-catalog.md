@@ -83,22 +83,48 @@ export type ClassicalAlgorithm =
      below that it stays untrained and curation drops nothing for quality. kNN votes
      with k = min(5, ⌊√n⌋), so a small set never collapses to the class prior.
    - A procedure that has never run (`runs = 0`) is unscored, not bad: it is kept.
+   - From `QUALITY_OBSERVED_MIN_RUNS` = 5 finished runs, curation uses the OBSERVED
+     success rate (`succeeded / runs`) instead of the model — the label is then known.
+     The model only scores procedures with 1–4 runs.
+   - Scoring is leave-one-out: a procedure that is itself in the quality-training set
+     is scored without its own example (`KnnModel.excluding`, matched by document id
+     through `quality.trainedIds`), or the kNN would count it at similarity 1.
+   - The quality-training set is bounded at `CURATION_KNOWN_LIMIT` = 200 scored
+     procedures, newest first: the pending ones, then the most recently learned.
    - De-duplication compares each pending procedure with the batch AND with the
      most recently learned ones (`CURATION_KNOWN_LIMIT` = 200, one CPU embed each).
    - Opt-in. `curatePendingExperience` is the one host call (trains the quality task
      on the store's run outcomes, then curates); memory-mcp exposes it as
      `experience_train { curate: true }` (default false), embedding with the model
-     being trained. A dropped procedure is not recorded as learned, so the next pass
-     reconsiders it.
+     being trained — the same loaded LM is then the first adaptation pass's copy
+     (`AdaptOptions.lm`), not a second `loadLM()`.
+   - A dropped procedure is not recorded as learned; it is recorded in the experience
+     snapshot's `curated` map with status `curated_out` (reason, the id it duplicates
+     or its score, and its finished-run count; `ExperienceStore.recordCuration`, built
+     by `curationRecords`). Later curations skip it — reported as `alreadyDropped`,
+     never re-embedded — while the verdict stands (`curationStands`): a duplicate
+     while what it repeats is learned by the loaded model, a low-quality one until it
+     has new runs. Learning, keeping or forgetting the procedure clears the verdict.
 3. **`run.anomaly`** (ONE engine, `anomaly-composite`: robust-z + EWMA over cost,
    duration, tool-failure count, scored as the larger of the two) — flags runs to
    exclude from training and to surface as Insights. Both detectors floor each
-   metric's scale at `RUN_ANOMALY_MIN_SCALE` (0.1 on the fixed log scale), so after
-   a clean history one or two tool failures are normal and three or more flag.
+   metric's scale PER METRIC at `RUN_ANOMALY_MIN_SCALE` (`minScale` takes one value or
+   one per feature): each metric is divided by its own log reference, so one scalar
+   meant ~2× on cost but ~4.5× on duration. Cost and duration floor at
+   ln 3 / (3 · log1p(ref)) — ≈ 0.0530 (ref 1000 cents) and ≈ 0.0243 (ref 3.6e6 ms) —
+   so from a constant history a ~3× jump flags (at EWMA's 3; robust z alone from
+   ≈ 3.6×) and a 1.5× wobble does not. Tool failures keep 0.1: after a clean history
+   one or two are normal and three or more flag.
 4. **`run.local-success`** (logistic / small GBM over turn features + the local
    model's served context) — exported for the Hybrid router in Builderforce.ai.
 5. Later, behind the ONNX engine: OCR and image labels for attachments, sentiment for
    feedback — each a row with a WASM-CPU engine first.
+
+Head engines train through `HeadTrainer` (AdamW: `adamwUpdateInPlace` on the CPU,
+`WEIGHT_UPDATE_WGSL` on the GPU). A non-finite gradient element (or one whose moments
+would overflow f32) is skipped entirely — m, v and the weight keep their values, so the
+next finite step trains it again; storing the NaN moment froze it forever. The skips are
+counted (`HeadTrainer.skippedNonFinite` / `diverged`, and `MlTrainResult.skippedNonFinite`).
 
 ## 5. Not in scope
 

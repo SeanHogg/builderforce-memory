@@ -8,7 +8,7 @@
  * produced from the same text. That recipe lives here and nowhere else.
  */
 import type { EvermindModelPackage } from "./package.js";
-import { EvermindLMTrainer } from "../lm/evermind_lm.js";
+import { EvermindLMTrainer, type EvermindLM } from "../lm/evermind_lm.js";
 import { applyCheckpointDiff, diffCheckpoints } from "../utils/delta.js";
 import { tokenWindows } from "../bench/adaptation.js";
 
@@ -36,6 +36,12 @@ export interface AdaptOptions {
   maxChars?: number;
   windowTokens?: number;
   epochs?: number;
+  /**
+   * An LM the caller ALREADY loaded from exactly this `pkg` (`pkg.loadLM()`) and has
+   * not trained — e.g. the one it embedded with for curation — to adapt instead of
+   * loading a second copy. It is trained in place, so it is spent afterwards.
+   */
+  lm?: EvermindLM;
 }
 
 /**
@@ -54,7 +60,7 @@ export function adaptAndDiff(
   const windowTokens = opts.windowTokens ?? EVERMIND_ADAPT_WINDOW_TOKENS;
   const seqs = tokenWindows(tokenizer.encode(text.slice(0, maxChars)), windowTokens);
   if (seqs.length === 0) return null;
-  const lm = pkg.loadLM();
+  const lm = opts.lm ?? pkg.loadLM();
   const history = new EvermindLMTrainer(lm, { epochs: opts.epochs ?? 1 }).fit(seqs);
   const loss = history.length > 0 ? history[history.length - 1]! : 0;
   return { diff: diffCheckpoints(pkg.checkpoint, lm.exportWeights()), loss, sequences: seqs.length };

@@ -49,6 +49,12 @@ export interface MlTrainResult {
   /** Size of the held-out tail, and the model's loss on it (null when none was held out). */
   holdout: number;
   holdoutLoss: number | null;
+  /**
+   * Head engines: parameter elements the final fit skipped for a non-finite gradient
+   * ({@link HeadTrainer.skippedNonFinite}) — above 0, the fit diverged somewhere. 0
+   * for classical engines and task-owned fits.
+   */
+  skippedNonFinite: number;
 }
 
 export { mlEvalLoss } from "./eval_loss.js";
@@ -60,9 +66,14 @@ function defaultEngine(task: MlTask<any, any>): MlEngineRef {
   return e;
 }
 
-async function fitEngine(task: MlTask<any, any>, ref: MlEngineRef, samples: MlSample[], opts: MlTrainOptions): Promise<MlPredictor> {
-  if (task.train?.fit) return task.train.fit(samples, ref);
-  if (ref.engine === "classical") return fitClassical(ref.algorithm, samples, opts.classical);
+interface FittedEngine {
+  predictor: MlPredictor;
+  skippedNonFinite: number;
+}
+
+async function fitEngine(task: MlTask<any, any>, ref: MlEngineRef, samples: MlSample[], opts: MlTrainOptions): Promise<FittedEngine> {
+  if (task.train?.fit) return { predictor: await task.train.fit(samples, ref), skippedNonFinite: 0 };
+  if (ref.engine === "classical") return { predictor: fitClassical(ref.algorithm, samples, opts.classical), skippedNonFinite: 0 };
   if (ref.engine === "head") {
     const objective = task.kind === "classify" ? "softmax" : task.kind === "regress" ? "mse" : null;
     if (!objective) throw new Error(`trainMlTask(${task.id}): a head engine trains classify or regress tasks only`);
@@ -73,8 +84,9 @@ async function fitEngine(task: MlTask<any, any>, ref: MlEngineRef, samples: MlSa
       objective,
       ...(opts.head?.seed != null ? { seed: opts.head.seed } : {}),
     });
-    await new HeadTrainer(head, opts.device ?? null, `trainMlTask(${task.id})`).train(samples, opts.head?.train);
-    return head;
+    const trainer = new HeadTrainer(head, opts.device ?? null, `trainMlTask(${task.id})`);
+    await trainer.train(samples, opts.head?.train);
+    return { predictor: head, skippedNonFinite: trainer.skippedNonFinite };
   }
   throw new Error(`trainMlTask(${task.id}): engine '${engineKey(ref)}' is not trained here`);
 }
@@ -107,14 +119,21 @@ export async function trainMlTask<I>(
   if (nHold >= 1 && samples.length - nHold >= 1) {
     const train = samples.slice(0, samples.length - nHold);
     const hold = samples.slice(samples.length - nHold);
-    const predictor = await fitEngine(task, ref, train, opts);
-    holdoutLoss = mlEvalLoss(task.kind, predictor, hold);
+    const fit = await fitEngine(task, ref, train, opts);
+    holdoutLoss = mlEvalLoss(task.kind, fit.predictor, hold);
     if (opts.refitOnAll === false) {
-      opts.models?.set(task.id, engineKey(ref), predictor);
-      return { predictor, engine: ref, samples: train.length, holdout: nHold, holdoutLoss };
+      opts.models?.set(task.id, engineKey(ref), fit.predictor);
+      return { predictor: fit.predictor, engine: ref, samples: train.length, holdout: nHold, holdoutLoss, skippedNonFinite: fit.skippedNonFinite };
     }
   }
-  const predictor = await fitEngine(task, ref, samples, opts);
-  opts.models?.set(task.id, engineKey(ref), predictor);
-  return { predictor, engine: ref, samples: samples.length, holdout: nHold >= 1 ? nHold : 0, holdoutLoss };
+  const fit = await fitEngine(task, ref, samples, opts);
+  opts.models?.set(task.id, engineKey(ref), fit.predictor);
+  return {
+    predictor: fit.predictor,
+    engine: ref,
+    samples: samples.length,
+    holdout: nHold >= 1 ? nHold : 0,
+    holdoutLoss,
+    skippedNonFinite: fit.skippedNonFinite,
+  };
 }

@@ -35,6 +35,12 @@ struct AdamParams {
 // v     (N,)   – second moment
 @group(0) @binding(4) var<storage, read_write> v_state  : array<f32>;
 
+// NaN or ±Inf, read from the IEEE-754 exponent bits (all ones) — immune to a
+// compiler that assumes finite floats and folds "x != x" away.
+fn non_finite(x : f32) -> bool {
+    return (bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u;
+}
+
 // Dispatch: (ceil(N / 256), 1, 1)
 @compute @workgroup_size(256, 1, 1)
 fn adamw_update(
@@ -49,6 +55,12 @@ fn adamw_update(
     // Moment updates
     let m_new = adam.beta1 * m_state[i] + (1.0 - adam.beta1) * g;
     let v_new = adam.beta2 * v_state[i] + (1.0 - adam.beta2) * g * g;
+
+    // Non-finite gradient (or moments that overflowed): skip this element ENTIRELY —
+    // m, v and the weight keep their values. Storing a NaN moment and dropping only
+    // the step froze the weight forever (every later step read the NaN back).
+    // Mirrors adamwUpdateInPlace (optim/adamw.ts), which counts the skips.
+    if (non_finite(g) || non_finite(m_new) || non_finite(v_new)) { return; }
     m_state[i] = m_new;
     v_state[i] = v_new;
 
