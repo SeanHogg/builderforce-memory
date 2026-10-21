@@ -5,6 +5,7 @@
  */
 import {
   buildDeltaLearnPayload,
+  deltaTargetMismatch,
   parseDeltaLearnPayload,
   mlHeadTarget,
 } from "../src/evermind/delta_wire.js";
@@ -44,13 +45,28 @@ describe("delta wire: target", () => {
     const diff = diffCheckpoints(headCheckpoint([0, 0]), headCheckpoint([1, 0]));
     const head = buildDeltaLearnPayload(diff, 3, 2, "x", mlHeadTarget("run.local-success"));
     expect(head.target).toBe("ml:run.local-success");
-    const parsed = parseDeltaLearnPayload(head);
+    const parsed = parseDeltaLearnPayload(head, { target: mlHeadTarget("run.local-success") });
     expect(parsed.ok && parsed.payload.target).toBe("ml:run.local-success");
     const plain = parseDeltaLearnPayload(buildDeltaLearnPayload(diff, 3));
     expect(plain.ok && "target" in plain.payload).toBe(false);
     expect(parseDeltaLearnPayload({ ...head, target: "lm" })).toMatchObject({ ok: false, reason: "invalid" });
     expect(parseDeltaLearnPayload({ ...head, target: 7 })).toMatchObject({ ok: false, reason: "invalid" });
     expect(() => buildDeltaLearnPayload(diff, 3, 1, "x", "nope")).toThrow(/bad target/);
+  });
+
+  test("the model's door (no target option) refuses an ML-head delta; a head's door refuses a model delta", () => {
+    const diff = diffCheckpoints(headCheckpoint([0, 0]), headCheckpoint([1, 0]));
+    const head = buildDeltaLearnPayload(diff, 3, 1, "x", mlHeadTarget("run.local-success"));
+    // The LM single writer calls parse with no options: a matching baseVersion must
+    // not let a head's diff overwrite the first floats of the LM checkpoint.
+    const atLmDoor = parseDeltaLearnPayload(head);
+    expect(atLmDoor).toMatchObject({ ok: false, reason: "invalid" });
+    expect(!atLmDoor.ok && atLmDoor.error).toMatch(/ml:run\.local-success does not belong here; this door merges into the model checkpoint/);
+    const atHeadDoor = parseDeltaLearnPayload(buildDeltaLearnPayload(diff, 3), { target: mlHeadTarget("run.local-success") });
+    expect(!atHeadDoor.ok && atHeadDoor.error).toMatch(/\(model\) does not belong here/);
+    expect(parseDeltaLearnPayload(head, { target: mlHeadTarget("experience.quality") }).ok).toBe(false);
+    expect(deltaTargetMismatch(undefined, undefined)).toBeNull();
+    expect(deltaTargetMismatch("ml:a.b", "ml:a.b")).toBeNull();
   });
 });
 
@@ -85,6 +101,16 @@ describe("mergeCheckpointDiffsGated", () => {
     expect(mergeCheckpointDiffsGated(base, [d], undefined, () => null).accepted).toBe(true);
     expect(mergeCheckpointDiffsGated(base, [d], undefined, () => null, { requireEval: true }).refusedReason).toBe("unscored");
   });
+
+  test("a non-finite loss is no score: NaN cannot wave a diverged candidate through", () => {
+    const d = diffCheckpoints(base, headCheckpoint([1, 0, 0]));
+    const nanAfter = (cp: ArrayBuffer) => (cp === base ? 1 : Number.NaN);
+    const g = mergeCheckpointDiffsGated(base, [d], undefined, nanAfter, { requireEval: true });
+    expect(g).toMatchObject({ accepted: false, refusedReason: "unscored", baseLoss: 1, newLoss: null });
+    expect(mergeCheckpointDiffsGated(base, [d], undefined, () => Number.POSITIVE_INFINITY, { requireEval: true }).refusedReason).toBe("unscored");
+    // Without requireEval an unscored LM merge is still kept, as before — but recorded as unscored.
+    expect(mergeCheckpointDiffsGated(base, [d], undefined, nanAfter)).toMatchObject({ accepted: true, newLoss: null });
+  });
 });
 
 describe("federation round-trip: two heads → diff → wire → FedAvg → eval gate", () => {
@@ -103,7 +129,7 @@ describe("federation round-trip: two heads → diff → wire → FedAvg → eval
 
     // Each ships a pre-diffed delta on the existing wire (through JSON, as on the network).
     const wire = [buildMlHeadDelta(v0, a.exportParams(), 4), buildMlHeadDelta(v0, b.exportParams(), 4)].map((p) => {
-      const parsed = parseDeltaLearnPayload(JSON.parse(JSON.stringify(p)));
+      const parsed = parseDeltaLearnPayload(JSON.parse(JSON.stringify(p)), { target: mlHeadTarget(v0.task) });
       if (!parsed.ok) throw new Error(parsed.error);
       return parsed.payload;
     });
@@ -148,6 +174,29 @@ describe("federation round-trip: two heads → diff → wire → FedAvg → eval
     expect(out.merge).toMatchObject({ accepted: false, refusedReason: "regressed" });
     expect(out.head).toBe(v3);
   });
+
+  test("fails closed: an unscorable round is refused unless the caller opts out explicitly", () => {
+    const v0 = mlHeadEntry("run.local-success", "local:classical:logistic", 0, new LogisticModel(1, 2).exportParams());
+    const a = new LogisticModel(1, 2);
+    fitLogistic(localA, { epochs: 50 }, a);
+    const deltas = [buildMlHeadDelta(v0, a.exportParams())];
+
+    // e.g. mlEvalLoss for an anomaly/cluster head, or an empty holdout: null.
+    const unscored = mergeMlHeadDeltas(v0, deltas, () => null);
+    expect(unscored.merge).toMatchObject({ accepted: false, refusedReason: "unscored" });
+    expect(unscored.head).toBe(v0);
+    expect(mlEvalLoss("anomaly", a, heldOut)).toBeNull();
+    expect(mergeMlHeadDeltas(v0, deltas, () => mlEvalLoss("classify", a, [])).merge.refusedReason).toBe("unscored");
+
+    // NaN on either side is unscored too.
+    expect(mergeMlHeadDeltas(v0, deltas, () => Number.NaN).merge.refusedReason).toBe("unscored");
+
+    // An explicit opt-out keeps the old behaviour.
+    const optOut = mergeMlHeadDeltas(v0, deltas, () => null, { requireEval: false });
+    expect(optOut.merge.accepted).toBe(true);
+    expect(optOut.head.version).toBe(1);
+    expect("evalLoss" in optOut.head).toBe(false);
+  });
 });
 
 describe("Evermind package carries mlHeads", () => {
@@ -157,7 +206,7 @@ describe("Evermind package carries mlHeads", () => {
   }
 
   test("heads round-trip through the blob, survive withCheckpoint, and validate", () => {
-    const head = mlHeadEntry("run.anomaly", "local:classical:robust-z", 0, [1, 2, 3], { dim: 3 }, 0.25);
+    const head = mlHeadEntry("run.anomaly", "local:classical:anomaly-composite", 0, [1, 2, 3], { dim: 3 }, 0.25);
     const p = withPackageMlHead(pkg(), head);
     const back = EvermindModelPackage.fromBlob(p.toBlob());
     expect(back.validate()).toEqual({ ok: true, errors: [] });
@@ -173,7 +222,7 @@ describe("Evermind package carries mlHeads", () => {
   });
 
   test("a corrupt head fails validation", () => {
-    const head = mlHeadEntry("run.anomaly", "local:classical:robust-z", 0, [1, 2, 3]);
+    const head = mlHeadEntry("run.anomaly", "local:classical:anomaly-composite", 0, [1, 2, 3]);
     const corrupt = pkg().withMlHeads([{ ...head, params: head.params.slice(0, -8) + "AAAAAAAA" }]);
     expect(corrupt.validate().ok).toBe(false);
     const dup = pkg().withMlHeads([head, head]);

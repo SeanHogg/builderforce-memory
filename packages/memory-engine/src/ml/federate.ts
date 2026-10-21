@@ -8,62 +8,26 @@
  * `target: "ml:<task>"`, and the writer folds N of them with the existing FedAvg
  * (`mergeCheckpointDiffsGated` → `mergeCheckpointDiffs`), refusing a merge whose
  * held-out loss regresses. No second wire, no second merge.
+ *
+ * The head's manifest entry and checkpoint format live with the artifact
+ * (`evermind/ml_head.ts`); this module only imports evermind/, never the reverse.
  */
-import { buildDeltaLearnPayload, decodeDeltaPayload, deltaUnusableReason, mlHeadTarget, type DeltaLearnPayload } from "../evermind/delta_wire.js";
+import {
+  buildDeltaLearnPayload,
+  decodeDeltaPayload,
+  deltaTargetMismatch,
+  deltaUnusableReason,
+  mlHeadTarget,
+  type DeltaLearnPayload,
+} from "../evermind/delta_wire.js";
 import { mergeCheckpointDiffsGated, type GatedMergeResult, type MergeGateOptions } from "../evermind/merge.js";
+import { headCheckpoint, headParams, type EvermindMlHead } from "../evermind/ml_head.js";
 import type { EvermindModelPackage } from "../evermind/package.js";
 import { base64ToBytes, bytesToBase64 } from "../utils/base64.js";
-import { appendCrcTrailer, verifyCrcTrailer } from "../utils/crc32.js";
 import { diffCheckpoints } from "../utils/delta.js";
 
-/**
- * One trained ML-catalog head carried in a model's manifest (`mlHeads`): small, so
- * it rides in the manifest, and versioned, so it federates — a delta against it is
- * `target: "ml:<task>"`, `baseVersion: version` on the delta wire.
- */
-export interface EvermindMlHead {
-  /** Catalog task id, e.g. `run.local-success`. */
-  task: string;
-  /** Engine key, e.g. `local:classical:logistic`. */
-  engine: string;
-  /** Integer head version — what a federated delta for it is diffed against. */
-  version: number;
-  /** What a loader needs to rebuild the predictor (e.g. `{ dim, classes }`). */
-  shape: Record<string, number>;
-  /** base64 of the CRC-trailed f32 checkpoint of the head's flat parameters. */
-  params: string;
-  /** Held-out loss of this version, when measured. */
-  evalLoss?: number;
-}
-
-/** A head's flat parameters as a CRC-trailed f32 checkpoint. */
-export function headCheckpoint(params: ArrayLike<number>): ArrayBuffer {
-  const body = new ArrayBuffer(params.length * 4);
-  new Float32Array(body).set(Array.from(params));
-  return appendCrcTrailer(body);
-}
-
-/** The flat parameters of a head checkpoint. Throws on a failed CRC. */
-export function headParams(checkpoint: ArrayBuffer): Float32Array {
-  const crc = verifyCrcTrailer(checkpoint);
-  if (!crc.ok) throw new Error("headParams: checkpoint failed its CRC check");
-  if (crc.body.byteLength % 4 !== 0) throw new Error("headParams: checkpoint is not f32");
-  return new Float32Array(crc.body);
-}
-
-/** Why a manifest head entry is unusable, or null (the package's validate() calls this). */
-export function mlHeadUnusableReason(h: EvermindMlHead): string | null {
-  if (!h || typeof h.task !== "string" || typeof h.engine !== "string") return "task and engine are required";
-  if (!Number.isInteger(h.version) || h.version < 0) return "version must be a non-negative integer";
-  try {
-    const crc = verifyCrcTrailer(base64ToBytes(h.params));
-    if (!crc.hasTrailer || !crc.ok) return "params checkpoint failed its CRC check";
-    if (crc.body.byteLength % 4 !== 0) return "params checkpoint is not f32";
-  } catch {
-    return "params is not base64";
-  }
-  return null;
-}
+export { headCheckpoint, headParams, mlHeadUnusableReason } from "../evermind/ml_head.js";
+export type { EvermindMlHead } from "../evermind/ml_head.js";
 
 /** A manifest entry for a head's current parameters. */
 export function mlHeadEntry(
@@ -121,6 +85,11 @@ export interface MlHeadMergeOutcome {
  * target, stale base or a malformed diff costs only itself), FedAvg the rest, and
  * keep the result only if `score` (held-out loss of a parameter vector, lower is
  * better) does not regress.
+ *
+ * Fails CLOSED: `requireEval` defaults to true here, so a round `score` cannot judge
+ * (null — e.g. `mlEvalLoss` for an anomaly/cluster head or an empty holdout — or a
+ * non-finite loss) is refused. A caller that federates an unscorable head on purpose
+ * passes `{ requireEval: false }` explicitly.
  */
 export function mergeMlHeadDeltas(
   base: EvermindMlHead,
@@ -134,7 +103,8 @@ export function mergeMlHeadDeltas(
   const weights: number[] = [];
   const rejected: { index: number; reason: string }[] = [];
   payloads.forEach((p, index) => {
-    if (p.target !== target) return void rejected.push({ index, reason: `target ${p.target ?? "(model)"} is not ${target}` });
+    const wrongTarget = deltaTargetMismatch(p.target, target);
+    if (wrongTarget) return void rejected.push({ index, reason: wrongTarget });
     if (p.baseVersion !== base.version) return void rejected.push({ index, reason: `stale base version ${p.baseVersion} (head is ${base.version})` });
     let diff: ArrayBuffer;
     try {
@@ -148,7 +118,7 @@ export function mergeMlHeadDeltas(
     weights.push(p.weight ?? 1);
   });
 
-  const merge = mergeCheckpointDiffsGated(baseCp, diffs, weights, (cp) => score(headParams(cp)), opts);
+  const merge = mergeCheckpointDiffsGated(baseCp, diffs, weights, (cp) => score(headParams(cp)), { ...opts, requireEval: opts.requireEval ?? true });
   if (!merge.accepted) return { head: base, merge, rejected };
   const head: EvermindMlHead = {
     ...base,

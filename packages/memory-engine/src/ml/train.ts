@@ -12,10 +12,11 @@
  */
 import { fitClassical, type ClassicalOptions } from "./classical/index.js";
 import { DenseHead } from "./dense_head.js";
+import { mlEvalLoss } from "./eval_loss.js";
 import { extractFeatureMatrix, type TextEmbedder } from "./features.js";
 import { HeadTrainer, type HeadTrainOptions } from "./head_trainer.js";
 import type { MlModelStore } from "./run.js";
-import { engineKey, type MlEngineRef, type MlPredictor, type MlSample, type MlTask, type MlTaskKind } from "./types.js";
+import { engineKey, type MlEngineRef, type MlPredictor, type MlSample, type MlTask } from "./types.js";
 
 /** One labelled example in input space. */
 export interface MlTrainExample<I> {
@@ -50,24 +51,7 @@ export interface MlTrainResult {
   holdoutLoss: number | null;
 }
 
-/**
- * Mean loss of `predictor` on `samples` for a task of `kind` — classify: weighted
- * cross-entropy of the true class; regress: weighted ½·squared error. Null for
- * kinds without a supervised loss, or an empty set.
- */
-export function mlEvalLoss(kind: MlTaskKind, predictor: MlPredictor, samples: readonly MlSample[]): number | null {
-  if (samples.length === 0 || (kind !== "classify" && kind !== "regress")) return null;
-  let sum = 0;
-  let wSum = 0;
-  for (const s of samples) {
-    const w = s.weight ?? 1;
-    const p = predictor.predict(s.x);
-    const loss = kind === "classify" ? -Math.log(Math.max(p.scores[s.y] ?? 0, 1e-12)) : 0.5 * (p.scores[0]! - s.y) ** 2;
-    sum += w * loss;
-    wSum += w;
-  }
-  return wSum > 0 ? sum / wSum : null;
-}
+export { mlEvalLoss } from "./eval_loss.js";
 
 /** The task's first local engine the seam can train. */
 function defaultEngine(task: MlTask<any, any>): MlEngineRef {

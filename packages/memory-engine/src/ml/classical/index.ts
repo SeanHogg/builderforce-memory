@@ -10,6 +10,7 @@ import { fitLinear, type LinearOptions } from "./linear.js";
 import { fitKMeans, type KMeansOptions } from "./kmeans.js";
 import { fitRobustZ, type RobustZOptions } from "./robust_z.js";
 import { fitEwma, type EwmaOptions } from "./ewma.js";
+import { fitAnomalyComposite, type AnomalyCompositeOptions } from "./anomaly_composite.js";
 import { fitIsolationForest, type IsolationForestOptions } from "./isolation_forest.js";
 import { fitGbm, type GbmOptions } from "./gbm.js";
 
@@ -27,6 +28,8 @@ export { RobustZModel, fitRobustZ, anomalyConfidence } from "./robust_z.js";
 export type { RobustZOptions } from "./robust_z.js";
 export { EwmaModel, fitEwma } from "./ewma.js";
 export type { EwmaOptions } from "./ewma.js";
+export { AnomalyCompositeModel, fitAnomalyComposite } from "./anomaly_composite.js";
+export type { AnomalyCompositeOptions } from "./anomaly_composite.js";
 export { IsolationForestModel, fitIsolationForest } from "./isolation_forest.js";
 export type { IsolationForestOptions } from "./isolation_forest.js";
 export { GbmModel, fitGbm } from "./gbm.js";
@@ -42,6 +45,7 @@ export interface ClassicalOptions {
   kmeans?: KMeansOptions;
   "robust-z"?: RobustZOptions;
   ewma?: EwmaOptions;
+  "anomaly-composite"?: AnomalyCompositeOptions;
   "isolation-forest"?: IsolationForestOptions;
   "gbm-small"?: GbmOptions;
 }
@@ -68,6 +72,8 @@ export function fitClassical(
       return fitRobustZ(samples, opts["robust-z"]);
     case "ewma":
       return fitEwma(samples, opts.ewma);
+    case "anomaly-composite":
+      return fitAnomalyComposite(samples, opts["anomaly-composite"]);
     case "isolation-forest":
       return fitIsolationForest(samples, opts["isolation-forest"]);
     case "gbm-small":

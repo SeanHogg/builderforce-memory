@@ -16,9 +16,13 @@
 
 import type {
     adaptPackage,
+    curatePendingExperience,
     experienceDocuments,
     packDocuments,
+    CurationResult,
+    EvermindTextEmbedder,
     ExperienceDocument,
+    ExperienceSnapshot,
     ExperienceStore,
 } from "@seanhogg/builderforce-memory-engine";
 import type { LoadedEvermind } from "../model/evermind-package.js";
@@ -29,13 +33,27 @@ export interface TrainEngine {
     packDocuments: typeof packDocuments;
     adaptPackage: typeof adaptPackage;
     EVERMIND_ADAPT_MAX_CHARS: number;
+    /** The opt-in curation step and the CPU embedder it scores with (engine ≥ 2026.10.2). */
+    curatePendingExperience?: typeof curatePendingExperience;
+    EvermindTextEmbedder?: typeof EvermindTextEmbedder;
 }
+
+/** What curation left out of a pass, when it ran. */
+export type CurationReport = { dropped: CurationResult["dropped"] };
 
 export type TrainOutcome =
     | { status: "nothing_new"; pending: 0; version: string }
-    | { status: "no_window"; pending: number; version: string }
-    | { status: "curated_out"; pending: number; version: string }
-    | { status: "trained"; learned: number; passes: number; loss: number; version: string; previousModel: string };
+    | { status: "no_window"; pending: number; version: string; curation?: CurationReport }
+    | { status: "curated_out"; pending: number; version: string; curation: CurationReport }
+    | {
+          status: "trained";
+          learned: number;
+          passes: number;
+          loss: number;
+          version: string;
+          previousModel: string;
+          curation?: CurationReport;
+      };
 
 const EXP_SUFFIX = /\+exp(\d+)$/;
 
@@ -51,26 +69,48 @@ export function experienceIndex(version: string): number {
     return m ? Number(m[1]) : 0;
 }
 
+/**
+ * Split the procedures by what the model at `modelVersion` has learned: `pending` in
+ * corpus order, `known` most recently learned first (what curation de-duplicates
+ * against — the engine embeds only the most recent `CURATION_KNOWN_LIMIT` of them).
+ */
+function splitDocuments(snap: ExperienceSnapshot, engine: TrainEngine, modelVersion: string) {
+    const current = experienceIndex(modelVersion);
+    const learnedAt = (id: string): number | null => {
+        const n = snap.learned[id];
+        return typeof n === "number" && n >= 1 && n <= current ? n : null;
+    };
+    const pending: ExperienceDocument[] = [];
+    const known: { doc: ExperienceDocument; at: number }[] = [];
+    for (const doc of engine.experienceDocuments(snap.episodes, snap.skills)) {
+        const at = learnedAt(doc.id);
+        if (at == null) pending.push(doc);
+        else known.push({ doc, at });
+    }
+    known.sort((a, b) => b.at - a.at);
+    return { pending, known: known.map((k) => k.doc) };
+}
+
 /** Procedures the model has not learned yet. */
 export async function pendingDocuments(store: ExperienceStore, engine: TrainEngine, modelVersion: string) {
-    const snap = await store.snapshot();
-    const current = experienceIndex(modelVersion);
-    const known = (id: string) => {
-        const n = snap.learned[id];
-        return typeof n === "number" && n >= 1 && n <= current;
-    };
-    return engine.experienceDocuments(snap.episodes, snap.skills).filter((d) => !known(d.id));
+    return splitDocuments(await store.snapshot(), engine, modelVersion).pending;
 }
 
 export interface TrainExperienceOptions {
     /**
-     * Opt-in curation between "what is new" and the adaptation passes — typically the
-     * engine's `curateExperience` (quality filter + near-duplicate removal, docs/ml-task-catalog.md
-     * §4.2). Absent ⇒ every pending procedure is learned, exactly as before. A procedure
-     * curation drops is NOT recorded as learned, so a later pass reconsiders it.
+     * Opt-in curation between "what is new" and the adaptation passes: the engine's
+     * `curatePendingExperience` (the `experience.quality` filter, trained on this
+     * store's run outcomes, + near-duplicate removal against the batch AND the
+     * recently learned procedures — docs/ml-task-catalog.md §4.2), scoring with the
+     * model's own CPU embedder. Default false ⇒ every pending procedure is learned,
+     * exactly as before. A procedure curation drops is NOT recorded as learned, so a
+     * later pass reconsiders it.
      */
-    curate?: (docs: ExperienceDocument[]) => Promise<ExperienceDocument[]> | ExperienceDocument[];
+    curate?: boolean;
 }
+
+/** The message when curation is asked of an engine that predates it. */
+export const CURATION_UNSUPPORTED = "Curation needs @seanhogg/builderforce-memory-engine 2026.10.2 or newer.";
 
 export async function trainExperience(
     store: ExperienceStore,
@@ -80,10 +120,23 @@ export async function trainExperience(
     opts: TrainExperienceOptions = {},
 ): Promise<TrainOutcome> {
     const version = model.pkg.manifest.version ?? "0";
-    const pending = await pendingDocuments(store, engine, version);
+    const snap = await store.snapshot();
+    const { pending, known } = splitDocuments(snap, engine, version);
     if (pending.length === 0) return { status: "nothing_new", pending: 0, version };
-    const docs = opts.curate ? await opts.curate(pending) : pending;
-    if (docs.length === 0) return { status: "curated_out", pending: pending.length, version };
+
+    let docs = pending;
+    let curation: CurationReport | undefined;
+    if (opts.curate) {
+        if (!engine.curatePendingExperience || !engine.EvermindTextEmbedder) throw new Error(CURATION_UNSUPPORTED);
+        // The model being trained embeds for curation: its own notion of "the same procedure".
+        const lm = model.pkg.loadLM() as ConstructorParameters<typeof EvermindTextEmbedder>[0];
+        const codec = model.codec as ConstructorParameters<typeof EvermindTextEmbedder>[1];
+        const embedder = new engine.EvermindTextEmbedder(lm, codec);
+        const r = await engine.curatePendingExperience(pending, snap, { embedder, known });
+        docs = r.kept;
+        curation = { dropped: r.dropped };
+    }
+    if (docs.length === 0) return { status: "curated_out", pending: pending.length, version, curation: curation ?? { dropped: [] } };
 
     const next = nextExperienceVersion(version);
     // The engine's package type; the structural view is what was loaded from disk.
@@ -99,7 +152,7 @@ export async function trainExperience(
         passes++;
         learned.push(...pass.map((d) => d.id));
     }
-    if (passes === 0) return { status: "no_window", pending: docs.length, version };
+    if (passes === 0) return { status: "no_window", pending: docs.length, version, ...(curation ? { curation } : {}) };
 
     const loss = lossSum / passes;
     // Keep the model this pass started from, so one bad adaptation is one rename away
@@ -112,5 +165,5 @@ export async function trainExperience(
     model.fs.writeFileSync(staged, new Uint8Array(pkg.toBlob()));
     model.fs.renameSync(staged, modelFile);
     await store.recordAdaptation({ index: experienceIndex(next), version: next, learned, passes, loss, at: Date.now() });
-    return { status: "trained", learned: learned.length, passes, loss, version: next, previousModel };
+    return { status: "trained", learned: learned.length, passes, loss, version: next, previousModel, ...(curation ? { curation } : {}) };
 }

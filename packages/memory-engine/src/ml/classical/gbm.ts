@@ -123,7 +123,8 @@ export function fitGbm(samples: readonly MlSample[], opts: GbmOptions = {}): Gbm
     wSum += s.weight ?? 1;
     ySum += (s.weight ?? 1) * s.y;
   }
-  const yMean = ySum / wSum;
+  // All-zero weights would make this 0/0: fall back to the unweighted mean.
+  const yMean = wSum > 0 ? ySum / wSum : samples.reduce((a, s) => a + s.y, 0) / samples.length;
   const base = objective === "binary" ? Math.log(Math.max(yMean, 1e-6) / Math.max(1 - yMean, 1e-6)) : yMean;
   const margins = samples.map(() => base);
   const trees: RTree[] = [];

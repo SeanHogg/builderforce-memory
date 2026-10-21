@@ -5,8 +5,9 @@
  *
  * Full-batch gradient descent with AdamW. When a GPUDevice is supplied the
  * optimiser step runs on the GPU via the shared WEIGHT_UPDATE_WGSL kernel; with
- * no device it uses a numerically-equivalent CPU AdamW, so training works
- * everywhere (CI, Node without @webgpu/node, a laptop with no GPU).
+ * no device it runs the kernel's CPU mirror, `adamwUpdateInPlace` (`optim/adamw.ts`,
+ * NaN/Inf guard included), so training works everywhere (CI, Node without
+ * @webgpu/node, a laptop with no GPU). Neither path bounds the step (maxDelta 0).
  *
  * The head owns its forward/backward and its loss (MSE for regression, BCE /
  * softmax cross-entropy for classification); this file owns only the loop:
@@ -23,6 +24,7 @@ import {
   cdiv,
 } from "../utils/gpu_utils.js";
 import { WEIGHT_UPDATE_WGSL } from "../kernels/weight_update.js";
+import { adamwUpdateInPlace, type AdamWKernelStep } from "../optim/adamw.js";
 
 /** A named trainable tensor (flat row-major Float32Array). */
 export interface HeadParam {
@@ -63,29 +65,19 @@ interface AdamMoment {
   v: Float32Array;
 }
 
-interface AdamHyper {
-  learningRate: number;
-  weightDecay: number;
-  beta1: number;
-  beta2: number;
-  eps: number;
-  beta1_t: number;
-  beta2_t: number;
-}
+/** Byte size of WEIGHT_UPDATE_WGSL's `AdamParams` uniform: 1 u32 + 8 f32 + 3 f32 pad = 48. */
+const ADAM_PARAMS_BYTES = 48;
 
-function packAdamParams(
-  numElements: number,
-  lr: number,
-  beta1: number,
-  beta2: number,
-  eps: number,
-  weightDecay: number,
-  beta1_t: number,
-  beta2_t: number,
-): ArrayBuffer {
-  const buf = new ArrayBuffer(32);
+/**
+ * Pack `AdamParams` exactly as WEIGHT_UPDATE_WGSL declares it:
+ * `num_elements: u32, lr, beta1, beta2, eps, weight_decay, beta1_t, beta2_t,
+ * max_delta, _pad0, _pad1, _pad2` (all f32 after the first) — 48 bytes.
+ */
+function packAdamParams(numElements: number, hp: AdamWKernelStep): ArrayBuffer {
+  const buf = new ArrayBuffer(ADAM_PARAMS_BYTES);
   new Uint32Array(buf, 0, 1).set([numElements]);
-  new Float32Array(buf, 4, 7).set([lr, beta1, beta2, eps, weightDecay, beta1_t, beta2_t]);
+  // Pads stay 0 (fresh ArrayBuffer).
+  new Float32Array(buf, 4, 8).set([hp.lr, hp.beta1, hp.beta2, hp.eps, hp.weightDecay, hp.beta1_t, hp.beta2_t, hp.maxDelta]);
   return buf;
 }
 
@@ -159,7 +151,7 @@ export class HeadTrainer<S> {
       this._step++;
       const beta1_t = Math.pow(beta1, this._step);
       const beta2_t = Math.pow(beta2, this._step);
-      const hp: AdamHyper = { learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t };
+      const hp: AdamWKernelStep = { lr: learningRate, weightDecay, beta1, beta2, eps, beta1_t, beta2_t, maxDelta: 0 };
       if (this.gpuTraining) {
         await this._adamwStepGpu(grads, hp);
       } else {
@@ -181,30 +173,20 @@ export class HeadTrainer<S> {
     return total / samples.length;
   }
 
-  private _adamwStepCpu(grads: HeadParam[], hp: AdamHyper): void {
+  /** AdamW on the CPU via the kernel's shared mirror (`adamwUpdateInPlace`). */
+  private _adamwStepCpu(grads: HeadParam[], hp: AdamWKernelStep): void {
     const params = this.head.parameters();
-    const { learningRate: lr, weightDecay: wd, beta1, beta2, eps, beta1_t, beta2_t } = hp;
     for (let pi = 0; pi < params.length; pi++) {
-      const p = params[pi]!.data;
-      const g = grads[pi]!.data;
       const mom = this._moments![pi]!;
-      for (let i = 0; i < p.length; i++) {
-        const gi = g[i]!;
-        mom.m[i] = beta1 * mom.m[i]! + (1 - beta1) * gi;
-        mom.v[i] = beta2 * mom.v[i]! + (1 - beta2) * gi * gi;
-        const mHat = mom.m[i]! / (1 - beta1_t);
-        const vHat = mom.v[i]! / (1 - beta2_t);
-        p[i] = p[i]! * (1 - lr * wd) - (lr * mHat) / (Math.sqrt(vHat) + eps);
-      }
+      adamwUpdateInPlace(params[pi]!.data, grads[pi]!.data, mom.m, mom.v, hp);
     }
   }
 
   /** AdamW on the GPU via the shared WEIGHT_UPDATE_WGSL kernel. Awaited per step. */
-  private async _adamwStepGpu(grads: HeadParam[], hp: AdamHyper): Promise<void> {
+  private async _adamwStepGpu(grads: HeadParam[], hp: AdamWKernelStep): Promise<void> {
     const device = this.device!;
     const pipeline = this._adamwPipeline!;
     const params = this.head.parameters();
-    const { learningRate: lr, weightDecay: wd, beta1, beta2, eps, beta1_t, beta2_t } = hp;
 
     for (let pi = 0; pi < params.length; pi++) {
       const p = params[pi]!;
@@ -213,10 +195,7 @@ export class HeadTrainer<S> {
       const gradBuf = createStorageBuffer(device, grads[pi]!.data, false);
       const mBuf = createStorageBuffer(device, mom.m, true);
       const vBuf = createStorageBuffer(device, mom.v, true);
-      const uni = createUniformBuffer(
-        device,
-        packAdamParams(p.numel, lr, beta1, beta2, eps, wd, beta1_t, beta2_t),
-      );
+      const uni = createUniformBuffer(device, packAdamParams(p.numel, hp));
       const bg = createBindGroup(device, pipeline, [uni, paramBuf, gradBuf, mBuf, vBuf]);
       dispatchKernel(device, pipeline, bg, [cdiv(p.numel, 256), 1, 1]);
 

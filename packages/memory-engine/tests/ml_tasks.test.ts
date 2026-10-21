@@ -11,10 +11,15 @@ import { HeadTrainer } from "../src/ml/head_trainer.js";
 import { InMemoryMlModels, runMlTask } from "../src/ml/run.js";
 import { trainMlTask } from "../src/ml/train.js";
 import { engineKey, type MlPredictor } from "../src/ml/types.js";
+import { AnomalyCompositeModel, fitClassical } from "../src/ml/classical/index.js";
+import { extractFeatureMatrix } from "../src/ml/features.js";
 import {
   BUILTIN_ML_TASKS,
   createMlRegistry,
   curateExperience,
+  curatePendingExperience,
+  CURATION_KNOWN_LIMIT,
+  RUN_ANOMALY_MIN_SCALE,
   experienceQualityInputs,
   experienceQualityExamples,
   experienceQualityLabel,
@@ -170,12 +175,69 @@ describe("experience.quality", () => {
     const doc = (id: string, text: string): ExperienceDocument => ({ id, text });
     const good = (i: number): ExperienceQualityInput => ({ doc: doc(`g${i}`, "Task: save report. 1. Click Save."), steps: 3, runs: 5, succeeded: 5, failed: 0 });
     const bad = (i: number): ExperienceQualityInput => ({ doc: doc(`b${i}`, "Task: wiggle mouse. 1. Click nowhere."), steps: 40, runs: 5, succeeded: 0, failed: 5 });
-    const ex = experienceQualityExamples([good(1), bad(1), good(2), bad(2), good(3), bad(3)]);
+    // 12 = the task's minSamples: below it the task stays untrained (see the next test).
+    const ex = experienceQualityExamples(Array.from({ length: 6 }, (_, i) => [good(i), bad(i)]).flat());
     const models = new InMemoryMlModels();
     const r = (await trainMlTask(EXPERIENCE_QUALITY_TASK, ex, { embedder: hashEmbedder, models, holdoutFraction: 0 }))!;
     expect(engineKey(r.engine)).toBe("local:classical:knn");
     const q = await runMlTask<{ label: string; pHigh: number }>("experience.quality", good(9), { registry, mode: "local-only", models, embedder: hashEmbedder });
     expect(q.output.label).toBe("high");
+  });
+
+  test("the label is not a feature: no success / failure rate in the numeric fields", () => {
+    expect(EXPERIENCE_QUALITY_TASK.features.numericNames).toEqual(["steps", "runs"]);
+    const i: ExperienceQualityInput = { doc: { id: "x", text: "t" }, steps: 3, runs: 4, succeeded: 4, failed: 0 };
+    expect(EXPERIENCE_QUALITY_TASK.features.numeric!(i)).toEqual(EXPERIENCE_QUALITY_TASK.features.numeric!({ ...i, succeeded: 0, failed: 4 }));
+  });
+
+  describe("small support never drops a good procedure (no stub predictor)", () => {
+    const doc = (id: string, text: string): ExperienceDocument => ({ id, text });
+    const high: ExperienceQualityInput = { doc: doc("h1", "Task: save report (app.exe)\n1. Click Save."), steps: 3, runs: 5, succeeded: 5, failed: 0 };
+    const lows: ExperienceQualityInput[] = [
+      { doc: doc("l1", "Task: wiggle mouse (app.exe)\n1. Click nowhere."), steps: 40, runs: 5, succeeded: 0, failed: 5 },
+      { doc: doc("l2", "Task: open twice (app.exe)\n1. Click Open. 2. Click Open."), steps: 30, runs: 4, succeeded: 1, failed: 3 },
+      { doc: doc("l3", "Task: retry forever (cli.exe)\n1. Press Enter."), steps: 25, runs: 6, succeeded: 0, failed: 6 },
+    ];
+    const train = [...lows, high];
+    const copy: ExperienceQualityInput = { ...high, doc: doc("h2", high.doc.text) };
+    const byId = new Map([...train, copy].map((i) => [i.doc.id, i] as const));
+    const input = (d: ExperienceDocument) => byId.get(d.id)!;
+
+    /** The knn engine fitted on the real features of the 3 low + 1 high set. */
+    async function knnOn(k?: number) {
+      const X = await extractFeatureMatrix(EXPERIENCE_QUALITY_TASK.features, train, hashEmbedder);
+      const samples = train.map((t, i) => ({ x: X[i]!, y: t === high ? 1 : 0 }));
+      const models = new InMemoryMlModels();
+      models.set("experience.quality", "local:classical:knn", fitClassical("knn", samples, k != null ? { knn: { k } } : {}));
+      return models;
+    }
+
+    test("below minSamples the task stays untrained, so an exact copy of the high doc is kept", async () => {
+      const models = new InMemoryMlModels();
+      expect(await trainMlTask(EXPERIENCE_QUALITY_TASK, experienceQualityExamples(train), { embedder: hashEmbedder, models })).toBeNull();
+      const r = await curateExperience([copy.doc], { embedder: hashEmbedder, dedupeThreshold: 1.01, quality: { ctx: { registry, mode: "local-only", models }, input } });
+      expect(r.kept.map((d) => d.id)).toEqual(["h2"]);
+    });
+
+    test("fitted anyway, k = ⌊√4⌋ = 2 keeps the exact copy; the old k = n (every point votes) dropped it", async () => {
+      const opts = (models: InMemoryMlModels) => ({ embedder: hashEmbedder, dedupeThreshold: 1.01, quality: { ctx: { registry, mode: "local-only" as const, models }, input } });
+      const kept = await curateExperience([copy.doc], opts(await knnOn()));
+      expect(kept.kept.map((d) => d.id)).toEqual(["h2"]);
+      const everyPointVotes = await curateExperience([copy.doc], opts(await knnOn(4)));
+      expect(everyPointVotes.dropped).toEqual([{ id: "h2", reason: "low-quality", score: expect.any(Number) }]);
+    });
+
+    test("an unscored procedure (runs = 0) is kept even by a model that would score it low", async () => {
+      const neverRun: ExperienceQualityInput = { ...lows[0]!, doc: doc("u1", lows[0]!.doc.text), runs: 0, succeeded: 0, failed: 0 };
+      const models = await knnOn(4);
+      const r = await curateExperience([neverRun.doc], {
+        embedder: hashEmbedder,
+        dedupeThreshold: 1.01,
+        quality: { ctx: { registry, mode: "local-only", models }, input: () => neverRun },
+      });
+      expect(r.kept.map((d) => d.id)).toEqual(["u1"]);
+      expect(r.dropped).toEqual([]);
+    });
   });
 });
 
@@ -202,8 +264,33 @@ describe("experience.dedupe + curation (opt-in, in front of adaptAndDiff)", () =
     expect(r.kept[0]!.id).toBe("s1");
   });
 
+  test("a pending document that repeats an ALREADY-LEARNED one is dropped as its duplicate", async () => {
+    const r = await curateExperience([docs[1]!, docs[2]!], { embedder: hashEmbedder, known: [docs[0]!] });
+    expect(r.kept.map((d) => d.id)).toEqual(["e3"]);
+    expect(r.dropped).toEqual([{ id: "e9", reason: "duplicate", of: "s1", score: expect.closeTo(1, 6) }]);
+  });
+
+  test("curatePendingExperience: the host's one call — quality trained from runs, dedupe vs a bounded known window", async () => {
+    const sk = skill("s1", "Pay invoice", "e1");
+    const source = { episodes: [episode("e2", "Pay invoice", ["Save"])], skills: [sk], runs: [] as Run[] };
+    const known: ExperienceDocument[] = [{ id: "s1", text: "Task: Pay invoice (app.exe)\n1. Click “Save”." }];
+    const pending: ExperienceDocument[] = [{ id: "e2", text: "Task: Pay invoice (app.exe)\n1. Click “Save”." }, docs[3]!];
+    const r = await curatePendingExperience(pending, source, { embedder: hashEmbedder, known });
+    expect(r.kept.map((d) => d.id)).toEqual(["e4"]);
+    expect(r.dropped).toEqual([{ id: "e2", reason: "duplicate", of: "s1", score: expect.closeTo(1, 6) }]);
+
+    // Only the most recent CURATION_KNOWN_LIMIT known documents are embedded.
+    const seen: string[] = [];
+    const counting: TextEmbedder = { ...hashEmbedder, embed: async (t: string) => (seen.push(t), hashEmbedder.embed(t)) };
+    const many = Array.from({ length: CURATION_KNOWN_LIMIT + 5 }, (_, i): ExperienceDocument => ({ id: `k${i}`, text: `Task: thing ${i}` }));
+    await curatePendingExperience([], source, { embedder: counting, known: many });
+    expect(new Set(seen).size).toBe(CURATION_KNOWN_LIMIT);
+    expect(seen).not.toContain(`Task: thing ${CURATION_KNOWN_LIMIT}`);
+  });
+
   test("quality filter and exclusions; an untrained quality task keeps everything", async () => {
-    const input = (d: ExperienceDocument): ExperienceQualityInput => ({ doc: d, steps: 1, runs: 0, succeeded: 0, failed: 0 });
+    // Every document has run outcomes here, so the quality filter applies to each.
+    const input = (d: ExperienceDocument): ExperienceQualityInput => ({ doc: d, steps: 1, runs: 2, succeeded: 1, failed: 1 });
     const untrained = await curateExperience(docs, { embedder: hashEmbedder, dedupeThreshold: 1.01, quality: { ctx: { registry, mode: "local-only" }, input } });
     expect(untrained.kept).toHaveLength(4);
 
@@ -257,6 +344,29 @@ describe("run.anomaly", () => {
     expect(why.find((w) => w.metric === "cost")!.population).toBeGreaterThan(1);
     expect(why.find((w) => w.metric === "duration")!.population).toBeLessThan(1);
     expect(await trainMlTask(RUN_ANOMALY_TASK, history.slice(0, 4).map((input) => ({ input, label: 0 })))).toBeNull();
+  });
+
+  test("ONE composite engine: trained, stored and answered under local:classical:anomaly-composite", async () => {
+    expect(RUN_ANOMALY_TASK.engines.map(engineKey)).toEqual(["local:classical:anomaly-composite"]);
+    const models = new InMemoryMlModels();
+    const r = (await trainMlTask(RUN_ANOMALY_TASK, history.map((input) => ({ input, label: 0 })), { models }))!;
+    expect(engineKey(r.engine)).toBe("local:classical:anomaly-composite");
+    expect(models.get("run.anomaly", "local:classical:anomaly-composite")).toBe(r.predictor);
+    expect(r.predictor).toBeInstanceOf(AnomalyCompositeModel);
+    const det = r.predictor as RunAnomalyDetector;
+    expect(det.population.scale.every((sc) => sc >= RUN_ANOMALY_MIN_SCALE)).toBe(true);
+    expect(det.trend.minScale).toBe(RUN_ANOMALY_MIN_SCALE);
+  });
+
+  test("after 20 clean runs, one tool failure is NOT an anomaly — a large cost spike still is", async () => {
+    const clean: RunMetrics[] = Array.from({ length: 20 }, (_, i) => ({ costUsd: 0.1, durationMs: 60_000 + 1000 * (i % 3), toolFailures: 0 }));
+    const models = new InMemoryMlModels();
+    await trainMlTask(RUN_ANOMALY_TASK, clean.map((input) => ({ input, label: 0 })), { models });
+    const ctx = { registry, mode: "local-only" as const, models };
+    const oneFailure = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 0.1, durationMs: 61_000, toolFailures: 1 }, ctx);
+    expect(oneFailure.output.anomalous).toBe(false);
+    const spike = await runMlTask<RunAnomaly>("run.anomaly", { costUsd: 5, durationMs: 61_000, toolFailures: 0 }, ctx);
+    expect(spike.output.anomalous).toBe(true);
   });
 
   test("experience run metrics come from the run log", () => {

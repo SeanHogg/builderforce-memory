@@ -6,6 +6,7 @@
  * features on a stable scale, so a weight means the same thing on every machine —
  * which is what lets trained weights FEDERATE (`exportParams` / `importParams`).
  */
+import { mlEvalLoss } from "../eval_loss.js";
 import type { MlPrediction, MlPredictor, MlSample } from "../types.js";
 import { classCount, featureDim, softmax, topProbability } from "./math.js";
 
@@ -50,16 +51,9 @@ export class LogisticModel implements MlPredictor {
     return { scores, confidence: topProbability(scores) };
   }
 
-  /** Weighted mean cross-entropy over `samples` (the eval-gate loss). */
+  /** Weighted mean cross-entropy over `samples` — exactly the eval-gate loss ({@link mlEvalLoss}); 0 for an empty set. */
   loss(samples: readonly MlSample[]): number {
-    let sum = 0;
-    let wSum = 0;
-    for (const s of samples) {
-      const w = s.weight ?? 1;
-      sum += -w * Math.log(Math.max(this.proba(s.x)[s.y] ?? 0, 1e-12));
-      wSum += w;
-    }
-    return wSum > 0 ? sum / wSum : 0;
+    return mlEvalLoss("classify", this, samples) ?? 0;
   }
 
   /** One full-batch gradient step; returns the pre-step mean loss. */
@@ -115,6 +109,12 @@ export function fitLogistic(
 ): LogisticModel {
   const d = featureDim(samples.map((s) => s.x));
   const k = opts.classes ?? init?.classes ?? classCount(samples.map((s) => s.y));
+  // A label at or above `classes` has no row of weights: its probability would be
+  // read as undefined and every loss and gradient would turn NaN, silently.
+  const top = classCount(samples.map((s) => s.y));
+  if (top > k && samples.some((s) => s.y >= k)) {
+    throw new Error(`fitLogistic: labels go up to ${top - 1} but the model has ${k} classes`);
+  }
   const model = init ?? new LogisticModel(d, k);
   if (model.dim !== d || model.classes !== k) throw new Error(`fitLogistic: init is ${model.dim}×${model.classes}, data is ${d}×${k}`);
   const lr = opts.learningRate ?? 0.5;

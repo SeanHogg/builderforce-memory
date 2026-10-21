@@ -15,8 +15,10 @@ import { trainMlTask, mlEvalLoss } from "../src/ml/train.js";
 import { DenseHead } from "../src/ml/dense_head.js";
 import { HeadTrainer } from "../src/ml/head_trainer.js";
 import { extractFeatures, logScale, clampRatio } from "../src/ml/features.js";
-import { engineKey, type MlPrediction, type MlPredictor, type MlTask } from "../src/ml/types.js";
+import { engineKey, type InferenceMode, type MlPrediction, type MlPredictor, type MlTask } from "../src/ml/types.js";
 import type { TextEmbedder } from "../src/lm/text_embedder.js";
+import { WEIGHT_UPDATE_WGSL } from "../src/kernels/weight_update.js";
+import { fakeGpu } from "./fakeGpu";
 
 interface In {
   a: number;
@@ -95,6 +97,15 @@ describe("candidateEngines", () => {
     expect(() => candidateEngines(t, "specific")).toThrow(/needs ctx.engine/);
     expect(() => candidateEngines(t, "specific", "local:classical:gbm-small")).toThrow(/not one of/);
   });
+
+  test("an unknown mode string throws instead of being read as 'specific'", async () => {
+    const t = task();
+    const bogus = "cloud-only" as unknown as InferenceMode;
+    expect(() => candidateEngines(t, bogus, KNN)).toThrow(/unknown inference mode 'cloud-only'/);
+    const registry = new MlTaskRegistry();
+    registry.register(t);
+    await expect(runMlTask("test.sign", { a: 1, b: 1 }, { registry, mode: bogus, engine: KNN })).rejects.toThrow(/unknown inference mode/);
+  });
 });
 
 describe("runMlTask", () => {
@@ -148,6 +159,42 @@ describe("runMlTask", () => {
     // Without a cloud port the low-confidence local answer stands immediately.
     const noCloud = await runMlTask<string>("test.sign", { a: 1, b: 1 }, { registry, mode: "hybrid", models, minConfidence: 0.8 });
     expect(engineKey(noCloud.engine)).toBe(engineKey(LOGISTIC));
+  });
+
+  test("an engine that throws is an 'error' skip; hybrid falls through to the cloud, and only all-fail throws", async () => {
+    const models = new InMemoryMlModels();
+    models.set("test.sign", engineKey(LOGISTIC), {
+      predict: () => {
+        throw new Error("corrupt head");
+      },
+    });
+    const decisions = new MlDecisionLog();
+    const r = await runMlTask<string>("test.sign", { a: 1, b: 1 }, { registry, mode: "hybrid", models, cloud: cloud({ scores: [0.1, 0.9], confidence: 0.9 }), decisions });
+    expect(r.engine.tier).toBe("cloud");
+    expect(r.output).toBe("pos");
+    expect(decisions.list()[0]!.skipped[0]).toEqual({ engine: engineKey(LOGISTIC), reason: "error", detail: "corrupt head" });
+
+    // No engine answers: the error names every engine and why.
+    await expect(runMlTask("test.sign", { a: 1, b: 1 }, { registry, mode: "hybrid", models, cloud: cloud(new Error("gateway down")) })).rejects.toThrow(
+      /local:classical:logistic: error \(corrupt head\).*local:classical:knn: unavailable.*cloud:workers-ai:@cf\/test: error \(gateway down\)/,
+    );
+  });
+
+  test("a feature-extraction failure is an 'error' skip for each local engine, and the cloud still answers", async () => {
+    const t = task({ id: "test.text", features: { text: (i) => `a=${i.a}` } });
+    const reg = new MlTaskRegistry();
+    reg.register(t);
+    const models = new InMemoryMlModels();
+    models.set("test.text", engineKey(LOGISTIC), fixed([0, 1], 1));
+    models.set("test.text", engineKey(KNN), fixed([0, 1], 1));
+    const decisions = new MlDecisionLog();
+    // No embedder in the context: the text features cannot be extracted.
+    const r = await runMlTask<string>("test.text", { a: 1, b: 1 }, { registry: reg, mode: "hybrid", models, cloud: cloud({ scores: [1, 0], confidence: 1 }), decisions });
+    expect(r.engine.tier).toBe("cloud");
+    const skipped = decisions.list()[0]!.skipped;
+    expect(skipped.map((s) => s.reason)).toEqual(["error", "error"]);
+    expect(skipped[0]!.detail).toMatch(/^features: .*no embedder/);
+    await expect(runMlTask("test.text", { a: 1, b: 1 }, { registry: reg, mode: "local-only", models })).rejects.toBeInstanceOf(MlEngineUnavailableError);
   });
 
   test("specific uses exactly the named engine", async () => {
@@ -290,5 +337,47 @@ describe("DenseHead + HeadTrainer", () => {
     copy.importParams(head.exportParams());
     expect(copy.predict(Float32Array.of(5)).scores).toEqual(head.predict(Float32Array.of(5)).scores);
     await expect(trainer.train([])).rejects.toThrow(/HeadTrainer.train: no samples/);
+  });
+
+  test("the CPU step is the shared, guarded AdamW: a NaN gradient never reaches a weight", async () => {
+    const head = new DenseHead({ inputDim: 1, hiddenDim: 0, outputDim: 1, objective: "mse", seed: 4 });
+    const before = Array.from(head.exportParams());
+    await new HeadTrainer(head).train([{ x: Float32Array.of(Number.NaN), y: 1 }], { epochs: 3 });
+    expect(Array.from(head.exportParams())).toEqual(before);
+  });
+
+  test("the GPU step packs AdamParams exactly as WEIGHT_UPDATE_WGSL declares it", async () => {
+    // Field order and count straight from the kernel source, so the two cannot drift.
+    const body = /struct AdamParams\s*\{([^}]*)\}/.exec(WEIGHT_UPDATE_WGSL)![1]!;
+    const fields = body
+      .split("\n")
+      .map((l) => l.replace(/\/\/.*$/, "").trim())
+      .filter((l) => /^\w+\s*:/.test(l))
+      .map((l) => l.split(":")[0]!.trim());
+    expect(fields).toEqual(["num_elements", "lr", "beta1", "beta2", "eps", "weight_decay", "beta1_t", "beta2_t", "max_delta", "_pad0", "_pad1", "_pad2"]);
+
+    const gpu = fakeGpu();
+    const head = new DenseHead({ inputDim: 2, hiddenDim: 0, outputDim: 1, objective: "mse", seed: 1 });
+    const trainer = new HeadTrainer(head, gpu.device);
+    expect(trainer.gpuTraining).toBe(true);
+    await trainer.train([{ x: Float32Array.of(1, 2), y: 3 }], { epochs: 1, learningRate: 0.01, weightDecay: 0.1 });
+
+    const steps = gpu.dispatches.filter((d) => d.entryPoint === "adamw_update");
+    expect(steps).toHaveLength(head.parameters().length);
+    steps.forEach((d, i) => {
+      const uni = d.buffers[0]!;
+      expect(uni.size).toBe(fields.length * 4); // 48 — the old packer wrote 32
+      const dv = new DataView(uni.bytes.buffer, uni.bytes.byteOffset, uni.size);
+      const f32 = (name: string) => dv.getFloat32(fields.indexOf(name) * 4, true);
+      expect(dv.getUint32(0, true)).toBe(head.parameters()[i]!.numel);
+      expect(f32("lr")).toBeCloseTo(0.01, 7);
+      expect(f32("beta1")).toBeCloseTo(0.9, 7);
+      expect(f32("beta2")).toBeCloseTo(0.999, 7);
+      expect(f32("eps")).toBeCloseTo(1e-8, 12);
+      expect(f32("weight_decay")).toBeCloseTo(0.1, 7);
+      expect(f32("beta1_t")).toBeCloseTo(0.9, 7);
+      expect(f32("beta2_t")).toBeCloseTo(0.999, 7);
+      expect(f32("max_delta")).toBe(0);
+    });
   });
 });

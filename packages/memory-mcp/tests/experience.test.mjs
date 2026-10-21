@@ -173,6 +173,40 @@ test("experience_train adapts the private model once per procedure and keeps the
   assert.equal((await call("experience_train")).json.version, "7+exp2");
 });
 
+test("experience_train { curate } drops near-copies — within the batch AND of what was already learned", async () => {
+  const dir = tmpDir();
+  const memoryFile = path.join(dir, "memory.json");
+  const modelFile = path.join(dir, "mine.evermind");
+  const tok = new BPETokenizer();
+  tok.train(experienceCorpus([episode()], []) + " the invoice amount send new");
+  const lm = new EvermindLM({ vocabSize: tok.vocabSize, seed: 11 });
+  fs.writeFileSync(modelFile, new Uint8Array(EvermindModelPackage.fromLM(lm, { name: "mine", version: "7", card: { description: "private" }, tokenizer: tok }).toBlob()));
+
+  const { call } = await toolsFor(memoryFile, { ...ON, BUILDERFORCE_MEMORY_MODEL: modelFile });
+  // Two recordings of the same procedure: identical text, so one is a duplicate.
+  await call("episode_save", { episode: episode("ep1") });
+  await call("episode_save", { episode: episode("ep2") });
+
+  const first = (await call("experience_train", { curate: true })).json;
+  assert.equal(first.status, "trained");
+  assert.equal(first.learned, 1, "only one copy is learned");
+  assert.equal(first.curation.dropped.length, 1);
+  const [dup] = first.curation.dropped;
+  assert.equal(dup.reason, "duplicate");
+  assert.deepEqual([dup.id, dup.of].sort(), ["ep1", "ep2"]);
+
+  // A third copy is a near-copy of what the model has ALREADY learned, so nothing is
+  // left to learn: the dropped copy from the first pass and the new one both go.
+  await call("episode_save", { episode: episode("ep3") });
+  const second = (await call("experience_train", { curate: true })).json;
+  assert.equal(second.status, "curated_out");
+  assert.equal(second.curation.dropped.length, 2);
+  assert.ok(second.curation.dropped.every((d) => d.reason === "duplicate" && d.of === dup.of));
+
+  // Curation is opt-in: without it every pending copy is learned, as before.
+  assert.equal((await call("experience_train")).json.status, "trained");
+});
+
 test("training without a model says how to configure one", async () => {
   const { call } = await toolsFor(path.join(tmpDir(), "memory.json"));
   const r = await call("experience_train");

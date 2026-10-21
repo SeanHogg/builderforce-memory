@@ -8,6 +8,9 @@
  *   - the payload shape (`diff` base64 + integer `baseVersion`, optional weight/label,
  *     optional `target` naming WHICH checkpoint the diff is against — the model's own
  *     weights, or one trained ML head carried in the manifest's `mlHeads`);
+ *   - which checkpoint a door merges into: a parse names its door's target (the model
+ *     by default), so an ML-head diff can never reach the model's own merge — it would
+ *     pass every structural check and overwrite the first n floats of the LM weights;
  *   - the size cap, so a producer can fall back before it is refused;
  *   - the structural check a delta must pass before it may join a merge batch.
  *
@@ -17,7 +20,7 @@
 import { deserializeRowDelta } from "../utils/delta.js";
 import { verifyCrcTrailer } from "../utils/crc32.js";
 import { base64ToBytes, bytesToBase64 } from "../utils/base64.js";
-import { ML_TASK_ID_RE } from "../ml/types.js";
+import { ML_TASK_ID_RE } from "./ml_head.js";
 
 /** Max accepted base64 delta, in characters (~8 MiB). */
 export const MAX_DELTA_B64_CHARS = 8 * 1024 * 1024;
@@ -31,6 +34,16 @@ export const DELTA_TARGET_RE = new RegExp(`^ml:${ML_TASK_ID_RE.source.slice(1)}`
 /** The delta target of the trained head for catalog task `taskId`. */
 export function mlHeadTarget(taskId: string): string {
   return `ml:${taskId}`;
+}
+
+/**
+ * Why a delta's `target` does not belong at a door that merges into `expected`
+ * (undefined = the model's own checkpoint), or null when it does. The ONE target
+ * check: the parse and the ML-head merge both use it.
+ */
+export function deltaTargetMismatch(target: string | undefined, expected: string | undefined): string | null {
+  if (target === expected) return null;
+  return `target ${target ?? "(model)"} does not belong here; this door merges into ${expected ?? "the model checkpoint"}`;
 }
 
 /** Standard base64 alphabet with optional padding. */
@@ -58,11 +71,21 @@ export type DeltaParseResult =
   | { ok: true; payload: DeltaLearnPayload }
   | { ok: false; reason: "invalid" | "too-large"; error: string };
 
+/** Which checkpoint the door calling {@link parseDeltaLearnPayload} merges into. */
+export interface DeltaParseOptions {
+  /** Absent = the model's own checkpoint (the LM door); `ml:<task id>` = that head's door. */
+  target?: string;
+}
+
 /**
  * Parse + validate a delta body. Pure — a front door calls it to refuse a bad body
  * early, and the single writer calls it again because it trusts no caller.
+ *
+ * A body whose `target` is not the door's (`opts.target`; absent = the model) is
+ * refused as `invalid`: the LM door never admits an ML-head delta, and a head's door
+ * never admits a model delta.
  */
-export function parseDeltaLearnPayload(raw: unknown): DeltaParseResult {
+export function parseDeltaLearnPayload(raw: unknown, opts: DeltaParseOptions = {}): DeltaParseResult {
   const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const diff = typeof body.diff === "string" ? body.diff : "";
   const baseVersion = typeof body.baseVersion === "number" ? body.baseVersion : Number.NaN;
@@ -85,6 +108,8 @@ export function parseDeltaLearnPayload(raw: unknown): DeltaParseResult {
     return { ok: false, reason: "invalid", error: "target, when present, must be ml:<task id>" };
   }
   const target = body.target as string | undefined;
+  const mismatch = deltaTargetMismatch(target, opts.target);
+  if (mismatch) return { ok: false, reason: "invalid", error: mismatch };
   return {
     ok: true,
     payload: {

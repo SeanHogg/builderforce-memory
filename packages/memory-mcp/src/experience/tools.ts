@@ -13,7 +13,7 @@ import type { Episode, ReviewEdits, Run, RunStatus, SkillRoutine, StepOutcome } 
 import { fail, okJson, type MemoryTool, type ToolResult } from "../tool-core.js";
 import { isSafeExperienceId } from "./file-store.js";
 import type { ExperienceHost } from "./host.js";
-import { experienceIndex, pendingDocuments, trainExperience } from "./train.js";
+import { CURATION_UNSUPPORTED, experienceIndex, pendingDocuments, trainExperience } from "./train.js";
 
 const DEFAULT_RUNS = 50;
 const MAX_RUNS_RETURNED = 500;
@@ -343,8 +343,11 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const learnTools = [
         tool(
             "experience_train",
-            "Teach the private Evermind model the procedures it has not learned yet (each skill, and each demonstration not yet compiled into one). Pass dryRun to only count them. The previous model is kept beside the new one.",
-            { dryRun: z.boolean().optional() },
+            "Teach the private Evermind model the procedures it has not learned yet (each skill, and each demonstration not yet compiled into one). Pass dryRun to only count them. Pass curate to first leave out procedures whose runs mostly fail and near-copies of each other or of recently learned ones (each one left out is listed, and reconsidered next time). The previous model is kept beside the new one.",
+            {
+                dryRun: z.boolean().optional(),
+                curate: z.boolean().optional().describe("Opt-in: filter by run quality and drop near-duplicates before training. Default false."),
+            },
             async (args) => {
                 if (!host.modelFile) return fail("No private Evermind model is configured (set BUILDERFORCE_MEMORY_MODEL).");
                 const model = await host.loadModel();
@@ -354,7 +357,9 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                     const pending = (await pendingDocuments(store, engine, version)).length;
                     return okJson({ status: "dry_run", pending, version });
                 }
-                return okJson(await trainExperience(store, engine, model, host.modelFile));
+                const curate = args["curate"] === true;
+                if (curate && (!engine.curatePendingExperience || !engine.EvermindTextEmbedder)) return fail(CURATION_UNSUPPORTED);
+                return okJson(await trainExperience(store, engine, model, host.modelFile, { curate }));
             },
         ),
     ];

@@ -112,28 +112,54 @@ export class MlEngineUnavailableError extends Error {
     readonly taskId: string,
     readonly decision: MlDecision,
   ) {
-    super(`runMlTask(${taskId}): no engine could answer in '${decision.mode}' mode (${decision.skipped.map((s) => `${s.engine}: ${s.reason}`).join(", ") || "none allowed"})`);
+    super(
+      `runMlTask(${taskId}): no engine could answer in '${decision.mode}' mode (${
+        decision.skipped.map((s) => `${s.engine}: ${s.reason}${s.detail ? ` (${s.detail})` : ""}`).join(", ") || "none allowed"
+      })`,
+    );
     this.name = "MlEngineUnavailableError";
   }
 }
 
-/** The task's engines the mode allows, in the order the runner tries them. */
+/**
+ * The task's engines the mode allows, in the order the runner tries them. Exhaustive:
+ * a mode string outside {@link InferenceMode} (a host passing a stale or mistyped
+ * setting) throws instead of being read as `specific`.
+ */
 export function candidateEngines(task: MlTask<any, any>, mode: InferenceMode, specific?: MlEngineRef | string): MlEngineRef[] {
-  if (mode === "local-only") return task.engines.filter((e) => e.tier === "local");
-  if (mode === "hybrid") return [...task.engines.filter((e) => e.tier === "local"), ...task.engines.filter((e) => e.tier === "cloud")];
-  if (specific == null) throw new Error(`runMlTask(${task.id}): 'specific' mode needs ctx.engine`);
-  const key = typeof specific === "string" ? specific : engineKey(specific);
-  const match = task.engines.filter((e) => engineKey(e) === key);
-  if (match.length === 0) throw new Error(`runMlTask(${task.id}): engine '${key}' is not one of this task's engines`);
-  return match;
+  switch (mode) {
+    case "local-only":
+      return task.engines.filter((e) => e.tier === "local");
+    case "hybrid":
+      return [...task.engines.filter((e) => e.tier === "local"), ...task.engines.filter((e) => e.tier === "cloud")];
+    case "specific": {
+      if (specific == null) throw new Error(`runMlTask(${task.id}): 'specific' mode needs ctx.engine`);
+      const key = typeof specific === "string" ? specific : engineKey(specific);
+      const match = task.engines.filter((e) => engineKey(e) === key);
+      if (match.length === 0) throw new Error(`runMlTask(${task.id}): engine '${key}' is not one of this task's engines`);
+      return match;
+    }
+    default: {
+      const unknown: never = mode;
+      throw new Error(`runMlTask(${task.id}): unknown inference mode '${String(unknown)}'`);
+    }
+  }
 }
 
-/** Answer task `id` for `input` with the first engine the mode allows that can. */
+const errorDetail = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Answer task `id` for `input` with the first engine the mode allows that can. An
+ * engine that throws (feature extraction or its own predict) is recorded as an
+ * `error` skip and the next allowed engine is tried — in Hybrid, the cloud. Throws
+ * {@link MlEngineUnavailableError}, carrying every engine's reason, only when none answers.
+ */
 export async function runMlTask<O = unknown, I = unknown>(id: string, input: I, ctx: MlRunContext): Promise<MlResult<O>> {
   const task = ctx.registry.require<I, O>(id);
   const engines = candidateEngines(task, ctx.mode, ctx.engine);
   const skipped: MlDecision["skipped"] = [];
   let features: Float32Array | null = null;
+  let featureError: unknown = null;
   let deferred: { ref: MlEngineRef; p: MlPrediction } | null = null;
 
   const finish = (ref: MlEngineRef, p: MlPrediction): MlResult<O> => {
@@ -150,8 +176,26 @@ export async function runMlTask<O = unknown, I = unknown>(id: string, input: I, 
         skipped.push({ engine: key, reason: "unavailable" });
         continue;
       }
-      features ??= await extractFeatures(task.features, input, ctx.embedder);
-      const p = predictor.predict(features);
+      // Extract once; a failure (e.g. no embedder) fails every local engine alike, so
+      // it is remembered rather than retried per engine.
+      if (!features && featureError == null) {
+        try {
+          features = await extractFeatures(task.features, input, ctx.embedder);
+        } catch (error) {
+          featureError = error;
+        }
+      }
+      if (!features) {
+        skipped.push({ engine: key, reason: "error", detail: `features: ${errorDetail(featureError)}` });
+        continue;
+      }
+      let p: MlPrediction;
+      try {
+        p = predictor.predict(features);
+      } catch (error) {
+        skipped.push({ engine: key, reason: "error", detail: errorDetail(error) });
+        continue;
+      }
       const cloudLater = ctx.mode === "hybrid" && !!ctx.cloud && engines.slice(i + 1).some((e) => e.tier === "cloud");
       if (ctx.minConfidence != null && p.confidence < ctx.minConfidence && cloudLater) {
         skipped.push({ engine: key, reason: "low-confidence", detail: p.confidence.toFixed(3) });
@@ -167,7 +211,7 @@ export async function runMlTask<O = unknown, I = unknown>(id: string, input: I, 
     try {
       return finish(ref, await ctx.cloud.run({ taskId: id, engine: ref, input }));
     } catch (error) {
-      skipped.push({ engine: key, reason: "error", detail: error instanceof Error ? error.message : String(error) });
+      skipped.push({ engine: key, reason: "error", detail: errorDetail(error) });
     }
   }
   // The cloud could not answer after a low-confidence local one: the local answer stands.

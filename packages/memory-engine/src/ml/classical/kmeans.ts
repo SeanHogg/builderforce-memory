@@ -57,11 +57,17 @@ export function fitKMeans(samples: readonly MlSample[], opts: KMeansOptions = {}
     const total = nearest.reduce((a, b) => a + b, 0);
     let pick = 0;
     if (total > 0) {
+      // Walk only points with weight: a zero-distance point (already a centroid) can
+      // never be picked, even when rnd() returns 0 and r starts at 0.
       let r = rnd() * total;
-      for (pick = 0; pick < X.length - 1; pick++) {
+      let last = -1;
+      for (pick = 0; pick < X.length; pick++) {
+        if (!(nearest[pick]! > 0)) continue;
+        last = pick;
         r -= nearest[pick]!;
         if (r <= 0) break;
       }
+      if (pick >= X.length) pick = last; // float round-off left r > 0: take the last weighted point
     } else {
       pick = centroids.length; // every point coincides with a centroid; take the next index
     }
@@ -71,8 +77,8 @@ export function fitKMeans(samples: readonly MlSample[], opts: KMeansOptions = {}
   }
 
   const assign = new Int32Array(X.length).fill(-1);
-  const maxIt = opts.maxIterations ?? 100;
-  for (let it = 0; it < maxIt; it++) {
+  /** Assign every point to its nearest current centroid; true when any assignment moved. */
+  const reassign = (): boolean => {
     let changed = false;
     const model = new KMeansModel(centroids, 0);
     X.forEach((x, i) => {
@@ -82,7 +88,15 @@ export function fitKMeans(samples: readonly MlSample[], opts: KMeansOptions = {}
         changed = true;
       }
     });
-    if (!changed) break;
+    return changed;
+  };
+  const maxIt = opts.maxIterations ?? 100;
+  let converged = false;
+  for (let it = 0; it < maxIt; it++) {
+    if (!reassign()) {
+      converged = true;
+      break;
+    }
     const sums = centroids.map(() => new Float64Array(d));
     const counts = new Array<number>(k).fill(0);
     X.forEach((x, i) => {
@@ -95,6 +109,10 @@ export function fitKMeans(samples: readonly MlSample[], opts: KMeansOptions = {}
       if (counts[ci]! > 0) for (let j = 0; j < d; j++) c[j] = sums[ci]![j]! / counts[ci]!;
     });
   }
+
+  // Stopped on maxIterations: the centroids moved after the last assignment, so
+  // assign once more — inertia (and the stored model) must describe the same state.
+  if (!converged) reassign();
 
   let inertia = 0;
   X.forEach((x, i) => (inertia += squaredDistance(x, centroids[assign[i]!]!)));

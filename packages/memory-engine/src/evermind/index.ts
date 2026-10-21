@@ -22,11 +22,12 @@ export {
   buildDeltaLearnPayload,
   decodeDeltaPayload,
   deltaUnusableReason,
+  deltaTargetMismatch,
   MAX_DELTA_B64_CHARS,
   DELTA_TARGET_RE,
   mlHeadTarget,
 } from "./delta_wire.js";
-export type { DeltaLearnPayload, DeltaParseResult } from "./delta_wire.js";
+export type { DeltaLearnPayload, DeltaParseResult, DeltaParseOptions } from "./delta_wire.js";
 
 export { mergeCheckpointDiffs, mergeCheckpointDiffsGated } from "./merge.js";
 export type { MergeResult, GatedMergeResult, MergeGateOptions } from "./merge.js";

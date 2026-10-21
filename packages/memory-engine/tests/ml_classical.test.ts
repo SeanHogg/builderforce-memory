@@ -14,8 +14,12 @@ import {
   fitEwma,
   fitIsolationForest,
   fitGbm,
+  fitAnomalyComposite,
+  AnomalyCompositeModel,
+  LogisticModel,
 } from "../src/ml/classical/index.js";
-import { averagePathLength, cosine, median } from "../src/ml/classical/math.js";
+import { averagePathLength, cosine, median, squaredDistance } from "../src/ml/classical/math.js";
+import { mlEvalLoss } from "../src/ml/train.js";
 import type { ClassicalAlgorithm, MlSample } from "../src/ml/types.js";
 
 const s = (x: number[], y = 0, weight?: number): MlSample => ({ x: Float32Array.from(x), y, ...(weight != null ? { weight } : {}) });
@@ -242,7 +246,7 @@ describe("gbm-small", () => {
 });
 
 describe("fitClassical dispatch", () => {
-  const algos: ClassicalAlgorithm[] = ["knn", "naive-bayes", "logistic", "linear", "kmeans", "robust-z", "ewma", "isolation-forest", "gbm-small"];
+  const algos: ClassicalAlgorithm[] = ["knn", "naive-bayes", "logistic", "linear", "kmeans", "robust-z", "ewma", "anomaly-composite", "isolation-forest", "gbm-small"];
   const data = [s([0, 0], 0), s([0.1, 0.2], 0), s([1, 1], 1), s([0.9, 1.1], 1), s([0.2, 0.1], 0), s([1.1, 0.9], 1)];
 
   test.each(algos)("%s fits and predicts finite scores", (algo) => {
@@ -255,5 +259,90 @@ describe("fitClassical dispatch", () => {
 
   test("refuses an empty sample set", () => {
     expect(() => fitClassical("knn", [])).toThrow(/no samples/);
+  });
+});
+
+describe("naive-bayes: an unseen class gets probability 0", () => {
+  test("trained only on class 0, a zero vector is class 0 (not the empty class's placeholder Gaussian)", () => {
+    const m = fitNaiveBayes([s([0.5, 1, 2], 0), s([1, 1.5, 2.5], 0), s([0.8, 1.2, 2.2], 0)]);
+    expect(m.logPrior[1]).toBe(-Infinity);
+    const p = m.predict(v(0, 0, 0)).scores;
+    expect(p[0]).toBe(1);
+    expect(p[1]).toBe(0);
+    expect(() => fitNaiveBayes([s([1], 0, 0), s([2], 1, 0)])).toThrow(/no weight/);
+  });
+});
+
+describe("knn: default k needs support", () => {
+  test("k = min(5, ⌊√n⌋), at least 1", () => {
+    const pts = (n: number) => Array.from({ length: n }, (_, i) => s([i, 1], i % 2));
+    expect(fitKnn(pts(1)).k).toBe(1);
+    expect(fitKnn(pts(4)).k).toBe(2);
+    expect(fitKnn(pts(12)).k).toBe(3);
+    expect(fitKnn(pts(40)).k).toBe(5);
+    expect(fitKnn(pts(4), { k: 4 }).k).toBe(4);
+  });
+});
+
+describe("robust-z / ewma: absolute minimum scale", () => {
+  test("an all-zero history no longer turns a small change into an astronomical z", () => {
+    const zeros = Array.from({ length: 20 }, () => s([0]));
+    expect(fitRobustZ(zeros).predict(v(0.18)).scores[0]).toBeGreaterThan(1e6); // the old behaviour, default 0
+    expect(fitRobustZ(zeros, { minScale: 0.1 }).predict(v(0.18)).scores[0]).toBeLessThan(1);
+    expect(fitRobustZ(zeros, { minScale: 0.1 }).scale[0]).toBe(0.1);
+    expect(fitEwma(zeros, { minScale: 0.1 }).predict(v(0.18)).scores[0]).toBeLessThan(1);
+    expect(fitEwma(zeros, { minScale: 0.1 }).predict(v(0.9)).scores[0]).toBeGreaterThan(1);
+  });
+
+  test("anomaly-composite is one engine: max of both detectors", () => {
+    const hist = Array.from({ length: 12 }, (_, i) => s([1 + (i % 3) * 0.1]));
+    const m = fitAnomalyComposite(hist, { robustZ: { minScale: 0.05 }, ewma: { minScale: 0.05 } });
+    expect(fitClassical("anomaly-composite", hist)).toBeInstanceOf(AnomalyCompositeModel);
+    const x = v(5);
+    expect(m.predict(x).scores[0]).toBe(Math.max(m.population.predict(x).scores[0]!, m.trend.predict(x).scores[0]!));
+    expect(m.featureScores(x)[0]!.population).toBeGreaterThan(1);
+  });
+});
+
+describe("kmeans: seeding and the iteration cap", () => {
+  test("k-means++ never re-picks a point that already is a centroid", () => {
+    const pts = [...Array.from({ length: 10 }, () => s([0, 0])), s([5, 5]), s([9, 1])];
+    for (let seed = 1; seed <= 40; seed++) {
+      const cs = fitKMeans(pts, { k: 3, seed, maxIterations: 0 }).centroids.map((c) => `${c[0]},${c[1]}`);
+      expect(new Set(cs).size).toBe(3);
+    }
+  });
+
+  test("stopping on maxIterations reassigns before measuring inertia", () => {
+    const pts = Array.from({ length: 30 }, (_, i) => s([i % 10, Math.floor(i / 10)]));
+    for (let seed = 1; seed <= 20; seed++) {
+      for (const maxIterations of [0, 1, 2]) {
+        const m = fitKMeans(pts, { k: 3, seed, maxIterations });
+        const nearestSum = pts.reduce((acc, p) => acc + Math.min(...m.centroids.map((c) => squaredDistance(p.x, c))), 0);
+        expect(m.inertia).toBeCloseTo(nearestSum, 6);
+      }
+    }
+  });
+});
+
+describe("gbm / logistic guards", () => {
+  test("all-zero sample weights give a finite base (unweighted mean), not NaN", () => {
+    const zeroW = [s([0], 0, 0), s([1], 1, 0), s([2], 1, 0)];
+    const m = fitGbm(zeroW, { trees: 3 });
+    expect(Number.isFinite(m.base)).toBe(true);
+    expect(m.base).toBeCloseTo(Math.log((2 / 3) / (1 / 3)), 9);
+    expect(fitGbm(zeroW, { objective: "regression", trees: 2 }).base).toBeCloseTo(2 / 3, 9);
+  });
+
+  test("a label beyond opts.classes is a clear error, not a silent NaN", () => {
+    expect(() => fitLogistic([s([0], 0), s([1], 2)], { classes: 2 })).toThrow(/labels go up to 2 but the model has 2 classes/);
+    expect(() => fitLogistic([s([0], 0), s([1], 1)], { classes: 2, epochs: 1 })).not.toThrow();
+  });
+
+  test("LogisticModel.loss IS mlEvalLoss (one held-out loss)", () => {
+    const data = [-2, -1, 1, 2].map((x) => s([x], x > 0 ? 1 : 0));
+    const m = fitLogistic(data, { epochs: 50 });
+    expect(m.loss(data)).toBe(mlEvalLoss("classify", m, data));
+    expect(new LogisticModel(1, 2).loss([])).toBe(0);
   });
 });

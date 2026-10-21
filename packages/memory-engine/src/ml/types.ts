@@ -4,6 +4,7 @@
  * One bounded question Evermind answers without an LLM is ONE data row: how its
  * input becomes a vector, which engines may answer it (in preference order), how
  * it trains, and what its output means. Pure types — no vscode, no DOM, no network.
+ * (Imports only the leaf `evermind/ml_head.ts`; evermind/ never imports ml/.)
  */
 
 /** The shape of the question. */
@@ -18,6 +19,8 @@ export type ClassicalAlgorithm =
   | "kmeans"
   | "robust-z"
   | "ewma"
+  /** robust z + EWMA as one fitted engine (`classical/anomaly_composite.ts`). */
+  | "anomaly-composite"
   | "isolation-forest"
   | "gbm-small";
 
@@ -114,8 +117,8 @@ export interface MlTask<I = unknown, O = unknown> {
   output: OutputSpec<O>;
 }
 
-/** Task ids: lowercase dotted segments, e.g. `run.local-success`. */
-export const ML_TASK_ID_RE = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
+/** Task ids: lowercase dotted segments — defined once with the artifact's head contract. */
+export { ML_TASK_ID_RE } from "../evermind/ml_head.js";
 
 /** A stable string key for an engine ref, e.g. `local:classical:logistic`. */
 export function engineKey(ref: MlEngineRef): string {

@@ -5,6 +5,8 @@
  * Per feature, over the history IN ORDER: diff = x − μ; μ += α·diff;
  * σ² = (1 − α)(σ² + α·diff²). A new point scores z = |x − μ| / σ against the
  * state BEFORE it is folded in. Prediction: `scores[0] = max_i z_i / threshold`.
+ * σ is floored like robust z's scale: a fraction of |μ|, and `minScale` in absolute
+ * units — σ² starts at 0, so a constant history would otherwise flag any change.
  */
 import type { MlPrediction, MlPredictor, MlSample } from "../types.js";
 import { featureDim } from "./math.js";
@@ -17,6 +19,8 @@ export interface EwmaOptions {
   threshold?: number;
   /** Smallest σ per feature, as a fraction of |μ| (plus 1e-9). Default 0.01. */
   minScaleFraction?: number;
+  /** Smallest σ per feature in absolute feature units. Default 0 (see `RobustZOptions.minScale`). */
+  minScale?: number;
 }
 
 export class EwmaModel implements MlPredictor {
@@ -26,13 +30,14 @@ export class EwmaModel implements MlPredictor {
     readonly alpha: number,
     readonly threshold: number,
     readonly minScaleFraction: number,
+    readonly minScale: number = 0,
   ) {
     if (!(alpha > 0 && alpha <= 1)) throw new Error(`EwmaModel: alpha must be in (0, 1] (got ${alpha})`);
   }
 
   zScores(x: ArrayLike<number>): number[] {
     return Array.from(this.mean, (m, i) => {
-      const sd = Math.max(Math.sqrt(this.variance[i]!), this.minScaleFraction * Math.abs(m) + 1e-9);
+      const sd = Math.max(Math.sqrt(this.variance[i]!), this.minScaleFraction * Math.abs(m) + 1e-9, this.minScale);
       return Math.abs((x[i] ?? 0) - m) / sd;
     });
   }
@@ -62,6 +67,7 @@ export function fitEwma(samples: readonly MlSample[], opts: EwmaOptions = {}): E
     opts.alpha ?? 0.3,
     opts.threshold ?? 3,
     opts.minScaleFraction ?? 0.01,
+    opts.minScale ?? 0,
   );
   for (let i = 1; i < samples.length; i++) model.update(samples[i]!.x);
   return model;

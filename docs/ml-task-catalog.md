@@ -52,7 +52,8 @@ export type MlEngineRef =
 
 export type ClassicalAlgorithm =
   | 'knn' | 'naive-bayes' | 'logistic' | 'linear' | 'kmeans'
-  | 'robust-z' | 'ewma' | 'isolation-forest' | 'gbm-small';
+  | 'robust-z' | 'ewma' | 'anomaly-composite'   // robust-z + EWMA as ONE fitted engine
+  | 'isolation-forest' | 'gbm-small';
 ```
 
 - **One registry** (`ml/registry.ts`), keyed by `id`. A new task is a new row, not a
@@ -73,12 +74,27 @@ export type ClassicalAlgorithm =
 
 1. **`limbic.affect`** — register the existing affect head through the catalog (no
    behaviour change). This proves the extraction.
-2. **`experience.quality`** (classify, kNN/logistic over embeddings + run outcome
-   fields) and **`experience.dedupe`** (cluster, k-means/cosine threshold) — applied in
+2. **`experience.quality`** (classify, kNN/logistic over embeddings + step and run
+   counts) and **`experience.dedupe`** (cluster, cosine threshold) — applied in
    front of `adaptAndDiff` so local training sees curated, non-redundant examples.
    Measure with `meanEvalLoss` before/after on held-out experience.
-3. **`run.anomaly`** (robust-z + EWMA over cost, duration, tool-failure count) —
-   flags runs to exclude from training and to surface as Insights.
+   - The label is "most finished runs succeeded", so success/failure rates are NOT
+     features (they would leak it). The task trains from 12 labelled procedures;
+     below that it stays untrained and curation drops nothing for quality. kNN votes
+     with k = min(5, ⌊√n⌋), so a small set never collapses to the class prior.
+   - A procedure that has never run (`runs = 0`) is unscored, not bad: it is kept.
+   - De-duplication compares each pending procedure with the batch AND with the
+     most recently learned ones (`CURATION_KNOWN_LIMIT` = 200, one CPU embed each).
+   - Opt-in. `curatePendingExperience` is the one host call (trains the quality task
+     on the store's run outcomes, then curates); memory-mcp exposes it as
+     `experience_train { curate: true }` (default false), embedding with the model
+     being trained. A dropped procedure is not recorded as learned, so the next pass
+     reconsiders it.
+3. **`run.anomaly`** (ONE engine, `anomaly-composite`: robust-z + EWMA over cost,
+   duration, tool-failure count, scored as the larger of the two) — flags runs to
+   exclude from training and to surface as Insights. Both detectors floor each
+   metric's scale at `RUN_ANOMALY_MIN_SCALE` (0.1 on the fixed log scale), so after
+   a clean history one or two tool failures are normal and three or more flag.
 4. **`run.local-success`** (logistic / small GBM over turn features + the local
    model's served context) — exported for the Hybrid router in Builderforce.ai.
 5. Later, behind the ONNX engine: OCR and image labels for attachments, sentiment for
@@ -95,6 +111,14 @@ hosting, any task whose output is free text (that's the LLM's job).
   the existing delta wire (`evermind/delta_wire.ts`) and merges by FedAvg
   (`evermind/merge.ts`), gated by `meanEvalLoss`-style held-out evaluation before and
   after the merge — no second merge path.
+  - A delta names its target (`ml:<task>`; absent = the model). Every door parses
+    with the target it merges into (`parseDeltaLearnPayload(raw, { target })`,
+    default the model), so an ML-head diff can never reach the LM merge, where a
+    matching `baseVersion` would let it overwrite the first floats of the LM weights.
+  - The head gate fails closed: `mergeMlHeadDeltas` defaults `requireEval` to true,
+    and a null or non-finite loss on either side is unscored, so a head with no
+    supervised loss (anomaly, cluster) or an empty holdout is refused unless the
+    caller passes `requireEval: false`.
 - **`run.local-success` learns from the cloud.** In Hybrid, when a turn fell back to (or
   was also served by) the cloud, that outcome is a training label for the local-success
   predictor, alongside local signals.

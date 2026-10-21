@@ -15,9 +15,9 @@ import { SharedExpertMoE, type MoEConfig } from "../moe/moe_model.js";
 import { EvermindLM, type EvermindLMConfig } from "../lm/evermind_lm.js";
 import { VideoRVQCodec } from "../codec/video_rvq.js";
 import { BPETokenizer } from "../tokenizer/bpe.js";
-import { mlHeadUnusableReason, type EvermindMlHead } from "../ml/federate.js";
+import { mlHeadUnusableReason, type EvermindMlHead } from "./ml_head.js";
 
-export type { EvermindMlHead } from "../ml/federate.js";
+export type { EvermindMlHead } from "./ml_head.js";
 
 /** First 4 bytes of a serialised package: "EVM1". */
 const PKG_MAGIC = 0x45564d31;

@@ -109,7 +109,7 @@ export function mergeCheckpointDiffs(
 export interface GatedMergeResult extends MergeResult {
   /** True when the merged checkpoint was kept. When false, `checkpoint` is the BASE. */
   accepted: boolean;
-  /** Held-out loss of the base / the merged candidate (null when unscorable). */
+  /** Held-out loss of the base / the merged candidate (null when unscorable, including a non-finite loss). */
   baseLoss: number | null;
   newLoss: number | null;
   /** Why the merge was refused. */
@@ -119,7 +119,10 @@ export interface GatedMergeResult extends MergeResult {
 export interface MergeGateOptions {
   /** Loss increase still accepted (absolute). Default 0 — any regression refuses. */
   tolerance?: number;
-  /** Refuse when either side cannot be scored. Default false (an unscored merge is kept). */
+  /**
+   * Refuse when either side cannot be scored (null, NaN or ±Infinity). Default false
+   * here (an unscored LM merge is kept); `mergeMlHeadDeltas` defaults it to true.
+   */
   requireEval?: boolean;
 }
 
@@ -149,8 +152,11 @@ export function mergeCheckpointDiffsGated(
     refusedReason,
   });
   if (merged.mergedRows === 0) return refuse("nothing-merged", null, null);
-  const baseLoss = score(baseCheckpoint);
-  const newLoss = score(merged.checkpoint);
+  // A non-finite loss is no measurement: NaN compares false against everything, so
+  // left as a number it would wave a diverged candidate straight through the gate.
+  const finiteOrNull = (l: number | null): number | null => (l != null && Number.isFinite(l) ? l : null);
+  const baseLoss = finiteOrNull(score(baseCheckpoint));
+  const newLoss = finiteOrNull(score(merged.checkpoint));
   if (baseLoss == null || newLoss == null) {
     return opts.requireEval ? refuse("unscored", baseLoss, newLoss) : { ...merged, accepted: true, baseLoss, newLoss };
   }

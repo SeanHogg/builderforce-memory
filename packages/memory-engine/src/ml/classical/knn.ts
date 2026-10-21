@@ -11,7 +11,10 @@ import { classCount, cosine, featureDim, squaredDistance, topProbability, type V
 export type KnnMetric = "cosine" | "euclidean";
 
 export interface KnnOptions {
-  /** Neighbours that vote. Default 5 (capped at the sample count). */
+  /**
+   * Neighbours that vote. Default min(5, ⌊√n⌋), at least 1: with a small set a fixed
+   * 5 makes EVERY point vote, and the answer collapses to the class prior.
+   */
   k?: number;
   metric?: KnnMetric;
   /** Number of classes (default: inferred from the labels, at least 2). */
@@ -92,7 +95,8 @@ export class KnnModel implements MlPredictor {
 export function fitKnn(samples: readonly MlSample[], opts: KnnOptions = {}): KnnModel {
   featureDim(samples.map((s) => s.x));
   const classes = opts.classes ?? classCount(samples.map((s) => s.y));
-  const model = new KnnModel(Math.min(opts.k ?? 5, samples.length), opts.metric ?? "cosine", classes);
+  const k = opts.k ?? Math.min(5, Math.max(1, Math.floor(Math.sqrt(samples.length))));
+  const model = new KnnModel(Math.min(k, samples.length), opts.metric ?? "cosine", classes);
   for (const s of samples) model.add(s.x, s.y, s.weight ?? 1);
   return model;
 }

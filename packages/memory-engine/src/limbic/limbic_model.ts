@@ -28,6 +28,7 @@
  * (experience, state) → affect pair is close to an independent regression.
  */
 
+import { sigmoid } from "../training/cpu_ops.js";
 import { SeededRng } from "../utils/rng.js";
 import { quantizeFp16, dequantizeFp16 } from "../utils/quantization.js";
 import { LIMBIC_STATE_DIM } from "./regions.js";
@@ -85,10 +86,6 @@ const MAGIC = 0x4c4d4243; // "LMBC"
 
 /** Fixed default init seed — reproducible byte-identical cold start across machines. */
 export const DEFAULT_LIMBIC_SEED = 0x11b1c5ee;
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
 
 export class LimbicModel {
   readonly config: Required<Omit<LimbicModelConfig, "seed">>;

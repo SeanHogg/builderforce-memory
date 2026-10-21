@@ -134,7 +134,7 @@ default, so ordinary coding-agent installs never carry them in their tool list.
 | `episode_save` / `_list` / `_get` / `_forget` | Demonstrations. Screenshots go in `episodes/<id>/` and are deleted with the episode. |
 | `skill_preview` / `_compile` / `_list` / `_get` / `_forget` / `_schedule`, `skills_due` | Train Once and routines. |
 | `run_start` / `_step` / `_finish` / `_list` / `_get` | Runs and their audit trail (newest 500 kept). |
-| `experience_train` | Adapt the private model (`BUILDERFORCE_MEMORY_MODEL`) on every procedure it has not learned, through the engine's one adaptation recipe. The previous model is kept as `<model>.prev`. |
+| `experience_train` | Adapt the private model (`BUILDERFORCE_MEMORY_MODEL`) on every procedure it has not learned, through the engine's one adaptation recipe. The previous model is kept as `<model>.prev`. Opt-in `curate: true` first leaves out procedures whose runs mostly fail and near-copies (of each other, or of the 200 most recently learned), listing each one dropped; it is reconsidered next time. |
 
 Stored beside the memory snapshot as `experience.json` (shared across processes exactly
 like `memory.json`) plus `episodes/`. Never served to a token-selected tenant of the
