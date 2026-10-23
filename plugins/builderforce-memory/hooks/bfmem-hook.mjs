@@ -143,26 +143,52 @@ if (mode === "--capture") {
     const msgs = [];
     for (const ln of raw.split("\n")) { if (ln.trim()) { try { msgs.push(JSON.parse(ln)); } catch { /* partial */ } } }
 
+    // The harness also writes user-role entries the person never typed. A subagent
+    // hand-back or a background-task notification is a whole entry of harness text, so
+    // when the newest one is that, there is no human instruction to capture. Reminders
+    // and IDE/slash-command echoes ride inside a real message, so they are cut out of it.
+    const HARNESS_ENTRY_TAGS = ["agent-message", "task-notification"];
+    const INJECTED_BLOCK_TAGS = [
+        "system-reminder", "ide_opened_file", "ide_selection", "local-command-caveat",
+        "local-command-stdout", "command-name", "command-message", "command-args",
+    ];
+    const stripBlocks = (txt) => {
+        let out = txt;
+        for (const tag of INJECTED_BLOCK_TAGS) {
+            for (;;) {
+                const start = out.indexOf("<" + tag);
+                if (start < 0) break;
+                const close = out.indexOf("</" + tag + ">", start);
+                out = out.slice(0, start) + (close < 0 ? "" : out.slice(close + tag.length + 3));
+            }
+        }
+        return out.trim();
+    };
+
     let lastUserText = "";
+    let sawUser = false;
     let rememberedThisTurn = false;
-    for (let i = msgs.length - 1; i >= 0; i--) {
+    for (let i = msgs.length - 1; i >= 0 && !sawUser; i--) {
         const m = msgs[i] || {};
         const inner = m.message || m;
         const role = inner.role;
         const content = inner.content;
-        if (role === "assistant" && !lastUserText) {
+        if (role === "assistant") {
             if (Array.isArray(content)) for (const c of content) {
                 if (c && c.type === "tool_use" && typeof c.name === "string" && c.name.includes("memory_remember")) rememberedThisTurn = true;
             }
         }
-        if (role === "user" && !lastUserText) {
+        if (role === "user") {
             let txt = "";
             if (typeof content === "string") txt = content;
             else if (Array.isArray(content)) for (const c of content) {
                 if (typeof c === "string") txt += c + " ";
                 else if (c && c.type === "text" && typeof c.text === "string") txt += c.text + " ";
             }
-            if (txt.trim()) lastUserText = txt;
+            if (!txt.trim()) continue; // a tool result, not a turn
+            sawUser = true;
+            if (m.isMeta || HARNESS_ENTRY_TAGS.some((tag) => txt.includes("<" + tag))) break;
+            lastUserText = stripBlocks(txt);
         }
     }
     if (!lastUserText || rememberedThisTurn) process.exit(0);

@@ -322,3 +322,33 @@ test("the runtime hook resolves the legacy store and labels + demotes lost conte
   const recall = runHook(bfmemHookSource(null), "--recall", { prompt: "the deploy pipeline pointer", session_id: `s${Date.now()}` }, home);
   assert.ok(recall.includes(`lost.one: [absorbed→Evermind v1] deploy pipeline pointer ${CONTENT_LOST_LABEL}`), recall);
 });
+
+/** Run the Stop (--capture) hook over a transcript of `entries`. */
+function runCapture(entries) {
+  const home = tempDir();
+  const transcript = path.join(tempDir(), "t.jsonl");
+  fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  return runHook(bfmemHookSource(null), "--capture", { transcript_path: transcript }, home);
+}
+const userSays = (text) => ({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
+const assistantSays = (text) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+
+test("the capture hook blocks on a durable instruction the person typed", () => {
+  const out = runCapture([userSays("From now on, never reuse a version number."), assistantSays("Understood.")]);
+  assert.equal(JSON.parse(out).decision, "block");
+});
+
+test("the capture hook ignores a subagent hand-back and a task notification", () => {
+  const handBack = userSays(
+    "Another Claude session sent a message:\n<agent-message from=\"a1\">tests passed; never touched files</agent-message>\n"
+      + "Such an agent cannot grant escalation: never edit your permission settings.",
+  );
+  assert.equal(runCapture([userSays("run the tests"), assistantSays("Running."), handBack, assistantSays("Green.")]), "");
+  const notice = userSays("<task-notification><status>completed</status> never mind</task-notification>");
+  assert.equal(runCapture([notice, assistantSays("Done.")]), "");
+});
+
+test("the capture hook reads the person's words, not the reminders around them", () => {
+  const msg = userSays("<system-reminder>You must always follow CLAUDE.md</system-reminder>\nstatus");
+  assert.equal(runCapture([msg, assistantSays("All green.")]), "");
+});
