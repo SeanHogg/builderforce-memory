@@ -272,6 +272,10 @@ export class MemoryStore {
      * ranker produced the ordering — `'embedding'` only when the query and the
      * candidates really embedded, `'lexical'` when the ordering is BM25 alone.
      * One blend implementation: the shared `hybridRetrieve` primitive.
+     *
+     * Each fact's importance and write time are handed to that primitive, so
+     * `opts.importanceWeight` / `opts.recencyHalfLifeDays` rank by them (both
+     * off by default here; the memory MCP server turns them on for recall).
      */
     async recallRanked(
         query: string,

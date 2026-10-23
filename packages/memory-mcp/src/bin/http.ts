@@ -24,9 +24,12 @@ import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
 import { createRecallEmbedder } from "../embedding/index.js";
 import { createExperienceHost } from "../experience/host.js";
 import { resolveMemoryFile } from "../install/server-spec.js";
+import { lazyRecallProbe } from "../model/recall-probe.js";
 import { createMemoryHttpHandler } from "../transports/http.js";
 
-const memoryFile = resolveMemoryFile();
+const memoryFile = resolveMemoryFile(process.env, undefined, {
+    log: (line) => void process.stderr.write(`${line}\n`),
+});
 
 const backend = await createLocalMemoryStoreBackend({
     dbName: process.env["BUILDERFORCE_MEMORY_DB"],
@@ -46,6 +49,9 @@ const handler = createMemoryHttpHandler(backend, {
     gatewayUrl: process.env["BUILDERFORCE_GATEWAY_URL"] ?? "https://api.builderforce.ai",
     gatewayApiKey: process.env["BUILDERFORCE_API_KEY"],
     experience: await createExperienceHost({ memoryFile }),
+    recallProbe: lazyRecallProbe(),
+    // No readRestoreFile: a networked server never reads a caller-named path —
+    // memory_restore takes the export inline.
 });
 
 if (process.env["BUILDERFORCE_MEMORY_EXPERIENCE"] === "1" && !process.env["BUILDERFORCE_MEMORY_TOKEN"]) {

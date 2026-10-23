@@ -8,6 +8,8 @@
  * transports.
  */
 
+import type { ArchivedFact } from "./compaction.js";
+
 /** A single recalled memory, normalised across backends. */
 export interface RecallHit {
     /** Stable identifier for the memory. */
@@ -26,6 +28,18 @@ export interface RecallHit {
     importance?: number;
     /** Unix-ms write time. */
     timestamp?: number;
+    /**
+     * Set when the stored body is a compaction stub that was resolved to its
+     * archived original: `content` is then the FULL original and this is the stub
+     * actually stored. Absent for an ordinary (uncompacted) memory.
+     */
+    stub?: string;
+    /**
+     * True when the stored body is a compaction stub with NO archived original — the
+     * text is gone and only the one-line pointer remains. Readers must label it
+     * (`CONTENT_LOST_LABEL`) and treat it as unverified; `memory_restore` clears it.
+     */
+    contentLost?: boolean;
 }
 
 /**
@@ -99,4 +113,19 @@ export interface MemoryBackend {
 
     /** Delete a memory by key. Optional — read-only backends omit it. */
     forget?(key: string): Promise<void>;
+
+    /**
+     * Durably store the full originals of facts about to be compacted. Optional —
+     * but `memory_compact` stubs NOTHING on a backend without it, because a stub
+     * whose original was never kept is lost content. Must be durable before it
+     * resolves: the compactor writes the stubs only afterwards.
+     */
+    archive?(facts: ArchivedFact[]): Promise<void>;
+
+    /**
+     * Keys whose stored body is a compaction stub with no archived original
+     * (`contentLost`). Optional; `memory_restore` uses it to match restore records
+     * by text, and falls back to key-only matching without it.
+     */
+    lostKeys?(): Promise<string[]>;
 }

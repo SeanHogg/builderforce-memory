@@ -22,7 +22,7 @@ import nodeFs from "node:fs";
 import { HOSTS } from "../install/hosts.js";
 import { installMemoryServer, type HostSelector } from "../install/install.js";
 import { installClaudeCombo } from "../install/claude-hooks.js";
-import { defaultMemoryFile } from "../install/server-spec.js";
+import { resolveMemoryFile } from "../install/server-spec.js";
 
 function argValue(name: string): string | undefined {
     const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -55,7 +55,11 @@ const hosts: HostSelector =
           ? "all"
           : hostArg.split(",").map((s) => s.trim()).filter(Boolean);
 
-const memoryFile = argValue("memory-file") ?? defaultMemoryFile();
+// The SAME resolver the servers and the hook use — so an install on a machine whose
+// live store sits at a legacy location bakes THAT path, not an empty new one.
+const memoryFile =
+    argValue("memory-file") ??
+    resolveMemoryFile(process.env, undefined, { log: (line) => process.stderr.write(`${line}\n`) });
 
 let results;
 try {
@@ -112,6 +116,6 @@ if (results.length === 0) {
     );
 } else {
     process.stdout.write(
-        `\nDone — ${wrote} config(s) written. Store: ${memoryFile}\nRestart the agent(s) to connect. Tools: memory_recall · memory_remember · memory_get · memory_recall_by_tag · memory_forget · memory_compact\n`,
+        `\nDone — ${wrote} config(s) written. Store: ${memoryFile}\nRestart the agent(s) to connect. Tools: memory_recall · memory_remember · memory_get · memory_recall_by_tag · memory_forget · memory_compact · memory_restore\n`,
     );
 }

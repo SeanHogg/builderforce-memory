@@ -37,7 +37,9 @@ const LONG = [
 test("memory_compact rewrites through the live store and the snapshot agrees", async () => {
   const file = tempSnapshot("compact");
   const backend = await createLocalMemoryStoreBackend({ persistFile: file, dbName: "compact-1" });
-  const tools = buildMemoryTools(backend);
+  // A probe that "knows" the fact: it answers with the fact's own text, so the
+  // recall question generated from it passes and the fact may be stubbed.
+  const tools = buildMemoryTools(backend, { recallProbe: { answer: async () => LONG } });
 
   const compact = tools.find((t) => t.name === "memory_compact");
   assert.ok(compact, "memory_compact should be registered on a writable backend");
@@ -49,9 +51,11 @@ test("memory_compact rewrites through the live store and the snapshot agrees", a
   assert.equal(res.isError, undefined);
   assert.match(res.content[0].text, /Compacted 1 memory\(ies\)/);
 
-  // The LIVE store carries the stub — not just the file.
+  // The LIVE store carries the stub — and reads resolve it to the archived original.
   const live = await backend.get("arch.money");
-  assert.match(live.content, /^\[absorbed→Evermind v7\] The gateway mints tenant JWTs/);
+  assert.match(live.stub, /^\[absorbed→Evermind v7\] The gateway mints tenant JWTs/);
+  assert.equal(live.content, LONG, "a compacted fact still reads back in full");
+  assert.equal(live.contentLost, undefined);
   assert.deepEqual(live.tags, ["project"], "compaction must not reclassify the fact");
   assert.equal(live.importance, 0.8);
 

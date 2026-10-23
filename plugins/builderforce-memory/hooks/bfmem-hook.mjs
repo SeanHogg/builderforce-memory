@@ -12,7 +12,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const FILE = process.env["BUILDERFORCE_MEMORY_FILE"] || path.join(os.homedir(), ".builderforce-memory", "memory.json");
+const FILE = (() => {
+    const explicit = process.env["BUILDERFORCE_MEMORY_FILE"];
+    if (explicit) return explicit;
+    const candidates = [path.join(os.homedir(), ".builderforce-memory", "memory.json"), path.join(os.homedir(), ".claude", "builderforce-memory", "memory.json")];
+    let best = null, bestMtime = -Infinity;
+    for (const c of candidates) {
+        try { const st = fs.statSync(c); if (st.isFile() && st.mtimeMs > bestMtime) { best = c; bestMtime = st.mtimeMs; } }
+        catch { /* absent */ }
+    }
+    return best || candidates[0];
+})();
 const mode = process.argv[2] || "--session";
 
 function readStdin() {
@@ -21,6 +31,29 @@ function readStdin() {
 function loadEntries() {
     try { const p = JSON.parse(fs.readFileSync(FILE, "utf8")); return Array.isArray(p) ? p : []; }
     catch { return []; }
+}
+
+// ── Compaction stubs ─────────────────────────────────────────────────────────
+// A compacted memory's full original lives in the archive beside the snapshot
+// (memory.json → memory.archive.json). A stub with NO archived original is lost
+// content: still injected (the pointer is a real lead) but labelled and demoted.
+const ARCHIVE = FILE.replace(/\.json$/i, "") + ".archive.json";
+const STUB_PREFIX = "[absorbed→Evermind";
+const LOST_LABEL = "(content lost — re-verify before relying on it)";
+const LOST_DEMOTION = 0.5;
+let archivedKeys = null;
+function archived() {
+    if (archivedKeys) return archivedKeys;
+    try { const a = JSON.parse(fs.readFileSync(ARCHIVE, "utf8")); archivedKeys = new Set(Object.keys((a && a.facts) || {})); }
+    catch { archivedKeys = new Set(); }
+    return archivedKeys;
+}
+function isLost(e) {
+    // The archive decides (a snapshot's contentLost flag can trail a restore).
+    return String(e.content || "").trimStart().startsWith(STUB_PREFIX) && !archived().has(e.key);
+}
+function render(e, max) {
+    return "• " + e.key + ": " + String(e.content || "").slice(0, max) + (isLost(e) ? " " + LOST_LABEL : "");
 }
 function tokens(s) {
     return String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
@@ -72,16 +105,17 @@ if (mode === "--recall") {
             const hay = new Set(tokens([e.key, e.content, (e.tags || []).join(" ")].join(" ")));
             let score = 0;
             for (const t of q) if (hay.has(t)) score++;
-            return { e, score };
+            // Lost content still qualifies on overlap, but ranks below intact memories.
+            return { e, score, rank: isLost(e) ? score * LOST_DEMOTION : score };
         })
         .filter((x) => x.score >= 2)
         .filter((x) => !led.has(x.e.key)) // already surfaced this session → don't re-inject
-        .sort((a, b) => b.score - a.score)
+        .sort((a, b) => b.rank - a.rank)
         .slice(0, 3);
     if (scored.length === 0) process.exit(0);
     for (const x of scored) led.add(x.e.key);
     saveLedger(sid, led);
-    const lines = scored.map((x) => "• " + x.e.key + ": " + String(x.e.content || "").slice(0, 200)).join("\n");
+    const lines = scored.map((x) => render(x.e, 200)).join("\n");
     process.stdout.write(
         "[builderforce-memory] Relevant stored memories for this request — use these instead of re-deriving or re-reading:\n" + lines,
     );
@@ -171,7 +205,11 @@ if (entries.length === 0) {
     process.exit(0);
 }
 const ranked = entries
-    .map((e) => ({ key: e.key, content: String(e.content ?? ""), importance: typeof e.importance === "number" ? e.importance : 0.5 }))
+    .map((e) => {
+        const importance = typeof e.importance === "number" ? e.importance : 0.5;
+        // Lost content is importance-demoted so intact memories lead the digest.
+        return { key: e.key, content: String(e.content ?? ""), importance: isLost(e) ? importance * LOST_DEMOTION : importance };
+    })
     .sort((a, b) => b.importance - a.importance)
     .slice(0, 6);
 
@@ -182,7 +220,7 @@ for (const e of ranked) led.add(e.key);
 saveLedger(sessionId, led);
 
 if (src === "resume") process.exit(0); // context retained across resume — nothing to re-inject
-const top = ranked.map((e) => "• " + e.key + ": " + e.content.slice(0, 180)).join("\n");
+const top = ranked.map((e) => render(e, 180)).join("\n");
 process.stdout.write(
     "[builderforce-memory] Active — token-saving memory loaded. Before re-reading files or history, call memory_recall. Store durable facts with memory_remember.\nTop memories:\n" + top,
 );

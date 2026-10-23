@@ -36,6 +36,16 @@ export interface HandoffPackInput {
    * when omitted.
    */
   timeoutMs?: number;
+  /**
+   * Messages that must survive packing verbatim even when they fall in the dropped
+   * middle — e.g. the task brief (the FIRST user message), which the latest-directive
+   * rule does not protect once a nudge or steer has become the latest user turn.
+   * `index` is the position in {@link messages}. Only `user` messages and `assistant`
+   * messages without `tool_calls` can be pinned (moving a tool-call turn would split it
+   * from its results); leading system messages are always kept anyway. A pinned message
+   * that is dropped is re-injected right after the system prefix, in original order.
+   */
+  pinned?: (message: HandoffMessage, index: number) => boolean;
 }
 
 /** The packed transcript and how it was made. */

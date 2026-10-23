@@ -31,6 +31,21 @@ export interface UsageFields {
     cacheReadTokens?: number;
     /** `cache_creation_input_tokens`. */
     cacheCreationTokens?: number;
+    /**
+     * Hidden reasoning tokens, a SUBSET of `completionTokens` (billed as output):
+     * `completion_tokens_details.reasoning_tokens` (OpenAI chat, OpenRouter), else
+     * `output_tokens_details.reasoning_tokens` (OpenAI Responses), else a top-level
+     * `reasoning_tokens` (some OpenRouter upstreams). Anthropic folds extended-thinking
+     * tokens into `output_tokens` and reports no split, so it reads as absent — never 0.
+     */
+    reasoningTokens?: number;
+}
+
+/** `details[key]` when `details` is an object, else undefined. */
+function detailNumber(details: unknown, key: string): number | undefined {
+    return details && typeof details === 'object'
+        ? finiteNumber((details as Record<string, unknown>)[key])
+        : undefined;
 }
 
 /** Reads a vendor `usage` object of either shape. Anything that is not an object reads as empty. */
@@ -45,14 +60,16 @@ export function readUsageFields(u: unknown): UsageFields {
     if (completion !== undefined) out.completionTokens = completion;
     if (total !== undefined) out.totalTokens = total;
 
-    const details = usage['prompt_tokens_details'];
-    const cachedFromDetails = details && typeof details === 'object'
-        ? finiteNumber((details as Record<string, unknown>)['cached_tokens'])
-        : undefined;
+    const cachedFromDetails = detailNumber(usage['prompt_tokens_details'], 'cached_tokens');
     const cacheRead = finiteNumber(usage['cache_read_input_tokens']) ?? cachedFromDetails;
     const cacheCreation = finiteNumber(usage['cache_creation_input_tokens']);
     if (cacheRead !== undefined) out.cacheReadTokens = cacheRead;
     if (cacheCreation !== undefined) out.cacheCreationTokens = cacheCreation;
+
+    const reasoning = detailNumber(usage['completion_tokens_details'], 'reasoning_tokens')
+        ?? detailNumber(usage['output_tokens_details'], 'reasoning_tokens')
+        ?? finiteNumber(usage['reasoning_tokens']);
+    if (reasoning !== undefined) out.reasoningTokens = reasoning;
     return out;
 }
 

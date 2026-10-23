@@ -230,6 +230,33 @@ describe('packHandoff', () => {
     expect(noteOf(same)).toBe('S');
   });
 
+  it('keeps a PINNED message (the task brief) verbatim after the system prefix when the middle is dropped', async () => {
+    const brief = msg('user', 'the task brief');
+    const nudge = msg('user', 'keep going');
+    const messages: HandoffMessage[] = [SYSTEM, brief, msg('assistant', 'ok'), nudge];
+    for (let i = 0; i < 10; i++) messages.push(msg('assistant', `step${i}`));
+    const pinned = (_m: HandoffMessage, i: number) => i === 1;
+    const pack = await packHandoff({ messages, ...BUDGET, pinned });
+    expectWithinBudget(pack);
+    expect(pack.messages[0]).toBe(SYSTEM);
+    expect(pack.messages[1]).toBe(brief);
+    expect(pack.messages.filter((m) => m === brief)).toHaveLength(1);
+    expect(pack.messages).toContain(nudge);
+    expect(pack.messages[pack.messages.length - 1]!.content).toBe(msg('assistant', 'step9').content);
+
+    // Without the pin the brief is summarised away.
+    const unpinned = await packHandoff({ messages, ...BUDGET });
+    expect(unpinned.messages).not.toContain(brief);
+  });
+
+  it('never pins a tool-call turn (it would split from its results)', async () => {
+    const call = { role: 'assistant' as const, content: '', tool_calls: [{ id: 'c1' }] };
+    const messages: HandoffMessage[] = [SYSTEM, msg('user', 'task'), call, { role: 'tool', content: 'r'.repeat(40), tool_call_id: 'c1' }];
+    for (let i = 0; i < 10; i++) messages.push(msg('assistant', `step${i}`));
+    const pack = await packHandoff({ messages, ...BUDGET, pinned: (m) => m === call });
+    expect(pack.messages[1]).not.toBe(call);
+  });
+
   it('reports fits:false only when the system message + directive alone exceed the budget', async () => {
     const big = { role: 'system' as const, content: 'q'.repeat(400) }; // 104 tokens
     const directive = msg('user', 'do it');

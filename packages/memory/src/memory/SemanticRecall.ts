@@ -102,7 +102,10 @@ export class SemanticRecall {
         const candidates: RetrievalCandidate[] = [];
         for (const entry of all) {
             const vector = queryVec ? (await this._embed(runtime, entry.content)) ?? undefined : undefined;
-            candidates.push({ id: entry.key, text: entry.content, vector });
+            // Importance + write time ride along so the caller can turn on the
+            // ranking signals (HybridRetrieveOptions.importanceWeight /
+            // recencyHalfLifeDays); they are ignored when those are off.
+            candidates.push({ id: entry.key, text: entry.content, vector, importance: entry.importance, timestamp: entry.timestamp });
         }
         const dense = !!queryVec && candidates.some((c) => !!c.vector);
         const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, annThreshold: this._opts.annThreshold, ...opts });

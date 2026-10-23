@@ -10,6 +10,11 @@
  * The loop guard is the stamp recorded immediately AFTER each of our own writes: the
  * next check stats the file, sees the same mtime+size, and returns without reading a
  * byte. A stat per call is the entire steady-state cost.
+ *
+ * Every overwrite first rotates the previous file into `<file>.bak.1` (shifting
+ * `.bak.1`→`.bak.2`→`.bak.3`, the oldest dropping off), so the last
+ * {@link DEFAULT_BACKUPS} versions of a shared store are always recoverable — a
+ * bad rewrite (from any process) is never the only copy.
  */
 
 export type SharedFileFs = {
@@ -18,6 +23,8 @@ export type SharedFileFs = {
     /** When present, writes land atomically (temp file + rename). */
     renameSync?(from: string, to: string): void;
     unlinkSync?(path: string): void;
+    /** Used to snapshot the current file into a backup before an overwrite. */
+    copyFileSync?(from: string, to: string): void;
     existsSync(path: string): boolean;
     statSync(path: string): { mtimeMs: number; size: number };
 };
@@ -55,14 +62,31 @@ export interface ChangedFile {
     accept(): void;
 }
 
+/** Rotating backups kept beside a shared file by default (`.bak.1` newest … `.bak.3`). */
+export const DEFAULT_BACKUPS = 3;
+
+/** The path of the `n`-th backup of `file` (1 = newest). */
+export function backupFile(file: string, n: number): string {
+    return `${file}.bak.${n}`;
+}
+
+export interface SharedJsonFileOptions {
+    /** Rotating backups to keep before each overwrite. Default {@link DEFAULT_BACKUPS}; 0 disables. */
+    backups?: number;
+}
+
 export class SharedJsonFile {
     /** How the file looked when this process last wrote or absorbed it. */
     private stamp: FileStamp | null = null;
+    private readonly backups: number;
 
     constructor(
         readonly path: string,
         private readonly fs: SharedFileFs,
-    ) {}
+        opts: SharedJsonFileOptions = {},
+    ) {
+        this.backups = Math.max(0, Math.floor(opts.backups ?? DEFAULT_BACKUPS));
+    }
 
     /**
      * The file's text when it changed since we last touched it — and on first use,
@@ -104,6 +128,7 @@ export class SharedJsonFile {
      * file open), the write falls back to writing in place.
      */
     write(text: string): void {
+        this.rotateBackups();
         const rename = this.fs.renameSync?.bind(this.fs);
         let written = false;
         if (rename) {
@@ -127,5 +152,33 @@ export class SharedJsonFile {
         } catch {
             this.stamp = null;
         }
+    }
+
+    /**
+     * Shift `.bak.(n-1)` → `.bak.n` down to `.bak.1`, then copy the current file to
+     * `.bak.1`. Best effort: a backup that cannot be written never blocks the write
+     * it protects.
+     */
+    private rotateBackups(): void {
+        if (this.backups === 0 || !this.fs.existsSync(this.path)) return;
+        try {
+            for (let i = this.backups; i > 1; i--) {
+                const from = backupFile(this.path, i - 1);
+                if (this.fs.existsSync(from)) this.moveFile(from, backupFile(this.path, i));
+            }
+            const newest = backupFile(this.path, 1);
+            if (this.fs.copyFileSync) this.fs.copyFileSync(this.path, newest);
+            else this.fs.writeFileSync(newest, this.fs.readFileSync(this.path, "utf8"));
+        } catch {
+            /* best effort */
+        }
+    }
+
+    private moveFile(from: string, to: string): void {
+        if (this.fs.renameSync) {
+            this.fs.renameSync(from, to);
+            return;
+        }
+        this.fs.writeFileSync(to, this.fs.readFileSync(from, "utf8"));
     }
 }

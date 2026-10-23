@@ -12,10 +12,20 @@
  * The embedder does NOT have to be a GPU runtime: `EvermindTextEmbedder` from the
  * engine is a pure-CPU `EvermindLM`, which is what lets the headless stdio server
  * rank recall semantically (see ./evermind-embedder.ts).
+ *
+ * Ranking signals: recall also weights each fused score by the fact's importance
+ * (x(0.5+importance), the cloud recall's factor) and a half-life recency decay —
+ * both ON by default here ({@link DEFAULT_RECALL_RANKING}).
+ *
+ * Compaction stubs: a stored body that is an `[absorbed→Evermind …]` stub is
+ * resolved to its ARCHIVED original (../persistence/fact-archive.ts) on every read,
+ * so recall returns the full text; a stub with no archive is flagged `contentLost`.
  */
 
 import type { MemoryBackend, RankedRecall, RecallHit, RememberInput } from "../backend.js";
+import { defaultArchiveFile, isContentLost, isStub, type ArchivedFact } from "../compaction.js";
 import { dynamicImport } from "../dynamic-import.js";
+import { FileFactArchive, MemoryFactArchive, type FactArchive } from "../persistence/fact-archive.js";
 import { SharedJsonFile, type SharedFileFs } from "../persistence/shared-json-file.js";
 
 // Structural views of the @seanhogg/builderforce-memory surface we use, so this package
@@ -28,8 +38,29 @@ interface MemoryEntryLike {
     importance?: number;
 }
 
+/**
+ * Recall ranking signals — the subset of the store's `HybridRetrieveOptions` this
+ * backend sets. Structural, so this package needs no type import from the runtime.
+ */
+export interface RecallRanking {
+    /** Weight each fused score by `0.5 + importance`. */
+    importanceWeight?: boolean;
+    /** Half-life (days) of the recency decay over each fact's write time; 0 = off. */
+    recencyHalfLifeDays?: number;
+}
+
+/** Recall ranking defaults: importance ON, 90-day half-life recency decay ON. */
+export const DEFAULT_RECALL_RANKING: Readonly<Required<RecallRanking>> = Object.freeze({
+    importanceWeight: true,
+    recencyHalfLifeDays: 90,
+});
+
 interface MemoryStoreLike {
-    remember(key: string, content: string, opts?: { ttlMs?: number; tags?: string[]; importance?: number }): Promise<void>;
+    remember(
+        key: string,
+        content: string,
+        opts?: { ttlMs?: number; tags?: string[]; importance?: number; timestamp?: number },
+    ): Promise<void>;
     recall(key: string): Promise<MemoryEntryLike | undefined>;
     recallAll(): Promise<MemoryEntryLike[]>;
     recallByTag(tag: string): Promise<MemoryEntryLike[]>;
@@ -38,12 +69,18 @@ interface MemoryStoreLike {
         query: string,
         topK: number,
         runtime?: unknown,
+        opts?: RecallRanking,
     ): Promise<{ hits: Array<{ entry: MemoryEntryLike; score: number }>; method: "embedding" | "lexical" }>;
     forget(key: string): Promise<void>;
 }
 
-function toHit(e: MemoryEntryLike, score?: number): RecallHit {
-    return {
+/**
+ * Normalise a stored entry into a hit, resolving a compaction stub: with an archived
+ * original the hit carries the FULL text (and the stored stub in `stub`); without one
+ * it keeps the stub and is flagged `contentLost`.
+ */
+function toHit(e: MemoryEntryLike, archived: ArchivedFact | undefined, score?: number): RecallHit {
+    const base: RecallHit = {
         key: e.key,
         content: e.content,
         ...(score === undefined ? {} : { score }),
@@ -51,14 +88,31 @@ function toHit(e: MemoryEntryLike, score?: number): RecallHit {
         importance: e.importance,
         timestamp: e.timestamp,
     };
+    if (!isStub(e.content)) return base;
+    if (archived) return { ...base, content: archived.content, stub: e.content };
+    return { ...base, contentLost: true };
+}
+
+export interface MemoryStoreBackendOptions {
+    /** Where compacted originals are kept. Default: an in-process archive. */
+    archive?: FactArchive;
+    /** Recall ranking signals. Default {@link DEFAULT_RECALL_RANKING}; `false` = fusion alone. */
+    ranking?: RecallRanking | false;
 }
 
 export class MemoryStoreBackend implements MemoryBackend {
+    private readonly facts: FactArchive;
+    private readonly ranking: RecallRanking | undefined;
+
     constructor(
         private readonly store: MemoryStoreLike,
         /** Optional SSMRuntime; enables embedding-based recall when present. */
         private readonly runtime?: unknown,
-    ) {}
+        opts: MemoryStoreBackendOptions = {},
+    ) {
+        this.facts = opts.archive ?? new MemoryFactArchive();
+        this.ranking = opts.ranking === false ? undefined : { ...DEFAULT_RECALL_RANKING, ...opts.ranking };
+    }
 
     /** Plain recall — {@link recallRanked} with the ranker's name dropped. ONE path. */
     async recall(query: string, topK: number): Promise<RecallHit[]> {
@@ -66,18 +120,35 @@ export class MemoryStoreBackend implements MemoryBackend {
     }
 
     async recallRanked(query: string, topK: number): Promise<RankedRecall> {
-        const ranked = await this.store.recallRanked(query, topK, this.runtime);
-        return { hits: ranked.hits.map((h) => toHit(h.entry, h.score)), method: ranked.method };
+        const ranked = await this.store.recallRanked(query, topK, this.runtime, this.ranking);
+        const rows = this.facts.all();
+        return { hits: ranked.hits.map((h) => toHit(h.entry, rows[h.entry.key], h.score)), method: ranked.method };
     }
 
     async get(key: string): Promise<RecallHit | undefined> {
         const e = await this.store.recall(key);
-        return e ? toHit(e) : undefined;
+        return e ? toHit(e, this.facts.get(key)) : undefined;
     }
 
     async recallByTag(tag: string, limit: number): Promise<RecallHit[]> {
         const entries = await this.store.recallByTag(tag);
-        return entries.slice(0, limit).map(toHit);
+        const rows = this.facts.all();
+        return entries.slice(0, limit).map((e) => toHit(e, rows[e.key]));
+    }
+
+    async archive(facts: ArchivedFact[]): Promise<void> {
+        this.facts.putMany(facts);
+    }
+
+    /** Keys whose stored body is a stub with no archived original. */
+    async lostKeys(): Promise<string[]> {
+        const rows = this.facts.all();
+        return (await this.store.recallAll()).filter((e) => isContentLost(e.content, rows[e.key])).map((e) => e.key);
+    }
+
+    /** Every archived row, read once — the snapshot writer's `contentLost` source. */
+    archivedRows(): Readonly<Record<string, ArchivedFact>> {
+        return this.facts.all();
     }
 
     async remember(input: RememberInput): Promise<void> {
@@ -144,6 +215,18 @@ export interface LocalBackendOptions {
      * when `BUILDERFORCE_MEMORY_MODEL` is set, so this is mostly for tests.
      */
     semanticRecall?: false;
+    /**
+     * Recall ranking signals (importance weighting, half-life recency decay).
+     * Default {@link DEFAULT_RECALL_RANKING} — both on; `false` ranks by fusion alone.
+     */
+    ranking?: RecallRanking | false;
+    /**
+     * Where compacted originals are archived. Default: beside `persistFile`
+     * (`memory.archive.json`) when there is one, else in-process.
+     */
+    archiveFile?: string;
+    /** Diagnostic sink (stderr by default — stdout is the MCP stdio channel). */
+    log?: (line: string) => void;
 }
 
 /**
@@ -159,6 +242,14 @@ interface SnapshotEntry {
     content: string;
     tags?: string[];
     importance?: number;
+    /** Unix-ms write time — persisted so recency ranking survives a respawn. */
+    timestamp?: number;
+    /**
+     * Written as true for a stub with no archived original, so dependency-free
+     * readers (the Claude Code hook) can label it without reading the archive.
+     * Derived on every write — never read back as truth; the archive decides.
+     */
+    contentLost?: true;
 }
 
 type FsLike = SharedFileFs & { mkdirSync(path: string, opts: { recursive: boolean }): void };
@@ -269,17 +360,41 @@ class DiskPersistedBackend implements MemoryBackend {
             if (!wanted.has(existing.key)) await this.store.forget(existing.key);
         }
         for (const raw of entries) {
-            await this.store.remember(raw.key, raw.content, { tags: raw.tags, importance: raw.importance });
+            await this.store.remember(raw.key, raw.content, {
+                tags: raw.tags,
+                importance: raw.importance,
+                ...(typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? { timestamp: raw.timestamp } : {}),
+            });
         }
+    }
+
+    /**
+     * Archive first — durable before the caller writes the stubs. When the rows
+     * RESTORE lost stubs (memory_restore), the snapshot is rewritten too, so its
+     * derived `contentLost` flags stop naming them.
+     */
+    async archive(facts: ArchivedFact[]): Promise<void> {
+        await this.ensureFresh();
+        const lostBefore = new Set(await this.inner.lostKeys());
+        await this.inner.archive(facts);
+        if (facts.some((f) => lostBefore.has(f.key))) await this.snapshot();
+    }
+
+    async lostKeys(): Promise<string[]> {
+        await this.ensureFresh();
+        return this.inner.lostKeys();
     }
 
     private async snapshot(): Promise<void> {
         const entries = await this.store.recallAll();
+        const rows = this.inner.archivedRows();
         const out: SnapshotEntry[] = entries.map((e) => ({
             key: e.key,
             content: e.content,
             tags: e.tags,
             importance: e.importance,
+            timestamp: e.timestamp,
+            ...(isContentLost(e.content, rows[e.key]) ? { contentLost: true as const } : {}),
         }));
         this.file.write(JSON.stringify(out, null, 2));
     }
@@ -321,9 +436,9 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
     }
 
     const store = new MemoryStore({ idbFactory, dbName: opts.dbName, maxEntries });
-    const backend = new MemoryStoreBackend(store, runtime);
+    const log = opts.log ?? ((line: string) => void globalThis.process?.stderr?.write(`${line}\n`));
 
-    if (!opts.persistFile) return backend;
+    if (!opts.persistFile) return new MemoryStoreBackend(store, runtime, { ranking: opts.ranking });
 
     // Disk-mirror requested. node:fs/path are loaded indirectly so a browser
     // bundle of this module never statically pulls in Node builtins.
@@ -332,8 +447,23 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
     const dir = path.dirname(opts.persistFile);
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+    // The archive sits beside the snapshot, OUTSIDE it: it must survive the snapshot
+    // being rebuilt, rewritten by another process, or capped — see fact-archive.ts.
+    const archive = new FileFactArchive(opts.archiveFile ?? defaultArchiveFile(opts.persistFile), fs);
+    const backend = new MemoryStoreBackend(store, runtime, { archive, ranking: opts.ranking });
     const persisted = new DiskPersistedBackend(backend, store, new SharedJsonFile(opts.persistFile, fs));
     // Boot hydration IS the freshness check with no stamp yet — see ensureFresh().
     await persisted.ensureFresh();
+
+    // Facts compacted before archiving existed are stubs whose text is gone. Every
+    // read flags them `contentLost` (and so does the next snapshot); say so once at
+    // boot so the loss is visible, with the way back.
+    const lost = await persisted.lostKeys();
+    if (lost.length > 0) {
+        log(
+            `[builderforce-memory] ${lost.length} memory(ies) are compaction stubs with no archived original ` +
+                `(content lost — re-verify before relying on them). Recover the text with memory_restore.`,
+        );
+    }
     return persisted;
 }

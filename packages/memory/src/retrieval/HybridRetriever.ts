@@ -7,7 +7,9 @@
  *   1. Dense:  cosine over embeddings (SSM hidden-state vectors, or any embedder).
  *   2. Sparse: BM25 lexical scoring (catches exact tokens dense search misses).
  *   3. Fuse:   Reciprocal Rank Fusion combines the two rankings.
- *   4. Rerank: optional MMR pass for relevance/novelty trade-off (diversity).
+ *   4. Signals: optional importance weighting and half-life recency decay over
+ *      the fused scores (off by default; memory recall turns both on).
+ *   5. Rerank: optional MMR pass for relevance/novelty trade-off (diversity).
  *
  * It is storage-agnostic — give it candidates (id + text + optional vector) and a
  * query (text + optional vector). It degrades gracefully: no query vector / no
@@ -16,14 +18,20 @@
 
 import { bm25Search, type Bm25Options } from './bm25.js';
 import { reciprocalRankFusion } from './fusion.js';
-import { maximalMarginalRelevance, type MmrCandidate } from './mmr.js';
+import { mmrSelect } from './mmr.js';
 import { denseSearch } from './hnsw.js';
+import { calculateTemporalDecayMultiplier } from './decay.js';
+import { cosineSimilarity } from '../similarity/index.js';
 
 export interface RetrievalCandidate {
     id: string;
     text: string;
     /** Precomputed embedding. Omit to exclude this candidate from the dense pass. */
     vector?: Float32Array;
+    /** Importance 0–1, read only when {@link HybridRetrieveOptions.importanceWeight} is on. Default 0.5. */
+    importance?: number;
+    /** Unix-ms write time, read only when {@link HybridRetrieveOptions.recencyHalfLifeDays} is set. */
+    timestamp?: number;
 }
 
 export interface HybridQuery {
@@ -52,12 +60,44 @@ export interface HybridRetrieveOptions {
      * instead of an exact cosine scan (O(log N) vs O(N)). Default 256.
      */
     annThreshold?: number;
+    /**
+     * Multiply each fused score by `0.5 + importance` (candidate importance,
+     * default 0.5 ⇒ ×1) — the same factor the cloud recall applies. Default false.
+     */
+    importanceWeight?: boolean;
+    /**
+     * Half-life, in days, of the recency decay applied to each fused score from
+     * the candidate's `timestamp` (see `decay.ts`). 0/unset = no decay. A
+     * candidate with no timestamp is not decayed.
+     */
+    recencyHalfLifeDays?: number;
+    /** Clock for the recency decay (Unix ms). Default `Date.now()`. */
+    now?: number;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The ranking-signal factor for one candidate: importance × recency decay.
+ * Exactly 1 when neither signal is enabled, so the pipeline is unchanged.
+ */
+function signalFactor(c: RetrievalCandidate, opts: HybridRetrieveOptions, now: number): number {
+    let f = 1;
+    if (opts.importanceWeight) {
+        const imp = Number.isFinite(c.importance) ? c.importance! : 0.5;
+        f *= 0.5 + Math.max(0, Math.min(1, imp));
+    }
+    const halfLife = opts.recencyHalfLifeDays ?? 0;
+    if (halfLife > 0 && Number.isFinite(c.timestamp)) {
+        f *= calculateTemporalDecayMultiplier({ ageInDays: (now - c.timestamp!) / DAY_MS, halfLifeDays: halfLife });
+    }
+    return f;
 }
 
 export interface HybridHit {
     id: string;
     text: string;
-    /** Fused RRF score (pre-rerank). */
+    /** Fused RRF score (pre-rerank), times the ranking-signal factor when signals are on. */
     score: number;
 }
 
@@ -101,30 +141,44 @@ export function hybridRetrieve(
     );
     if (fused.length === 0) return [];
 
-    // ── Rerank (MMR over fused top, using whatever vectors we have) ────────────
+    // ── Signals (importance × recency decay over the fused scores) ────────────
+    const now = opts.now ?? Date.now();
+    const factor = new Map(fused.map(f => [f.id, signalFactor(byId.get(f.id)!, opts, now)]));
+    const weighted = fused
+        .map(f => ({ id: f.id, score: f.score * factor.get(f.id)! }))
+        .sort((a, b) => b.score - a.score);
+
+    // ── Rerank (MMR over the weighted top, using whatever vectors we have) ────
     const rerank = opts.rerank ?? true;
     let orderedIds: string[];
     if (rerank && query.vector) {
-        // Consider a generous fused window so MMR has room to diversify.
-        const window = fused.slice(0, Math.max(topK * 4, topK));
-        const mmrCands: MmrCandidate[] = window
+        const queryVec = query.vector;
+        // Consider a generous window so MMR has room to diversify.
+        const window = weighted.slice(0, Math.max(topK * 4, topK));
+        const mmrCands = window
             .map(f => byId.get(f.id))
-            .filter((c): c is RetrievalCandidate => !!c && !!c.vector && c.vector.length > 0)
-            .map(c => ({ id: c.id, vector: c.vector! }));
+            .filter((c): c is RetrievalCandidate & { vector: Float32Array } => !!c && !!c.vector && c.vector.length > 0);
         if (mmrCands.length > 0) {
-            const reranked = maximalMarginalRelevance(query.vector, mmrCands, topK, opts.mmrLambda ?? 0.7);
-            // MMR only ranks the vectored subset; append any remaining fused ids after.
+            // Relevance is cosine to the query scaled by the same signal factor, so
+            // MMR cannot undo the importance/recency weighting (factor 1 when off).
+            const reranked = mmrSelect(mmrCands, {
+                relevance: (c) => cosineSimilarity(queryVec, c.vector) * factor.get(c.id)!,
+                similarity: (a, b) => cosineSimilarity(a.vector, b.vector),
+                lambda: opts.mmrLambda ?? 0.7,
+                topK,
+            }).map(c => c.id);
+            // MMR only ranks the vectored subset; append any remaining ids after.
             const seen = new Set(reranked);
-            orderedIds = [...reranked, ...fused.map(f => f.id).filter(id => !seen.has(id))];
+            orderedIds = [...reranked, ...weighted.map(f => f.id).filter(id => !seen.has(id))];
         } else {
-            orderedIds = fused.map(f => f.id);
+            orderedIds = weighted.map(f => f.id);
         }
     } else {
-        orderedIds = fused.map(f => f.id);
+        orderedIds = weighted.map(f => f.id);
     }
 
-    const fusedScore = new Map(fused.map(f => [f.id, f.score]));
+    const score = new Map(weighted.map(f => [f.id, f.score]));
     return orderedIds
         .slice(0, topK)
-        .map(id => ({ id, text: byId.get(id)!.text, score: fusedScore.get(id)! }));
+        .map(id => ({ id, text: byId.get(id)!.text, score: score.get(id)! }));
 }

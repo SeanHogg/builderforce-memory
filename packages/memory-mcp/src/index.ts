@@ -18,8 +18,12 @@ export { createRecallEmbedder, createEvermindEmbedder, CachedTextEmbedder, defau
 export type { EvermindEmbedderOptions, PersistentTextEmbedder, TextEmbedderLike, RecallEmbedderEnv } from "./embedding/index.js";
 
 // ── Local backend (IndexedDB via @seanhogg/builderforce-memory) ────────────────────────
-export { MemoryStoreBackend, createLocalMemoryStoreBackend } from "./backends/memory-store.js";
-export type { LocalBackendOptions } from "./backends/memory-store.js";
+export { MemoryStoreBackend, createLocalMemoryStoreBackend, DEFAULT_RECALL_RANKING } from "./backends/memory-store.js";
+export type { LocalBackendOptions, MemoryStoreBackendOptions, RecallRanking } from "./backends/memory-store.js";
+export { FileFactArchive, MemoryFactArchive } from "./persistence/fact-archive.js";
+export type { FactArchive } from "./persistence/fact-archive.js";
+export { SharedJsonFile, DEFAULT_BACKUPS, backupFile } from "./persistence/shared-json-file.js";
+export type { SharedJsonFileOptions } from "./persistence/shared-json-file.js";
 
 // ── Tool core ─────────────────────────────────────────────────────────────────
 export { buildMemoryTools } from "./tools.js";
@@ -32,12 +36,42 @@ export { createExperienceHost, EXPERIENCE_ENV } from "./experience/host.js";
 export type { ExperienceHost, ExperienceHostOptions, ExperienceEngine } from "./experience/host.js";
 export { nextExperienceVersion } from "./experience/train.js";
 
-// ── Compaction (absorbed fact → one-line pointer stub) ───────────────────────
-// Exported so an EXTERNAL compactor (the BuilderForce VS Code extension rewrites
-// the snapshot file directly) can produce byte-identical stubs, keeping the two
-// paths idempotent with respect to each other.
-export { STUB_PREFIX, DEFAULT_STUB_CHARS, isStub, firstLine, memoryStub, planCompaction } from "./compaction.js";
-export type { CompactionCandidate, CompactionWrite, CompactionSkip, CompactionPlan, CompactionOptions } from "./compaction.js";
+// ── Compaction (absorbed fact → one-line pointer stub, LOSSLESS) ─────────────
+// Exported so an EXTERNAL compactor (the BuilderForce VS Code extension) produces
+// byte-identical stubs AND follows the same archive + recall-probe rules, keeping
+// the two paths idempotent with respect to each other.
+export {
+    STUB_PREFIX,
+    DEFAULT_STUB_CHARS,
+    CONTENT_LOST_LABEL,
+    isStub,
+    isContentLost,
+    firstLine,
+    memoryStub,
+    stubPointer,
+    planCompaction,
+    planLosslessCompaction,
+    probeQuestionFor,
+    probePasses,
+    defaultArchiveFile,
+    parseArchive,
+    mergeArchive,
+} from "./compaction.js";
+export type {
+    ArchivedFact,
+    ArchiveSnapshot,
+    CompactionCandidate,
+    CompactionWrite,
+    CompactionSkip,
+    CompactionPlan,
+    CompactionOptions,
+    LosslessCompactionOptions,
+    ProbeQuestion,
+    RecallProbe,
+} from "./compaction.js";
+export { createRecallProbe, lazyRecallProbe, generatorProbe, PROBE_MAX_NEW_TOKENS } from "./model/recall-probe.js";
+export { parseRestoreSource, planRestore, restoredArchive, stubVersion, MIN_POINTER_CHARS } from "./restore.js";
+export type { RestoreRecord, RestoreTarget, RestoreMatch, RestorePlan } from "./restore.js";
 
 // ── Transports ──────────────────────────────────────────────────────────────
 export { createMemoryMcpServer } from "./transports/sdk.js";
@@ -53,8 +87,19 @@ export type { HttpHandlerOptions } from "./transports/http.js";
 export { hashToken, timingSafeEqualStr, buildTenantIndex, bearerToken, RateLimiter } from "./transports/auth.js";
 
 // ── Multi-host installer (wire the stdio server into any MCP-capable agent) ───
-export { buildServerSpec, defaultMemoryFile, resolveMemoryFile, MCP_PACKAGE, MCP_BIN, MEMORY_FILE_ENV, RUNTIME_PEERS } from "./install/server-spec.js";
-export type { StdioServerSpec, ServerSpecOptions } from "./install/server-spec.js";
+export {
+    buildServerSpec,
+    defaultMemoryFile,
+    memoryFileCandidates,
+    resolveMemoryFile,
+    CANONICAL_MEMORY_SEGMENTS,
+    LEGACY_MEMORY_SEGMENTS,
+    MCP_PACKAGE,
+    MCP_BIN,
+    MEMORY_FILE_ENV,
+    RUNTIME_PEERS,
+} from "./install/server-spec.js";
+export type { StdioServerSpec, ServerSpecOptions, MemoryFileProbe, ResolveMemoryFileOptions } from "./install/server-spec.js";
 export { installMemoryServer } from "./install/install.js";
 export type { InstallOptions, InstallResult, InstallStatus, HostSelector, FsLike } from "./install/install.js";
 export { HOSTS, SERVER_KEY, findHost } from "./install/hosts.js";

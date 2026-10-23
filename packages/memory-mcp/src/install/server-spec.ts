@@ -7,6 +7,7 @@
  * server is launched, so the per-host adapters never re-derive the command.
  */
 
+import nodeFs from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
 
@@ -17,25 +18,90 @@ export interface StdioServerSpec {
 }
 
 /**
- * The default JSON snapshot path: ONE store per machine, so every MCP host
- * (Claude Code, Cursor, Claude Desktop, …) shares the same memory.
+ * The snapshot path override every reader and writer honours first.
  *
- * Single source of truth for the installer, the stdio bin's fallback, and the
- * Claude Code plugin's hook script — a memory file the writer and the reader
- * disagree about is memory that silently disappears.
+ * ONE resolver ({@link resolveMemoryFile}) serves the installer, both server bins
+ * and the Claude Code hook script (which inlines the same rules — see
+ * `bfmemHookSource`) — a memory file the writer and the reader disagree about is
+ * memory that silently disappears.
  */
 export const MEMORY_FILE_ENV = "BUILDERFORCE_MEMORY_FILE";
 
+/** The canonical per-machine store, relative to the home directory. */
+export const CANONICAL_MEMORY_SEGMENTS = [".builderforce-memory", "memory.json"] as const;
+
+/**
+ * Where earlier installers put the store (`~/.claude/builderforce-memory/memory.json`).
+ * Still honoured: a machine whose live memory sits here keeps using it.
+ */
+export const LEGACY_MEMORY_SEGMENTS = [".claude", "builderforce-memory", "memory.json"] as const;
+
+/** The default JSON snapshot path: ONE store per machine, shared by every MCP host. */
 export function defaultMemoryFile(homedir: string = nodeOs.homedir()): string {
-    return nodePath.join(homedir, ".builderforce-memory", "memory.json");
+    return nodePath.join(homedir, ...CANONICAL_MEMORY_SEGMENTS);
 }
 
-/** The snapshot path in effect: explicit env wins, else the shared default. */
+/** Every location a store may live in, canonical first. */
+export function memoryFileCandidates(homedir: string = nodeOs.homedir()): string[] {
+    return [defaultMemoryFile(homedir), nodePath.join(homedir, ...LEGACY_MEMORY_SEGMENTS)];
+}
+
+/** File probe the resolver uses — injectable for tests. */
+export interface MemoryFileProbe {
+    /** Unix-ms modification time of `path` when it is a file, else null. */
+    fileMtime(path: string): number | null;
+}
+
+const nodeProbe: MemoryFileProbe = {
+    fileMtime(path) {
+        try {
+            const st = nodeFs.statSync(path);
+            return st.isFile() ? st.mtimeMs : null;
+        } catch {
+            return null;
+        }
+    },
+};
+
+export interface ResolveMemoryFileOptions {
+    probe?: MemoryFileProbe;
+    /** Told which store won when more than one location is in play. Default: silent. */
+    log?: (line: string) => void;
+}
+
+/**
+ * The snapshot path in effect:
+ *   1. `BUILDERFORCE_MEMORY_FILE`, when set;
+ *   2. else whichever candidate location actually holds a `memory.json` — the
+ *      most recently written one if both do (logged; neither is ever deleted);
+ *   3. else the canonical default.
+ */
 export function resolveMemoryFile(
     env: Record<string, string | undefined> = process.env,
     homedir?: string,
+    opts: ResolveMemoryFileOptions = {},
 ): string {
-    return env[MEMORY_FILE_ENV] || defaultMemoryFile(homedir);
+    const explicit = env[MEMORY_FILE_ENV];
+    if (explicit) return explicit;
+    const probe = opts.probe ?? nodeProbe;
+    const candidates = memoryFileCandidates(homedir);
+    const present = candidates
+        .map((path) => ({ path, mtime: probe.fileMtime(path) }))
+        .filter((c): c is { path: string; mtime: number } => c.mtime !== null);
+    if (present.length === 0) return candidates[0]!;
+    if (present.length === 1) {
+        if (present[0]!.path !== candidates[0]) {
+            opts.log?.(`[builderforce-memory] using the store at ${present[0]!.path} (no memory.json at ${candidates[0]}).`);
+        }
+        return present[0]!.path;
+    }
+    const winner = present.reduce((a, b) => (b.mtime > a.mtime ? b : a));
+    const others = present.filter((c) => c !== winner).map((c) => c.path);
+    opts.log?.(
+        `[builderforce-memory] memory.json exists in ${present.length} locations; using ${winner.path} ` +
+            `(most recently written). Left untouched: ${others.join(", ")}.`,
+    );
+    return winner.path;
 }
 
 export interface ServerSpecOptions {

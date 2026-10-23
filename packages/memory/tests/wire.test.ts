@@ -94,6 +94,17 @@ describe('readUsageFields', () => {
         expect(readUsageFields(null)).toEqual({});
         expect(finiteNumber('x')).toBeUndefined();
     });
+
+    it('reads reasoning tokens from every shape that reports them', () => {
+        expect(readUsageFields({ prompt_tokens: 10, completion_tokens: 50, completion_tokens_details: { reasoning_tokens: 32 } }).reasoningTokens).toBe(32);
+        expect(readUsageFields({ input_tokens: 10, output_tokens: 50, output_tokens_details: { reasoning_tokens: 12 } }).reasoningTokens).toBe(12);
+        expect(readUsageFields({ prompt_tokens: 10, completion_tokens: 50, reasoning_tokens: 7 }).reasoningTokens).toBe(7);
+    });
+
+    it('leaves reasoning absent when the vendor does not split it (Anthropic thinking rides output_tokens)', () => {
+        expect(readUsageFields({ input_tokens: 5, output_tokens: 90 })).not.toHaveProperty('reasoningTokens');
+        expect(readUsageFields({ prompt_tokens: 1, completion_tokens: 2, completion_tokens_details: { reasoning_tokens: 0 } }).reasoningTokens).toBe(0);
+    });
 });
 
 describe('AnthropicStreamUsage', () => {

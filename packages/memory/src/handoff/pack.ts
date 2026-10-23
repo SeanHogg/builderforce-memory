@@ -4,8 +4,9 @@
  * Shape of the result, mirroring Builderforce's `assembleCompacted`
  * (brain-embedded/src/workingTranscript.ts):
  *
- *   leading system message(s) · ONE note for the dropped middle · the latest user
- *   directive re-injected verbatim (only when it fell in the middle) · the verbatim tail
+ *   leading system message(s) · pinned messages that fell in the middle (`pinned`) ·
+ *   ONE note for the dropped middle · the latest user directive re-injected verbatim
+ *   (only when it fell in the middle) · the verbatim tail
  *
  * Only the LEADING run of system messages is the fixed prefix. A system message later in
  * the conversation stays where it was: in the tail when the tail reaches it, else in the
@@ -49,6 +50,23 @@ function noteRole(next: HandoffMessage | undefined): 'user' | 'assistant' {
 function latestDirectiveIndex(convo: readonly HandoffMessage[]): number {
   for (let i = convo.length - 1; i >= 0; i--) if (convo[i]!.role === 'user') return i;
   return -1;
+}
+
+/** Convo indices the caller pinned (pinnable roles only), excluding the directive. */
+function pinnedIndices(
+  convo: readonly HandoffMessage[],
+  prefixLen: number,
+  directiveIdx: number,
+  pinned: HandoffPackInput['pinned'],
+): number[] {
+  if (!pinned) return [];
+  const out: number[] = [];
+  for (let i = 0; i < convo.length; i++) {
+    const m = convo[i]!;
+    const pinnable = m.role === 'user' || (m.role === 'assistant' && !m.tool_calls);
+    if (pinnable && i !== directiveIdx && pinned(m, prefixLen + i)) out.push(i);
+  }
+  return out;
 }
 
 /**
@@ -113,24 +131,30 @@ export async function packHandoff(input: HandoffPackInput): Promise<HandoffPack>
   const directiveIdx = latestDirectiveIndex(convo);
   const directive = directiveIdx >= 0 ? convo[directiveIdx] : undefined;
   const directiveTokens = directive ? messageTokens(directive, estimate) : 0;
+  // Pinned messages are charged up front (conservatively, even if the tail reaches them).
+  const pins = pinnedIndices(convo, prefixLen, directiveIdx, input.pinned);
+  const pinTokens = pins.reduce((sum, i) => sum + messageTokens(convo[i]!, estimate), 0);
+  const coreTokens = directiveTokens + pinTokens;
 
   // The irreducible core does not fit: send it anyway and say so.
-  if (systemTokens + directiveTokens > budget) {
-    const core = directive ? [...system, directive] : [...system];
-    return result(core, convo.length - (directive ? 1 : 0), estimate, { fits: false });
+  if (systemTokens + coreTokens > budget) {
+    const core = [...system, ...pins.map((i) => convo[i]!), ...(directive ? [directive] : [])];
+    return result(core, convo.length - pins.length - (directive ? 1 : 0), estimate, { fits: false });
   }
 
   // Reserve room for the smallest note (the marker, at its widest count) when it fits.
   const header = handoffLine(input.from, input.to);
   const minNote = noteTokens(composeNote(header, elisionMarker(convo.length)), estimate);
-  const noteFits = systemTokens + directiveTokens + minNote <= budget;
-  const room = budget - systemTokens - (noteFits ? minNote : 0);
+  const noteFits = systemTokens + coreTokens + minNote <= budget;
+  const room = budget - systemTokens - pinTokens - (noteFits ? minNote : 0);
 
   const tail = selectTail(convo, segmentTranscript(convo, estimate), directiveIdx, directiveTokens, room);
   const reinject = directive !== undefined && directiveIdx < tail.start;
-  const droppedMsgs = convo.slice(0, tail.start).filter((_, i) => !(reinject && i === directiveIdx));
+  const pinnedBefore = pins.filter((i) => i < tail.start);
+  const keptBefore = new Set(pinnedBefore);
+  const droppedMsgs = convo.slice(0, tail.start).filter((_, i) => !(reinject && i === directiveIdx) && !keptBefore.has(i));
 
-  const used = systemTokens + tail.tokens + (reinject ? directiveTokens : 0);
+  const used = systemTokens + tail.tokens + pinTokens + (reinject ? directiveTokens : 0);
   const note = droppedMsgs.length > 0
     ? await buildNote({
         header,
@@ -146,7 +170,7 @@ export async function packHandoff(input: HandoffPackInput): Promise<HandoffPack>
 
   const after: HandoffMessage[] = reinject && directive ? [directive] : [];
   after.push(...convo.slice(tail.start));
-  const messages: HandoffMessage[] = [...system];
+  const messages: HandoffMessage[] = [...system, ...pinnedBefore.map((i) => convo[i]!)];
   if (note) messages.push({ role: noteRole(after[0]), content: note.text });
   messages.push(...after);
   return result(messages, droppedMsgs.length, estimate, {

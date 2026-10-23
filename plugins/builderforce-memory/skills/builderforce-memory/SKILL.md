@@ -17,6 +17,13 @@ capture that won't let a durable correction go unrecorded.
 - `memory_recall_by_tag(tag)` — everything under a tag.
 - `memory_remember(key, content, [tags], [importance])` — store ONE durable fact.
 - `memory_forget(key)` — drop a superseded fact.
+- `memory_compact(keys)` — stub facts the local Evermind has absorbed (proven by a
+  recall probe; the original is archived, so recall still returns it).
+- `memory_restore(file|json)` — bring back the text of memories marked
+  "(content lost — re-verify before relying on it)" from an export.
+
+A memory labelled "(content lost — re-verify before relying on it)" is a one-line pointer whose full
+text is gone: treat it as a lead, verify it before acting on it.
 
 ## Discipline
 Reuse a stable key to REPLACE a fact (write-through), don't append duplicates.

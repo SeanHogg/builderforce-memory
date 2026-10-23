@@ -20,9 +20,14 @@ your whole memory file into every prompt. That only pays off if recall is
 - `memory_recall` returns a **ranked top-K** (default 5, hard-capped), never the store.
 - Each entry's content is **truncated** (default 500 chars) before it hits context.
 - There is **no "return everything" tool** — a dump-all is more expensive than inlining.
-- `memory_compact` shrinks a fact that something durable has already ABSORBED down to a
-  one-line pointer stub, so it stops being recalled in full. It writes **through the live
-  store**, which is what keeps memory and the on-disk snapshot in agreement — see below.
+- `memory_compact` shrinks a fact the local Evermind has already ABSORBED down to a
+  one-line pointer stub, so it stops filling context. It is **lossless**: a recall probe
+  must pass first, and the original is archived (recall still returns it) — see below.
+  It writes **through the live store**, which keeps memory and the on-disk snapshot in
+  agreement.
+- Recall ranks by hybrid fusion (BM25 ⊕ optional CPU SSM embedding, RRF, MMR) and then
+  weights by importance (×(0.5+importance)) and a 90-day half-life recency decay —
+  `createLocalMemoryStoreBackend({ ranking: false })` turns the signals off.
 
 Tool descriptions are prescriptive ("call this *before* answering when…") because
 recent Claude models reach for tools more conservatively; the trigger condition in
@@ -153,7 +158,9 @@ npx -y -p @seanhogg/builderforce-memory-mcp builderforce-memory-install --host=c
 Writes the stdio server entry into each host's own config, idempotently and with
 `.bak` backups. Supported hosts: **Claude Code, Claude Desktop, Cursor, Windsurf,
 VS Code, Cline, Gemini CLI, Codex CLI**. Every agent points at one shared store
-(`~/.builderforce-memory/memory.json` by default, override with `--memory-file`),
+(`resolveMemoryFile()`: `~/.builderforce-memory/memory.json`, or the legacy
+`~/.claude/builderforce-memory/memory.json` when that is where the live store is; override
+with `--memory-file` / `BUILDERFORCE_MEMORY_FILE`; the hook script resolves the same way),
 so a fact remembered in one agent is recalled in another. `--readonly` drops the
 write tools; `--local=<dist/bin/stdio.js>` runs a checkout for development.
 
@@ -230,7 +237,17 @@ const server = await createMemoryMcpServer(remote);
 
 ## Compaction rules (`@seanhogg/builderforce-memory-mcp/compaction`)
 
-The stub format that `memory_compact` writes (`[absorbed→Evermind vN] <first line>`) is published as a dependency-free subpath. An external compactor imports `planCompaction`, `memoryStub` and `isStub` from it, so its stubs are byte-identical to the server's and neither re-stubs the other.
+The stub format that `memory_compact` writes (`[absorbed→Evermind vN] <first line>`) is published as a dependency-free subpath. An external compactor imports its rules from it, so its stubs are byte-identical to the server's and neither re-stubs the other.
+
+**Lossless contract** (what every compactor must do, in order):
+
+1. `planLosslessCompaction(candidates, { probe, version })` — the structural rules (`planCompaction`: skip stubs, never grow an entry) **plus a recall probe**: `probeQuestionFor(key, content)` blanks the fact's most identifying token and the local Evermind must supply it (`probePasses`). No probe, or a wrong answer, leaves the fact uncompacted (`no_probe` / `probe_failed`).
+2. Archive every write's `archive` row (`mergeArchive` into `defaultArchiveFile(memoryFile)` → `memory.archive.json`) — durably, **before** any stub is written. The archive sits outside the snapshot, is only merged into and never pruned, so it survives snapshot rewrites, `forget`, and the 10,000-entry cap.
+3. Write the stubs.
+
+Reads resolve a stub to its archived original (`RecallHit.content` = full text, `RecallHit.stub` = the stored stub). A stub with **no** archive is `contentLost`: tools and the Claude Code hooks label it `CONTENT_LOST_LABEL` — *"(content lost — re-verify before relying on it)"* — and the hooks importance-demote it. `memory_restore` (`file` on the stdio bin, inline `json` everywhere) brings the text back from `[{key, content}]` or the Evermind coordinator's `[{id, text}]` `mem:` dump: matched by key (an `id` loses its `mem:` prefix), else uniquely by first line against the stub's pointer; the text is archived beside the stub, so the token saving stays.
+
+Every overwrite of a shared store file (`SharedJsonFile`: the snapshot, the archive, `experience.json`) first rotates the previous version into `<file>.bak.1` … `.bak.3`.
 
 ## Dependencies
 
