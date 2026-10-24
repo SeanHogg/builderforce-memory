@@ -27,6 +27,7 @@ import { defaultEstimateTokens, handoffBudget, messageTokens, tokensOf } from '.
 import { buildNote, composeNote, elisionMarker, handoffLine, noteTokens } from './note.js';
 import { segmentTranscript, type Segment } from './segments.js';
 import type { HandoffMessage, HandoffPack, HandoffPackInput, TokenEstimator } from './types.js';
+import { isVolatileTail } from './volatile.js';
 
 interface Tail {
   /** Index in the non-system transcript where the verbatim tail begins. */
@@ -46,10 +47,17 @@ function noteRole(next: HandoffMessage | undefined): 'user' | 'assistant' {
   return next === undefined || next.role === 'assistant' ? 'user' : 'assistant';
 }
 
-/** Index of the last `user` message, or -1. */
+/** Index of the last `user` message that is a real directive (never a volatile tail), or -1. */
 function latestDirectiveIndex(convo: readonly HandoffMessage[]): number {
-  for (let i = convo.length - 1; i >= 0; i--) if (convo[i]!.role === 'user') return i;
+  for (let i = convo.length - 1; i >= 0; i--) if (convo[i]!.role === 'user' && !isVolatileTail(convo[i]!)) return i;
   return -1;
+}
+
+/** Where the trailing run of volatile tails begins (`messages.length` when there is none). */
+function trailingVolatileStart(messages: readonly HandoffMessage[]): number {
+  let i = messages.length;
+  while (i > 0 && isVolatileTail(messages[i - 1]!)) i -= 1;
+  return i;
 }
 
 /** Convo indices the caller pinned (pinnable roles only), excluding the directive. */
@@ -119,9 +127,27 @@ function result(
 export async function packHandoff(input: HandoffPackInput): Promise<HandoffPack> {
   const estimate = input.estimateTokens ?? defaultEstimateTokens;
   const budget = handoffBudget(input);
-  const all = input.messages;
-
   // Under budget: hand the transcript over untouched.
+  if (tokensOf(input.messages, estimate) <= budget) return result(input.messages.slice(), 0, estimate);
+
+  // The volatile tail (`volatile.ts`) is set aside, the history packed into what is
+  // left, and the tail put back LAST — never the directive, never in the middle. When
+  // the history needs the whole budget, the tail is what goes: it is a per-turn aid,
+  // the history is the work.
+  const cut = trailingVolatileStart(input.messages);
+  const volatile = input.messages.slice(cut);
+  const volatileTokens = tokensOf(volatile, estimate);
+  if (volatile.length > 0) {
+    const history = input.messages.slice(0, cut);
+    const withTail = await packHistory({ ...input, messages: history }, budget - volatileTokens, estimate);
+    if (withTail.fits) return result([...withTail.messages, ...volatile], withTail.dropped, estimate, withTail);
+    return packHistory({ ...input, messages: history }, budget, estimate);
+  }
+  return packHistory(input, budget, estimate);
+}
+
+async function packHistory(input: HandoffPackInput, budget: number, estimate: TokenEstimator): Promise<HandoffPack> {
+  const all = input.messages;
   if (tokensOf(all, estimate) <= budget) return result(all.slice(), 0, estimate);
 
   const prefixLen = leadingSystemCount(all);

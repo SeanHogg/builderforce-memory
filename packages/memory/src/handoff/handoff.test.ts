@@ -6,7 +6,7 @@
  * the irreducible core overflows.
  */
 
-import { handoffBudget, packHandoff, type HandoffMessage, type HandoffPack } from './index.js';
+import { handoffBudget, packHandoff, volatileTail, isVolatileTail, type HandoffMessage, type HandoffPack } from './index.js';
 
 /** A message costing exactly 14 tokens under the default estimate (40 chars / 4 + 4). */
 function msg(role: HandoffMessage['role'], tag: string): HandoffMessage {
@@ -270,5 +270,32 @@ describe('packHandoff', () => {
     expect(exact.estimatedTokens).toBeLessThanOrEqual(28);
     expect(exact.messages).toEqual([SYSTEM, directive]);
     expect(exact.dropped).toBe(2);
+  });
+});
+
+describe('the volatile tail', () => {
+  const SYS = msg('system', 'sys');
+  const TASK = msg('user', 'the real request');
+
+  it('builds one tagged message, or none for empty sections', () => {
+    expect(volatileTail(['', null, undefined])).toBeNull();
+    const tail = volatileTail(['brief', 'budget line'])!;
+    expect(isVolatileTail(tail)).toBe(true);
+    expect(tail.content).toBe('<run-state>\nbrief\n\nbudget line\n</run-state>');
+  });
+
+  it('is never taken for the directive — the real request survives and the tail stays last', async () => {
+    const tail = volatileTail(['x'.repeat(20)])!;
+    const messages: HandoffMessage[] = [SYS, TASK, msg('assistant', 'a1'), msg('user', 'u2'), msg('assistant', 'a2'), msg('assistant', 'a3'), tail];
+    const pack = await packHandoff({ messages, targetContextTokens: 90, reserveOutputTokens: 0 });
+    expect(pack.messages[pack.messages.length - 1]).toBe(tail);
+    expect(pack.messages.some((m) => m === messages[3])).toBe(true);
+    expect(pack.messages.filter(isVolatileTail)).toHaveLength(1);
+  });
+
+  it('is what goes when the history needs the whole budget', async () => {
+    const tail = volatileTail(['y'.repeat(400)])!;
+    const pack = await packHandoff({ messages: [SYS, TASK, tail], targetContextTokens: 40, reserveOutputTokens: 0 });
+    expect(pack.messages).toEqual([SYS, TASK]);
   });
 });

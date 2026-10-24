@@ -15,6 +15,7 @@
 export { packHandoff } from './pack.js';
 export { handoffBudget, defaultEstimateTokens, messageTokens, tokensOf } from './budget.js';
 export { handoffLine, elisionMarker } from './note.js';
+export { VOLATILE_TAIL_TAG, volatileTail, isVolatileTail, isVolatileContent } from './volatile.js';
 export type {
   HandoffMessage,
   HandoffPackInput,

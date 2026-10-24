@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory",
-  "version": "2026.10.23",
+  "version": "2026.10.24",
   "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, enterprise RAG (ingestion pipelines, vector-store adapters, tenant/ACL-scoped hybrid retrieval), multi-agent graph orchestration, LLM telemetry and cost accounting, and persistent agent memory for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -21,6 +21,10 @@
     "./handoff": {
       "types": "./dist/handoff/index.d.ts",
       "import": "./dist/handoff/index.js"
+    },
+    "./working": {
+      "types": "./dist/working/index.d.ts",
+      "import": "./dist/working/index.js"
     },
     "./distillation": {
       "types": "./dist/distillation/index.d.ts",
