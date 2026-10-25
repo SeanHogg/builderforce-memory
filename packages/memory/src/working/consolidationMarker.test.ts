@@ -65,9 +65,19 @@ describe('auto consolidation markers (a persisted fold)', () => {
     expect(scopeToConsolidation(list).map((m) => m.content)).toEqual(['note', 'user turn', 'narration', 'final reply']);
   });
 
-  it('reads as manual when keepFromId is gone or after the marker', () => {
+  it('ignores an auto marker whose keepFromId cannot be placed (falls back, never drops)', () => {
     const gone = [row(1, 'a'), row(2, 'note', consolidationMetadata({ keepFromId: 99 })), row(3, 'b')];
-    expect(scopeToConsolidation(gone).map((m) => m.content)).toEqual(['note', 'b']);
+    expect(scopeToConsolidation(gone).map((m) => m.content)).toEqual(['a', 'b']);
+    const after = [row(1, 'a'), row(2, 'note', consolidationMetadata({ keepFromId: 3 })), row(3, 'b')];
+    expect(scopeToConsolidation(after).map((m) => m.content)).toEqual(['a', 'b']);
+  });
+
+  it('falls back to the previous marker when the newest auto marker is unplaceable', () => {
+    const list = [
+      row(1, 'old'), row(2, 'manual', consolidationMetadata()), row(3, 'kept'),
+      row(4, 'auto', consolidationMetadata({ keepFromId: 99 })), row(5, 'new'),
+    ];
+    expect(scopeToConsolidation(list).map((m) => m.content)).toEqual(['manual', 'kept', 'new']);
   });
 
   it('round-trips the auto metadata', () => {

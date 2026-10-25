@@ -4,7 +4,7 @@
  * failing or empty completion reads as "no summary" (the caller falls back).
  */
 
-import { renderForSummary, summarizeTranscript, TRANSCRIPT_SUMMARY_MAX_TOKENS, TRANSCRIPT_SUMMARY_PROMPT } from './summary.js';
+import { renderForSummary, summaryChunks, summarizeTranscript, TRANSCRIPT_SUMMARY_MAX_TOKENS, TRANSCRIPT_SUMMARY_PROMPT } from './summary.js';
 import { buildWorkingTranscript, HISTORY_TOKEN_BUDGET, type TranscriptFold, type TranscriptMessage, type WorkingTranscriptState } from './transcript.js';
 
 describe('renderForSummary', () => {
@@ -47,5 +47,39 @@ describe('buildWorkingTranscript fold report', () => {
     expect(folds[0]!.note).toContain('summary');
     expect(state.compactMemo).toEqual({ note: folds[0]!.note, coveredEnd: folds[0]!.coveredEnd });
     expect(out[1]).toEqual({ role: 'assistant', content: folds[0]!.note });
+  });
+});
+
+describe('summarizeTranscript over a transcript longer than one call reads', () => {
+  const long = (n: number): TranscriptMessage[] =>
+    Array.from({ length: n }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'x'.repeat(400)}` }));
+
+  it('splits into consecutive chunks within the budget, losing nothing', () => {
+    const msgs = long(40);
+    const chunks = summaryChunks(msgs, 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.flat()).toEqual(msgs);
+  });
+
+  it('folds each chunk onto the note so far and returns the last note', async () => {
+    const inputs: string[] = [];
+    let call = 0;
+    const out = await summarizeTranscript(async (req) => { inputs.push(req.user); return `note ${++call}`; }, long(40), undefined, 1_000);
+    expect(call).toBeGreaterThan(1);
+    expect(out).toBe(`note ${call}`);
+    expect(inputs[0]).not.toContain('note ');
+    expect(inputs[1]!.startsWith('assistant: note 1')).toBe(true);
+  });
+
+  it('is null when any chunk fails — never a note that skipped part of the history', async () => {
+    let call = 0;
+    expect(await summarizeTranscript(async () => (++call === 2 ? '' : 'n'), long(40), undefined, 1_000)).toBeNull();
+  });
+
+  it('clips one message larger than the whole budget', async () => {
+    let seen = '';
+    await summarizeTranscript(async (req) => { seen = req.user; return 'n'; }, [{ role: 'user', content: 'y'.repeat(50_000) }], undefined, 1_000);
+    expect(seen.length).toBeLessThan(5_000);
+    expect(seen.endsWith('[…clipped]')).toBe(true);
   });
 });

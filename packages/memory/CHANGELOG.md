@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.26
+
+### Consolidation markers never drop history; long transcripts summarize in chunks
+
+- **An auto marker whose `keepFromId` cannot be found is ignored.** This happens when the row was deleted, or when a merge or sync re-inserted the history under new ids. `scopeToConsolidation` then falls back to the previous marker, or the whole list. Before, it read the marker as manual and dropped every message between `keepFromId` and the marker that the note never held.
+- **`summarizeTranscript` reads at most `TRANSCRIPT_SUMMARY_INPUT_TOKENS` (48k) per call.** A longer transcript, such as a whole long chat on "Consolidate" or a first fold over a big seeded history, is summarized chunk by chunk, each chunk folded onto the note so far. A single message larger than the budget is clipped. A failed chunk returns null, never a note that skipped part of the history. `summaryChunks` is exported.
+- **The fold note says "the earlier part of this conversation"** instead of a transcript-entry count, which was misleading once the note is persisted and shown to a reader.
+- `CONSOLIDATION_META` is frozen. The fold's internal helpers (`compactTailStart`, `pinnedDirectiveIndex`, `assembleCompacted`, `verbatimStart`, `compactTailStartForBudget`, `COMPACT_TAIL_TURNS`) are no longer exported from `/working`.
+
 ## 2026.10.25
 
 ### The working transcript, its fold and consolidation markers (`/working`)

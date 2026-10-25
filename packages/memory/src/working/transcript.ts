@@ -284,7 +284,7 @@ export async function buildWorkingTranscript<M extends TranscriptMessage>(
       ? assembleCompacted(systemPrompt, convo, memo.note, memo.coveredEnd)
       : [{ role: 'system', content: systemPrompt } as M, ...windowed(convo)];
   }
-  const note = `Compressed memory of the first ${to} message(s) of this conversation:\n${summary}`;
+  const note = `Compressed memory of the earlier part of this conversation:\n${summary}`;
   state.compactMemo = { note, coveredEnd: to };
   onFolded({ droppedMessages: to - from, note, coveredEnd: to });
   return assembleCompacted(systemPrompt, convo, note, to);

@@ -27,7 +27,7 @@ export interface ConsolidationMarkerMeta {
 }
 
 /** The metadata of a manual marker. */
-export const CONSOLIDATION_META: ConsolidationMarkerMeta = { consolidation: true };
+export const CONSOLIDATION_META: Readonly<ConsolidationMarkerMeta> = Object.freeze({ consolidation: true });
 
 /** Serialized metadata for a marker message (ready to persist). Manual when no `auto`. */
 export function consolidationMetadata(auto?: { keepFromId?: number; folded?: number }): string {
@@ -76,15 +76,22 @@ export function lastConsolidationIndex(messages: ReadonlyArray<{ metadata?: stri
  * cover. A manual marker covers everything before it (the list from the marker on). An
  * auto marker covers up to its `keepFromId`: the marker, then every message from that id
  * on (other markers dropped — an older note is superseded by the newer one). Unchanged
- * when there is no marker; a `keepFromId` no longer in the list reads as manual.
+ * when there is no marker.
+ *
+ * An auto marker whose `keepFromId` cannot be placed (the row was deleted, or a merge or
+ * sync re-inserted the history under new ids) is IGNORED — the scope falls back to the
+ * marker before it, or the whole list. Reading it as manual would drop every message
+ * between `keepFromId` and the marker that the note never held; ignoring it only costs a
+ * re-summarize.
  */
 export function scopeToConsolidation<T extends { id?: number; metadata?: string | null }>(messages: T[]): T[] {
   const idx = lastConsolidationIndex(messages);
   if (idx < 0) return messages;
   const marker = messages[idx]!;
-  const keepFromId = consolidationMarkerOf(marker)?.keepFromId;
-  const from = keepFromId === undefined ? -1 : messages.findIndex((m) => m.id === keepFromId);
-  if (from < 0 || from > idx) return messages.slice(idx);
+  const meta = consolidationMarkerOf(marker)!;
+  if (!meta.auto) return messages.slice(idx);
+  const from = meta.keepFromId === undefined ? -1 : messages.findIndex((m) => m.id === meta.keepFromId);
+  if (from < 0 || from > idx) return scopeToConsolidation(messages.filter((m) => m !== marker));
   return [marker, ...messages.slice(from).filter((m) => m !== marker && !isConsolidationMarker(m))];
 }
 
