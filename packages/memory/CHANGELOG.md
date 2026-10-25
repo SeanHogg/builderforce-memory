@@ -1,5 +1,15 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.25
+
+### The working transcript, its fold and consolidation markers (`/working`)
+
+The context logic every Builderforce run uses moved here from `brain-embedded`. This is now its one tested home.
+
+- **`buildWorkingTranscript` and the window.** This covers the drop-oldest window anchored on a user turn and the incremental auto-compaction fold: the token-sized tail, the active directive re-pinned, and nothing left in neither the note nor the tail. The budgets ship alongside (`HISTORY_TOKEN_BUDGET`, `COMPACT_TAIL_TOKEN_BUDGET`). It is generic over any OpenAI-style message. `onFolded` now receives `{ droppedMessages, note, coveredEnd }`, so a host can persist the fold.
+- **`summarizeTranscript`.** This is the one summarizer prompt that every fold, hand-off note and "Consolidate" compresses with. The model call is injected (`SummaryCompletion`).
+- **Consolidation markers.** Manual markers cover everything before them. **Auto** markers, a persisted fold, carry `keepFromId`. `scopeToConsolidation` seeds the next run from the note plus every message from that id on. `foldKeepFromId` maps a fold's transcript cut to that id: exact at a persisted message, conservative otherwise, so nothing is lost.
+
 ## Unreleased
 
 ### Durable memory storage (schema v3)
