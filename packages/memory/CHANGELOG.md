@@ -9,6 +9,10 @@
 - **Reading a stored map.** `consolidatedFiles(content)` lists the files a map names, never a deletion. `withoutConsolidatedFiles(content, paths)` drops changed files and keeps the rest, returning `null` once nothing is left. With these a store can anchor a map to its files and, when one changes, drop just that file instead of hiding the whole map.
 - **Choosing maps for a run.** `consolidatedFactsFor(facts, areas, max?)` keeps the maps whose area overlaps the run's areas, most specific first. `areasOfPathsIn(text)` gives the areas of the repo-relative paths a text names. `areasNamedIn(text, areas)` finds the stored areas a request names by word, for a request that names no path. `consolidatedArea(key)` and `MAX_RECALLED_MAPS` are exported. `CONSOLIDATED_KEY_PREFIX` moved to `codemapAreas.ts`, and its export from `/working` is unchanged.
 
+### Chunked history windowing keeps the cache prefix stable
+
+- **`windowed` drops old turns in chunks.** Over `HISTORY_WINDOW` messages or `HISTORY_TOKEN_BUDGET` tokens, the front of the history jumps to the next fixed cut point (a quarter of the limit, counted from the transcript's start), so it stays put for many turns instead of sliding by a message or two on every one. Before, every turn changed the request's prefix and no provider prompt cache could hit past the system prompt. The window still starts on a user turn and never drops the latest one. `HISTORY_WINDOW_DROP_CHUNK` and `HISTORY_TOKEN_DROP_CHUNK` are exported from the module.
+
 ### Docs: the volatile-tail rule
 
 The README now documents where `WorkingMemory.brief()` goes: in the `<run-state>`-tagged `volatileTail`, last, built per request, never persisted into the transcript, and never in the system prompt. A host whose SDK only offers transcript-persisting insertion points, such as the Claude Agent SDK's `PostToolUse` `additionalContext`, should not use `brief()`. It also covers code maps: `consolidate`, `mergeConsolidated`, the size floor and the root area.

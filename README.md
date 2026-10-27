@@ -49,6 +49,18 @@ const { response, cached, tier } = await cache.getOrGenerate(
 
 Memory-backed fact injection is semantic too: [`SSMAgent`](packages/memory/src/agent/SSMAgent.ts) defaults to `factSelection: 'semantic'`, injecting only the top-`maxFacts` embedding-relevant facts each turn (paraphrase-robust, smaller prompts) instead of an exact key-substring match.
 
+### Agent runs: code maps and a cache-safe working memory
+
+Two more levers sit in the `/working` subpath, for agent loops rather than single prompts. Details and the full API are in the [runtime README](packages/memory/README.md#working-memory-and-code-maps-seanhoggbuilderforce-memoryworking).
+
+| Lever | What it does | Saves |
+|---|---|---|
+| **Code maps** (`consolidate` / `mergeConsolidated`) | At run end, turns the files a run changed and opened (≥ 3, successful calls only) into one `codemap:<area>` memory. The next question on that area recalls the map and opens those files first. | Repeat search / glob / read turns on areas the agent has already worked in |
+| **Working memory brief** (`WorkingMemory.brief()` + `volatileTail()`) | Restates what the run already read and changed once compaction has dropped those results, so the model stops re-reading them | Re-read turns on long runs |
+| **Chunked windowing** (`buildWorkingTranscript`) | Drops old turns a chunk at a time, so the start of the history stays fixed for many turns | Keeps provider prompt-cache hits on long runs |
+
+**The cache rule.** Per-turn content goes in ONE trailing `<run-state>` message (`volatileTail()`), built fresh for each request and never written into the transcript or the system prompt. Anywhere else it moves the cached prefix every turn and raises cost instead of cutting it. A host whose SDK can only insert into the persisted transcript (for example the Claude Agent SDK's `PostToolUse` `additionalContext`) should skip `brief()` and keep the code maps.
+
 ### Compaction is lossless
 
 `memory_compact` (in [`memory-mcp`](packages/memory-mcp)) shrinks a fact the local Evermind has absorbed to a one-line `[absorbed→Evermind vN] <first line>` stub — but never at the cost of the fact:
