@@ -83,7 +83,10 @@ describe('consolidate', () => {
 
   it('skips a short lookup but keeps any change', () => {
     expect(consolidate(snap({ read: ['a/b/c.ts', 'a/b/d.ts'] }))).toBeNull();
-    expect(consolidate(snap({ edited: ['api/src/r/x.ts'] }))?.key).toBe('codemap:api/src/r');
+    // 2026.10.27: the 3-file floor now holds for a run that changed files too (it used to
+    // keep a one-file fix as a map). The kept-change half moved to `minFiles` below.
+    expect(consolidate(snap({ edited: ['api/src/r/x.ts'] }))).toBeNull();
+    expect(consolidate(snap({ edited: ['api/src/r/x.ts'] }), { minFiles: 1 })?.key).toBe('codemap:api/src/r');
   });
 });
 
@@ -91,7 +94,7 @@ describe('mergeConsolidated', () => {
   const prior = consolidate(snap({ read: ['w/s/a.ts', 'w/s/b.ts'], edited: ['w/s/c.ts'] }), { at: AT })!;
 
   it('adds a small run to the area map, restating the earlier run\'s edits', () => {
-    const next = consolidate(snap({ task: 'fix d', edited: ['w/s/d.ts'] }), { at: AT })!;
+    const next = consolidate(snap({ task: 'fix d', edited: ['w/s/d.ts'] }), { at: AT, minFiles: 1 })!;
     const merged = mergeConsolidated(next.key, prior.content, next.content);
     expect(merged).toContain('asked: "fix d"');
     const entries = merged.split('\n').filter((l) => l.startsWith('- '));
@@ -99,7 +102,7 @@ describe('mergeConsolidated', () => {
   });
 
   it('removes a file this run deleted and never stores the deletion line', () => {
-    const next = consolidate(snap({ deleted: ['w/s/a.ts'], edited: ['w/s/e.ts'] }), { at: AT })!;
+    const next = consolidate(snap({ deleted: ['w/s/a.ts'], edited: ['w/s/e.ts'] }), { at: AT, minFiles: 1 })!;
     const merged = mergeConsolidated(next.key, prior.content, next.content);
     expect(merged).not.toContain('w/s/a.ts');
     expect(merged).not.toContain('(deleted)');
@@ -108,7 +111,7 @@ describe('mergeConsolidated', () => {
 
   it('caps the map and says how many more', () => {
     const big = consolidate(snap({ read: Array.from({ length: 12 }, (_, i) => `w/s/f${i}.ts`) }), { at: AT })!;
-    const next = consolidate(snap({ edited: ['w/s/new.ts'] }), { at: AT })!;
+    const next = consolidate(snap({ edited: ['w/s/new.ts'] }), { at: AT, minFiles: 1 })!;
     const merged = mergeConsolidated(next.key, big.content, next.content);
     expect(merged.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(12);
     expect(merged).toContain('(+1 more file(s) touched)');

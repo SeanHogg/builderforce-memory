@@ -24,7 +24,24 @@
  */
 
 export { WorkingMemory } from './workingMemory.js';
-export { consolidate, mergeConsolidated, consolidatedKey, CONSOLIDATED_KEY_PREFIX, MIN_CONSOLIDATED_FILES } from './consolidate.js';
+export {
+  consolidate,
+  mergeConsolidated,
+  consolidatedKey,
+  consolidatedFiles,
+  withoutConsolidatedFiles,
+  MIN_CONSOLIDATED_FILES,
+} from './consolidate.js';
+export {
+  CONSOLIDATED_KEY_PREFIX,
+  CONSOLIDATED_ROOT_AREA,
+  MAX_RECALLED_MAPS,
+  areaOfPath,
+  areasNamedIn,
+  areasOfPathsIn,
+  consolidatedArea,
+  consolidatedFactsFor,
+} from './codemapAreas.js';
 export { rankByCount } from './rank.js';
 export type { Observation, WorkingMemorySnapshot, ConsolidatedMemory, ConsolidateOptions } from './types.js';
 export {

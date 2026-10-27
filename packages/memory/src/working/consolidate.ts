@@ -10,15 +10,21 @@
  *
  * {@link mergeConsolidated} is the WRITE-side rule a keyed store applies, so a small run
  * ADDS to an area's map instead of overwriting the twelve files an earlier one found,
- * and a file this run deleted leaves the map.
+ * and a file this run deleted leaves the map. {@link consolidatedFiles} and
+ * {@link withoutConsolidatedFiles} read the stored format back, so a store can anchor a
+ * map to its files and drop one that changed since without hiding the rest.
  */
 
+import { CONSOLIDATED_KEY_PREFIX, CONSOLIDATED_ROOT_AREA } from './codemapAreas.js';
 import { rankByCount } from './rank.js';
 import type { ConsolidateOptions, ConsolidatedMemory, WorkingMemorySnapshot } from './types.js';
 
-/** Key prefix every consolidated code map carries. */
-export const CONSOLIDATED_KEY_PREFIX = 'codemap:';
-/** Fewer distinct files than this, with nothing changed, is a lookup — not a map worth keeping. */
+/**
+ * Fewer distinct files than this — changed, deleted and read together — is a lookup,
+ * not a map worth keeping. It holds for EVERY run, a run that changed files included: a
+ * one-file fix keyed to its own directory would otherwise write (or, once merged, keep
+ * re-dating) a map that tells the next run nothing a search would not.
+ */
 export const MIN_CONSOLIDATED_FILES = 3;
 const MAX_FILES = 12;
 const MIN_AREA_SEGMENTS = 2;
@@ -77,7 +83,7 @@ function dirSegments(file: string): string[] {
  */
 function areaOf(files: readonly string[]): string {
   const placed = files.map(dirSegments).filter((d) => d.length > 0);
-  if (placed.length === 0) return '(root)';
+  if (placed.length === 0) return CONSOLIDATED_ROOT_AREA;
   const prefixes = (depth: number): [string, number][] =>
     rankByCount(placed.filter((d) => d.length >= depth).map((d) => d.slice(0, depth).join('/')));
   for (let depth = MAX_AREA_SEGMENTS; depth >= MIN_AREA_SEGMENTS; depth--) {
@@ -107,8 +113,8 @@ export function consolidate(snapshot: WorkingMemorySnapshot, opts: ConsolidateOp
   const reads = rankByCount(kept(snapshot.read)).filter(([p]) => !changedSet.has(p) && !deletedSet.has(p));
   const readCounts = new Map(reads);
   const ranked = [...changed, ...reads.map(([p]) => p)];
+  if (ranked.length + deleted.length < (opts.minFiles ?? MIN_CONSOLIDATED_FILES)) return null;
   if (ranked.length === 0 && deleted.length === 0) return null;
-  if (changed.length === 0 && deleted.length === 0 && ranked.length < MIN_CONSOLIDATED_FILES) return null;
 
   const shown = ranked.slice(0, MAX_FILES);
   const area = areaOf(ranked.length > 0 ? ranked : deleted);
@@ -178,4 +184,32 @@ export function mergeConsolidated(key: string, prior: string | null | undefined,
   const shown = merged.slice(0, MAX_FILES);
   const more = merged.length - shown.length;
   return [...header, ...shown, ...(more > 0 ? [`(+${more} more file(s) touched)`] : [])].join('\n');
+}
+
+/** The files a stored map lists, in order — never a `(deleted)` line. */
+export function consolidatedFiles(content: string): string[] {
+  return entriesOf(content).filter((e) => e.note !== 'deleted').map((e) => e.path);
+}
+
+/** Paths compare as the store and the filesystem do: slashes normalised, case ignored. */
+function samePathKey(p: string): string {
+  return canonical(p).toLowerCase();
+}
+
+/**
+ * The map with `paths` taken out — for a store whose files changed since the map was
+ * written: the changed file's line goes, the rest of the map stays. `null` when no file
+ * is left to list, so the caller drops the map rather than serving a bare header.
+ */
+export function withoutConsolidatedFiles(content: string, paths: Iterable<string>): string | null {
+  const drop = new Set([...paths].map(samePathKey));
+  let left = 0;
+  const lines = content.split('\n').filter((line) => {
+    const m = ENTRY.exec(line);
+    if (!m) return true;
+    if (drop.has(samePathKey(m[1]!))) return false;
+    left++;
+    return true;
+  });
+  return left > 0 ? lines.join('\n') : null;
 }

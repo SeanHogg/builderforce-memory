@@ -73,47 +73,78 @@ export interface WorkingTranscriptState<M extends TranscriptMessage = Transcript
 }
 
 /**
- * Trim the in-memory transcript to the history window before sending it to the
- * model. Slicing the last N can leave the window starting on an `assistant`
- * tool-call turn or an orphaned `tool` result (whose owning call fell off the
- * front). That payload is invalid for strict vendors: Gemini rejects a request
- * whose conversation does not begin with a user turn — surfaced as the cascade
- * `[googleai] 400 INVALID_ARGUMENT` after a long tool-loop crossed the window
- * boundary. So anchor the window at a user turn.
- *
- * If the last-N slice contains no user turn (a tool loop longer than the
- * window), fall back to the most recent user turn in the FULL transcript and
- * keep everything after it — correctness over the size cap.
+ * How far the message window's front moves at a time — a quarter of
+ * {@link HISTORY_WINDOW}. See {@link windowed}.
  */
-export function windowed<M extends TranscriptMessage>(convo: M[]): M[] {
-  let w = convo.slice(-HISTORY_WINDOW);
-  while (w.length > 0 && w[0]!.role !== 'user') w = w.slice(1);
-  if (w.length === 0) {
-    const lastUser = convo.map((m) => m.role).lastIndexOf('user');
-    w = lastUser >= 0 ? convo.slice(lastUser) : convo.slice();
-  }
-  return tokenBounded(w);
+export const HISTORY_WINDOW_DROP_CHUNK = HISTORY_WINDOW / 4;
+
+/**
+ * How far (in tokens) the token window's front moves at a time — a quarter of
+ * {@link HISTORY_TOKEN_BUDGET}, so a drop leaves the window at ~75% of the budget and
+ * the next one waits for ~16k tokens of new work. See {@link windowed}.
+ */
+export const HISTORY_TOKEN_DROP_CHUNK = HISTORY_TOKEN_BUDGET / 4;
+
+/**
+ * Where the message-count window begins: 0 while the transcript fits
+ * {@link HISTORY_WINDOW}, else the first multiple of {@link HISTORY_WINDOW_DROP_CHUNK}
+ * that brings it back under. The cut points are fixed positions in the transcript, so
+ * the front stays put while new messages arrive and jumps a whole chunk when it moves.
+ */
+function messageWindowStart(length: number): number {
+  if (length <= HISTORY_WINDOW) return 0;
+  return Math.ceil((length - HISTORY_WINDOW) / HISTORY_WINDOW_DROP_CHUNK) * HISTORY_WINDOW_DROP_CHUNK;
 }
 
 /**
- * Enforce the token budget on an already message-count-windowed slice. Drops the
- * OLDEST turns first, then re-anchors on a user turn (a strict vendor rejects a window
- * that doesn't start on `user`, and dropping a turn can orphan a `tool` result whose
- * `assistant` tool-call fell off the front). The most recent user turn is never
- * dropped: correctness over the budget when a single turn is itself oversized.
+ * Where the token window begins: 0 while the transcript fits
+ * {@link HISTORY_TOKEN_BUDGET}, else the first cut point that brings it back under. A
+ * cut point is the message after which the transcript's running total crosses a multiple
+ * of {@link HISTORY_TOKEN_DROP_CHUNK} — counted from the transcript's own start, so a
+ * cut point never moves as the transcript grows at the end.
  */
-function tokenBounded<M extends TranscriptMessage>(w: M[]): M[] {
-  let total = transcriptTokens(w);
-  if (total <= HISTORY_TOKEN_BUDGET) return w;
-  const lastUser = w.map((m) => m.role).lastIndexOf('user');
-  let start = 0;
-  while (total > HISTORY_TOKEN_BUDGET && start < lastUser) {
-    total -= messageTokens(w[start]!);
-    start += 1;
+function tokenWindowStart(convo: readonly TranscriptMessage[]): number {
+  const sizes = convo.map(messageTokens);
+  let remaining = sizes.reduce((sum, n) => sum + n, 0);
+  if (remaining <= HISTORY_TOKEN_BUDGET) return 0;
+  let dropped = 0;
+  let nextCut = HISTORY_TOKEN_DROP_CHUNK;
+  for (let i = 0; i < convo.length; i++) {
+    dropped += sizes[i]!;
+    remaining -= sizes[i]!;
+    if (dropped < nextCut) continue;
+    while (dropped >= nextCut) nextCut += HISTORY_TOKEN_DROP_CHUNK;
+    if (remaining <= HISTORY_TOKEN_BUDGET) return i + 1;
   }
-  let trimmed = w.slice(start);
-  while (trimmed.length > 1 && trimmed[0]!.role !== 'user') trimmed = trimmed.slice(1);
-  return trimmed;
+  return convo.length;
+}
+
+/**
+ * Trim the in-memory transcript to the history window — the message-count window
+ * ({@link HISTORY_WINDOW}) and the token budget ({@link HISTORY_TOKEN_BUDGET}) — before
+ * sending it to the model.
+ *
+ * The OLDEST turns go first, in CHUNKS with hysteresis: once over, the front jumps to
+ * the next fixed cut point ({@link HISTORY_WINDOW_DROP_CHUNK} messages /
+ * {@link HISTORY_TOKEN_DROP_CHUNK} tokens), leaving room the following turns fill before
+ * it moves again. Dropping exactly to the limit slid the front by a message or two on
+ * every turn, so the request's prefix changed every turn and no provider prefix cache
+ * could hit past the system prompt.
+ *
+ * The window is then anchored at a user turn: a window starting on an `assistant`
+ * tool-call turn or an orphaned `tool` result (whose owning call fell off the front) is
+ * invalid for strict vendors — Gemini rejects a request whose conversation does not
+ * begin with a user turn (the cascade `[googleai] 400 INVALID_ARGUMENT` after a long
+ * tool loop crossed the window boundary). The most recent user turn is never dropped:
+ * correctness over the size cap, when a tool loop outgrows the window or a single turn
+ * is itself oversized.
+ */
+export function windowed<M extends TranscriptMessage>(convo: M[]): M[] {
+  const lastUser = convo.map((m) => m.role).lastIndexOf('user');
+  if (lastUser < 0) return transcriptTokens(convo) <= HISTORY_TOKEN_BUDGET ? convo.slice() : convo.slice(-1);
+  let start = Math.min(Math.max(messageWindowStart(convo.length), tokenWindowStart(convo)), lastUser);
+  while (convo[start]!.role !== 'user') start += 1;
+  return convo.slice(start);
 }
 
 /**
@@ -134,11 +165,11 @@ export function stillInWorkingContext<M extends TranscriptMessage>(state: Workin
 // ---------------------------------------------------------------------------
 // Auto-compaction — summarize the bulky MIDDLE instead of dropping it.
 //
-// `tokenBounded` keeps the request inside the window by DROPPING the oldest turns. That
+// `windowed` keeps the request inside the window by DROPPING the oldest turns. That
 // never 413s, but it silently LOSES context — which made a weak model re-read files and
 // thrash ("LOOP EXHAUSTED", chat #50). When a summarizer is available the older turns are
 // compressed into ONE memory note instead, so the model keeps working from a distilled
-// memory. Falls back to `tokenBounded` when no summarizer is reachable.
+// memory. Falls back to `windowed` when no summarizer is reachable.
 //
 // Why this fold is NOT `packHandoff` (`../handoff`): the packer is stateless and gives the
 // verbatim tail priority, handing the note whatever room the tail leaves. The working

@@ -1,5 +1,18 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.27
+
+### Code maps: one size floor, a recallable root area, and the read side (`/working`)
+
+- **The 3-file minimum applies to every run.** `consolidate` returns `null` unless the run touched at least `MIN_CONSOLIDATED_FILES` distinct files, counting changed, deleted and read together. Before, a run that changed even one file always wrote a map, so a one-line fix kept re-dating its directory's map. `ConsolidateOptions.minFiles` overrides the floor.
+- **Root files have a recallable area.** A root-only run is still filed under `codemap:(root)`, now exported as `CONSOLIDATED_ROOT_AREA`. The new `areaOfPath` resolves a root-level file to that same area, so a reader can match it.
+- **Reading a stored map.** `consolidatedFiles(content)` lists the files a map names, never a deletion. `withoutConsolidatedFiles(content, paths)` drops changed files and keeps the rest, returning `null` once nothing is left. With these a store can anchor a map to its files and, when one changes, drop just that file instead of hiding the whole map.
+- **Choosing maps for a run.** `consolidatedFactsFor(facts, areas, max?)` keeps the maps whose area overlaps the run's areas, most specific first. `areasOfPathsIn(text)` gives the areas of the repo-relative paths a text names. `areasNamedIn(text, areas)` finds the stored areas a request names by word, for a request that names no path. `consolidatedArea(key)` and `MAX_RECALLED_MAPS` are exported. `CONSOLIDATED_KEY_PREFIX` moved to `codemapAreas.ts`, and its export from `/working` is unchanged.
+
+### Docs: the volatile-tail rule
+
+The README now documents where `WorkingMemory.brief()` goes: in the `<run-state>`-tagged `volatileTail`, last, built per request, never persisted into the transcript, and never in the system prompt. A host whose SDK only offers transcript-persisting insertion points, such as the Claude Agent SDK's `PostToolUse` `additionalContext`, should not use `brief()`. It also covers code maps: `consolidate`, `mergeConsolidated`, the size floor and the root area.
+
 ## 2026.10.26
 
 ### Consolidation markers never drop history; long transcripts summarize in chunks

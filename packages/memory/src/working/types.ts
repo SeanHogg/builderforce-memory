@@ -29,4 +29,10 @@ export interface ConsolidateOptions {
   at?: Date;
   /** The workspace root — absolute paths under it are kept, made relative. */
   root?: string;
+  /**
+   * Distinct files (changed, deleted and read together) a run must touch for its map to
+   * be kept. Defaults to `MIN_CONSOLIDATED_FILES`; the same floor applies to a run that
+   * changed files as to one that only read.
+   */
+  minFiles?: number;
 }

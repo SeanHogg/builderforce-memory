@@ -79,6 +79,31 @@ A dependency-free subpath a browser chat client can import without the rest of t
 - `formatEvermindMemoryBlock` — the recalled-memory prompt block, each item neutralised with `sanitizeRecalledFact`.
 - `EVERMIND_MIN_TEACH_CHARS` — the teach floor below which a turn is never contributed.
 
+## Working memory and code maps (`@seanhogg/builderforce-memory/working`)
+
+A run has two memories. Both are pure (no I/O) and run in a Worker, a browser and Node.
+
+### Short-term: `WorkingMemory.brief()` and the volatile tail
+
+`WorkingMemory` records what this run has read, searched and changed. Record **successful** tool calls only. `brief()` restates that record once the run is long enough for compaction to have dropped its own results. Before that it returns `null`.
+
+The brief changes every turn, so where it goes decides what the prompt cache can reuse. The rule:
+
+- **Tag it and put it last.** Deliver the brief, and any other per-turn content (affect, budget line, task state), inside ONE trailing `user` message built with `volatileTail()` from `/handoff`. That message opens with `<run-state>`. The prompt-cache breakpoint is placed before a tagged block, so the history before it stays cached. `packHandoff` also never treats a tagged block as "the latest user directive".
+- **Never persist it into the transcript.** Build the tail for each request and throw it away. A brief written into history grows every later turn and moves the cached prefix each time.
+- **Never put it in the system prompt.** The system prompt is the start of the cached prefix, so content that changes per turn there invalidates the cache on every request.
+- **Hosts that can only insert into the transcript should not use `brief()`.** Some SDKs only offer insertion points that persist, for example the Claude Agent SDK's `PostToolUse` `additionalContext`, which is written into the session transcript. A brief delivered there breaks both rules above. Such a host should skip the brief and still record into `WorkingMemory` for the run-end code map.
+
+### Long-term: code maps
+
+`consolidate(snapshot, { root?, at?, minFiles? })` turns a finished run into ONE memory per code area under the key `codemap:<area>`. The content is a map: changed files first, then reads ranked by how often the run opened them. The area is the deepest directory (2 to 4 segments) holding most of the files.
+
+- **Minimum size.** A run must touch at least `MIN_CONSOLIDATED_FILES` (3) distinct files, counting changed, deleted and read together, or `consolidate` returns `null`. This applies to every run, including one that changed files. Pass `minFiles` to override it.
+- **Root area.** A run whose files all sit at the repository root is filed under `codemap:(root)` (`CONSOLIDATED_ROOT_AREA`). `areaOfPath('package.json')` resolves to the same area, so the map can be recalled.
+- **Merging.** A keyed store applies `mergeConsolidated(key, prior, next)` on write. The new run's entries come first, then the earlier map's entries it did not touch. An earlier `changed` is restated as `changed earlier`, files this run deleted leave the map, and the list is capped at 12. Pass `prior` only when the stored map is still live (not expired or superseded). Any non-`codemap:` key is stored as sent.
+- **Reading a stored map.** `consolidatedFiles(content)` lists the files a map names. A store can anchor the map to them. `withoutConsolidatedFiles(content, paths)` drops files that changed since the map was written and keeps the rest. It returns `null` when no file is left.
+- **Choosing maps for a run.** `consolidatedFactsFor(facts, areas)` keeps the maps whose area overlaps the areas a run is about, most specific first. `areasOfPathsIn(text)` gives the areas of the repo-relative paths a request names. `areasNamedIn(text, areas)` finds stored areas a request names by word (`"the run store"` matches `…/runStore`). Generic directory names such as `src` never match.
+
 ## Installation
 
 ```bash
