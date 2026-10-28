@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.31
+
+### Fact authors are user ids (`/knowledge`)
+
+- **`StoredFact.createdBy` is a `string`.** It used to be a number, but platform user ids are 36-character strings, so a store could not carry the author through. Hosts can now show Delete to a fact's author as well as to admins.
+
 ## 2026.10.30
 
 ### Small knowledge indexes skip the graph (`/retrieval`, `/knowledge`)

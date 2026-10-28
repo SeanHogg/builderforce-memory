@@ -165,7 +165,7 @@ export interface StoredFact {
     origin: StoredOrigin;
     fileAnchors: Array<{ path: string; line?: number; contentHash?: string }>;
     updatedAt?: string;
-    createdBy?: number | null;
+    createdBy?: string | null;   // users.id is varchar(36)
 }
 
 export interface StoredRelation {
