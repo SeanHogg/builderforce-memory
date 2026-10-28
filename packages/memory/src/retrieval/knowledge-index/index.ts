@@ -2,15 +2,16 @@
  * The knowledge index — a deterministic, LEANN-style index over knowledge-graph
  * cards (design: Builderforce.ai/docs/design/deterministic-knowledge-index.md).
  *
- * Exact → lexical → dense cascade; int8 codes with integer traversal; a
- * high-degree-preserving pruned graph stored as CSR; float vectors recomputed
+ * Exact → lexical → dense cascade; int8 codes with integer traversal; below
+ * `exactBelow` cards an exact int8 scan, at or above it a high-degree-preserving
+ * pruned graph stored as CSR; float vectors recomputed
  * only for the candidates being reranked. Every result is a pure function of
  * `(digest(), query, opts)`.
  *
  * Runs in a Worker, the browser and Node: no Node-only API anywhere.
  */
 
-import type { EmbedderPort, GraphNeighbours, IndexDoc, IndexHit, IndexParams, IndexTier, KnowledgeIndex, SimilarPair } from './types.js';
+import type { EmbedderPort, GraphNeighbours, IndexDoc, IndexHit, IndexMode, IndexParams, IndexTier, KnowledgeIndex, SimilarPair } from './types.js';
 import { availableTiers, canonicalKeys, createState, denseReady, graphNode, indexKeys, type DocEntry, type IndexState } from './state.js';
 import { EmbeddingCache } from './embeddings.js';
 import { cascadeSearch, denseCandidates, type SearchContext } from './cascade.js';
@@ -117,16 +118,18 @@ class DeterministicKnowledgeIndex implements KnowledgeIndex {
     /** Diagnostics: stored bytes of the int8 codes and the CSR graph, against float32. */
     storage(): KnowledgeIndexStorage {
         const c = this._state.compacted;
-        if (!c) return { nodes: 0, codeBytes: 0, graphBytes: 0, float32Bytes: 0 };
+        if (!c) return { mode: null, nodes: 0, codeBytes: 0, graphBytes: 0, float32Bytes: 0 };
         let codeBytes = 0;
         for (const code of c.codes) codeBytes += code?.byteLength ?? 0;
         let graphBytes = 0;
         for (const l of c.graph.layers) graphBytes += (l.nodes?.byteLength ?? 0) + l.offsets.byteLength + l.neighbours.byteLength;
-        return { nodes: c.ids.length, codeBytes, graphBytes, float32Bytes: c.ids.length * this._state.dims * 4 };
+        return { mode: c.mode, nodes: c.ids.length, codeBytes, graphBytes, float32Bytes: c.ids.length * this._state.dims * 4 };
     }
 }
 
 export interface KnowledgeIndexStorage {
+    /** How the dense tier searches the codes; null before the first compaction with an embedder. */
+    mode: IndexMode | null;
     nodes: number;
     codeBytes: number;
     graphBytes: number;
@@ -154,7 +157,8 @@ export function loadKnowledgeIndex(bytes: Uint8Array, embedder?: EmbedderPort): 
     return new DeterministicKnowledgeIndex(deserializeState(bytes), embedder);
 }
 
-export type { EmbedderPort, GraphNeighbours, IndexDoc, IndexHit, IndexParams, IndexTier, KnowledgeIndex, SimilarPair } from './types.js';
+export type { EmbedderPort, GraphNeighbours, IndexDoc, IndexHit, IndexMode, IndexParams, IndexTier, KnowledgeIndex, SimilarPair } from './types.js';
+export { EXACT_PAIR_BUDGET } from './scan.js';
 export { DEFAULT_INDEX_PARAMS } from './state.js';
 export { codeTokenize } from './tokenize.js';
 export { hashDocText } from './digest.js';

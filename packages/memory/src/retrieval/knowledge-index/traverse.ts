@@ -26,12 +26,12 @@ export interface GraphCandidate {
 }
 
 /** Higher score first, then lower node index. */
-function before(a: GraphCandidate, b: GraphCandidate): boolean {
+export function before(a: GraphCandidate, b: GraphCandidate): boolean {
     return a.score > b.score || (a.score === b.score && a.node < b.node);
 }
 
 /** Inserts `c` into `list`, kept in {@link before} order. */
-function insertOrdered(list: GraphCandidate[], c: GraphCandidate): void {
+export function insertOrdered(list: GraphCandidate[], c: GraphCandidate): void {
     let lo = 0;
     let hi = list.length;
     while (lo < hi) {

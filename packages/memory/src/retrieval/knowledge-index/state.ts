@@ -4,7 +4,7 @@
  * so `digest()` can name it and `serialize()` can carry it.
  */
 
-import type { EmbedderPort, IndexParams, IndexTier } from './types.js';
+import type { EmbedderPort, IndexMode, IndexParams, IndexTier } from './types.js';
 import type { CsrGraph } from './csr.js';
 import { LexicalIndex } from './lexical.js';
 import { foldKey } from './tokenize.js';
@@ -17,6 +17,7 @@ export const DEFAULT_INDEX_PARAMS: Readonly<IndexParams> = Object.freeze({
     rerankFactor: 4,
     lean: false,
     rrfK: 60,
+    exactBelow: 20000,
 });
 
 /** One live card. `vec` is its unit float embedding while it is not yet in the graph. */
@@ -31,6 +32,8 @@ export interface DocEntry {
 
 /** The canonical, id-ordered snapshot written by `compact()`. Node index = rank of its id. */
 export interface Compacted {
+    /** `exact`: no graph (empty `graph`, zero `hubs`, every code kept); `graph`: HNSW over the codes. */
+    mode: IndexMode;
     ids: string[];
     /** The doc hash each node was coded from; a node whose doc changed is stale. */
     hashes: string[];
@@ -95,6 +98,11 @@ export function graphNode(state: IndexState, id: string): number {
     const node = c.nodeOf.get(id);
     if (node === undefined) return -1;
     return state.docs.get(id)?.hash === c.hashes[node] ? node : -1;
+}
+
+/** The search mode a compaction of `size` cards uses under `params`. */
+export function modeFor(params: IndexParams, size: number): IndexMode {
+    return size < params.exactBelow ? 'exact' : 'graph';
 }
 
 /** Whether `embedder` may produce vectors comparable with the stored ones. */

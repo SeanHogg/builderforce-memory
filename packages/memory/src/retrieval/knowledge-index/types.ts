@@ -45,11 +45,21 @@ export interface IndexParams {
     hubShare: number;
     /** Dense candidates = k * rerankFactor, recomputed in float and reranked. Default 4. */
     rerankFactor: number;
-    /** Drop int8 codes of non-hub nodes and recompute on the search path. Default false. */
+    /** Drop int8 codes of non-hub nodes and recompute on the search path. Graph mode only; ignored in exact mode. Default false. */
     lean: boolean;
     /** RRF constant. Default 60. */
     rrfK: number;
+    /**
+     * Below this many cards, `compact()` builds no graph: the dense tier is an exact
+     * integer scan over every int8 code (no construction cost, trivially deterministic).
+     * At or above it, the HNSW graph is built. 0 always builds the graph. A u32
+     * (it is serialized and hashed as one). Default 20000.
+     */
+    exactBelow: number;
 }
+
+/** How the compacted codes are searched: an exact int8 scan, or the HNSW graph. */
+export type IndexMode = 'exact' | 'graph';
 
 export interface SimilarPair {
     a: string;

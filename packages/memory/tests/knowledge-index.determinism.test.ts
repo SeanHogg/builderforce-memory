@@ -4,24 +4,12 @@
  * mode recall, and the int8 + CSR storage budget.
  */
 
-import { createKnowledgeIndex, type DeterministicKnowledgeIndexType, type IndexDoc, type IndexParams } from '../src/retrieval/knowledge-index/index.js';
+import type { DeterministicKnowledgeIndexType, IndexParams } from '../src/retrieval/knowledge-index/index.js';
 import { fitScale, quantize, toUnit } from '../src/retrieval/knowledge-index/quantize.js';
-import { makeDocs, makeEmbedder, makeQueries, shuffled, unitVector } from './knowledge-index.fixture.js';
+import { buildIndex as build, makeDocs, makeEmbedder, makeQueries, unitVector } from './knowledge-index.fixture.js';
 
-const FAST: Partial<IndexParams> = { m: 8, efConstruction: 48 };
-
-async function build(
-    docs: readonly IndexDoc[],
-    embedder: ReturnType<typeof makeEmbedder>,
-    params: Partial<IndexParams>,
-    seed?: number,
-): Promise<DeterministicKnowledgeIndexType> {
-    const index = createKnowledgeIndex({ embedder, params });
-    const order = seed === undefined ? [...docs] : shuffled(docs, seed);
-    for (let i = 0; i < order.length; i += 137) await index.upsert(order.slice(i, i + 137));
-    await index.compact();
-    return index;
-}
+/** Graph mode (`exactBelow: 0`): these checks cover the HNSW path; exact mode has its own file. */
+const FAST: Partial<IndexParams> = { m: 8, efConstruction: 48, exactBelow: 0 };
 
 describe('order-free builds', () => {
     it('3 shuffled insertion orders → the same digest and the same results for 50 queries', async () => {
@@ -118,7 +106,7 @@ describe('lean mode', () => {
 
 describe('storage', () => {
     it('int8 codes + CSR graph take at most 30% of float32 vectors', async () => {
-        const index = await build(makeDocs(500, 31), makeEmbedder(384), { efConstruction: 64 });
+        const index = await build(makeDocs(500, 31), makeEmbedder(384), { efConstruction: 64, exactBelow: 0 });
         const s = index.storage();
         expect(s.nodes).toBe(500);
         expect(s.codeBytes).toBe(500 * 384);

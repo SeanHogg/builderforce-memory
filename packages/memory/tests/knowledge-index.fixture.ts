@@ -3,7 +3,7 @@
  * embedder and query set shared by the knowledge-index tests.
  */
 
-import type { EmbedderPort, IndexDoc } from '../src/retrieval/knowledge-index/index.js';
+import { createKnowledgeIndex, type DeterministicKnowledgeIndexType, type EmbedderPort, type IndexDoc, type IndexParams } from '../src/retrieval/knowledge-index/index.js';
 import { codeTokenize } from '../src/retrieval/knowledge-index/tokenize.js';
 
 /** Seeded PRNG in [0,1). */
@@ -77,4 +77,18 @@ export function makeEmbedder(
         },
     };
     return port;
+}
+
+/** An index over `docs`, upserted in chunks of 137 (shuffled by `seed` when given), then compacted. */
+export async function buildIndex(
+    docs: readonly IndexDoc[],
+    embedder: EmbedderPort,
+    params: Partial<IndexParams>,
+    seed?: number,
+): Promise<DeterministicKnowledgeIndexType> {
+    const index = createKnowledgeIndex({ embedder, params });
+    const order = seed === undefined ? [...docs] : shuffled(docs, seed);
+    for (let i = 0; i < order.length; i += 137) await index.upsert(order.slice(i, i + 137));
+    await index.compact();
+    return index;
 }

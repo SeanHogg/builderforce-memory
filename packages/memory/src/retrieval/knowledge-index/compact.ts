@@ -7,6 +7,10 @@
  * every tie breaks on id, the same card set and fingerprint give the same bytes
  * whatever order the upserts arrived in.
  *
+ * Below `params.exactBelow` cards no graph is built at all (exact mode): the codes
+ * are kept whole (`lean` is ignored, it only saves anything with a graph to walk)
+ * and the dense tier scans them exactly. At or above it, the HNSW graph is built.
+ *
  * The int8 scale is fitted at the first compaction and fixed after it. An embedder
  * whose fingerprint differs from the stored one is never mixed in: compaction
  * drops every stored vector and code and re-embeds all cards under it.
@@ -14,10 +18,10 @@
 
 import { compareIds } from '../order.js';
 import type { EmbedderPort } from './types.js';
-import { graphNode, type DocEntry, type IndexState } from './state.js';
+import { graphNode, modeFor, type DocEntry, type IndexState } from './state.js';
 import type { EmbeddingCache } from './embeddings.js';
 import { fitScale, quantize } from './quantize.js';
-import { buildGraph } from './csr.js';
+import { buildGraph, EMPTY_GRAPH } from './csr.js';
 
 /** Float vectors for the docs that have neither a reusable code nor a pending vector. */
 async function vectorsFor(cache: EmbeddingCache, docs: readonly DocEntry[]): Promise<Map<string, Float32Array>> {
@@ -55,11 +59,15 @@ export async function compactState(state: IndexState, embedder: EmbedderPort | u
     if (state.scale === 0) state.scale = fitScale(docs.map(floatOf));
     const codes = docs.map((d, i) => reused[i] ?? quantize(floatOf(d), state.scale));
 
-    const { graph, hubs } = buildGraph(ids, codes, state.params);
+    const mode = modeFor(state.params, ids.length);
+    const { graph, hubs } = mode === 'graph'
+        ? buildGraph(ids, codes, state.params)
+        : { graph: EMPTY_GRAPH, hubs: new Uint8Array(ids.length) };
     state.compacted = {
+        mode,
         ids,
         hashes: docs.map((d) => d.hash),
-        codes: state.params.lean ? codes.map((code, i) => (hubs[i] ? code : undefined)) : codes,
+        codes: mode === 'graph' && state.params.lean ? codes.map((code, i) => (hubs[i] ? code : undefined)) : codes,
         hubs,
         graph,
         nodeOf: new Map(ids.map((id, i) => [id, i])),

@@ -4,8 +4,9 @@
  *   1. exact    — the folded `keys` map; a hit scores 1.0, and when the exact hits
  *                 fill `k` nothing else runs;
  *   2. lexical  — BM25 over card text with the code-aware tokenizer;
- *   3. dense    — int8 graph search for `k × rerankFactor` candidates (plus the
- *                 cards not yet compacted), then a float rerank over vectors
+ *   3. dense    — int8 search for `k × rerankFactor` candidates (an exact scan
+ *                 below `exactBelow` cards, the HNSW graph walk at or above it;
+ *                 plus the cards not yet compacted), then a float rerank over vectors
  *                 recomputed through the hash-keyed LRU;
  *   4. fuse     — RRF over the lexical and dense lists; exact hits stay on top at
  *                 1.0; everything in {@link compareHits} order.
@@ -18,10 +19,11 @@ import { reciprocalRankFusion } from '../fusion.js';
 import { compareDenseHits, compareHits } from '../order.js';
 import { cosineSimilarity } from '../../similarity/index.js';
 import type { EmbedderPort, IndexHit, IndexTier } from './types.js';
-import { availableTiers, graphNode, type DocEntry, type IndexState } from './state.js';
+import { availableTiers, graphNode, type Compacted, type DocEntry, type IndexState } from './state.js';
 import type { EmbeddingCache } from './embeddings.js';
 import { dotInt8, quantize } from './quantize.js';
 import { searchGraph } from './traverse.js';
+import { scanCodes } from './scan.js';
 import { foldKey } from './tokenize.js';
 
 export interface SearchContext {
@@ -42,36 +44,48 @@ function exactIds(state: IndexState, q: string): string[] {
     return ids ? [...ids].sort() : [];
 }
 
+/** Graph mode: the HNSW walk over the codes (lean mode recomputes dropped codes), best `n` live ids. */
+async function graphCandidates(ctx: SearchContext, c: Compacted, qc: Int8Array, n: number): Promise<string[]> {
+    const { state, cache } = ctx;
+    const recomputed = new Map<number, Int8Array>();
+    const codeOf = (node: number) => c.codes[node] ?? recomputed.get(node);
+    const found = await searchGraph(c.graph, {
+        score: (node) => {
+            const code = codeOf(node);
+            return code ? dotInt8(qc, code) : -Infinity;
+        },
+        ensure: cache && state.params.lean ? (nodes) => {
+            const live = nodes.filter((node) => !codeOf(node) && graphNode(state, c.ids[node]!) === node);
+            if (live.length === 0) return undefined;
+            return cache.vectors(live.map((node) => state.docs.get(c.ids[node]!)!)).then((vecs) => {
+                live.forEach((node, i) => recomputed.set(node, quantize(vecs[i]!, state.scale)));
+            });
+        } : undefined,
+    }, Math.max(state.params.efSearch, n));
+    const out: string[] = [];
+    for (const hit of found) {
+        if (out.length >= n) break;
+        if (hit.score !== -Infinity && graphNode(state, c.ids[hit.node]!) === hit.node) out.push(c.ids[hit.node]!);
+    }
+    return out;
+}
+
 /**
- * Dense candidates before the float rerank: the best `n` live graph nodes by
- * integer dot product, plus the best `n` cards not yet in the graph. Ids, unordered
- * between the two sources (the rerank orders them).
+ * Dense candidates before the float rerank: the best `n` live coded nodes by
+ * integer dot product (an exact scan in exact mode, the graph walk in graph mode),
+ * plus the best `n` cards not yet compacted. Ids, unordered between the two
+ * sources (the rerank orders them).
  */
 export async function denseCandidates(ctx: SearchContext, qv: Float32Array, n: number): Promise<string[]> {
-    const { state, cache } = ctx;
+    const { state } = ctx;
     const out = new Set<string>();
     const c = state.compacted;
     if (c && state.scale > 0) {
         const qc = quantize(qv, state.scale);
-        const recomputed = new Map<number, Int8Array>();
-        const codeOf = (node: number) => c.codes[node] ?? recomputed.get(node);
-        const found = await searchGraph(c.graph, {
-            score: (node) => {
-                const code = codeOf(node);
-                return code ? dotInt8(qc, code) : -Infinity;
-            },
-            ensure: cache && state.params.lean ? (nodes) => {
-                const live = nodes.filter((node) => !codeOf(node) && graphNode(state, c.ids[node]!) === node);
-                if (live.length === 0) return undefined;
-                return cache.vectors(live.map((node) => state.docs.get(c.ids[node]!)!)).then((vecs) => {
-                    live.forEach((node, i) => recomputed.set(node, quantize(vecs[i]!, state.scale)));
-                });
-            } : undefined,
-        }, Math.max(state.params.efSearch, n));
-        for (const hit of found) {
-            if (out.size >= n) break;
-            if (hit.score !== -Infinity && graphNode(state, c.ids[hit.node]!) === hit.node) out.add(c.ids[hit.node]!);
-        }
+        const ids = c.mode === 'exact'
+            ? scanCodes(state, c, qc, n).map((hit) => c.ids[hit.node]!)
+            : await graphCandidates(ctx, c, qc, n);
+        for (const id of ids) out.add(id);
     }
     const pending: Array<{ id: string; score: number }> = [];
     for (const doc of state.docs.values()) {

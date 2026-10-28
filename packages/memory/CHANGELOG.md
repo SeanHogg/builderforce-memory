@@ -1,5 +1,15 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.30
+
+### Small knowledge indexes skip the graph (`/retrieval`, `/knowledge`)
+
+- **Below `exactBelow` cards there is no graph.** The new `IndexParams.exactBelow` defaults to 20000. Below it, `compact()` only quantizes, fixes the scale and names the state; it builds no HNSW. The dense tier then scans every int8 code with an exact integer dot product, keeps the best `k × rerankFactor` (ties by id) and runs the same float rerank as before. An index of a few thousand cards now compacts in a fraction of the CPU, which is what a Worker needs, and its dense results are exact rather than approximate. At or above the threshold nothing changes; `exactBelow: 0` always builds the graph.
+- **`similarPairs` without a graph.** In exact mode every pair is scored while there are at most `EXACT_PAIR_BUDGET` (250,000, about 700 cards). Above that, cards are bucketed by the signs of fixed code dimensions in 8 tables, each card is paired with the next 32 members of its bucket, and scoring stops at the budget. The cost is bounded whatever the size, and the result is still a pure function of the state.
+- **`lean` applies to graph mode only.** It saves nothing without a graph to walk, so exact mode keeps every code and ignores it.
+- **The mode is part of the state.** `digest()` covers `exactBelow` and the mode, so digests differ from 2026.10.29's for the same cards. `storage()` reports `mode` (`'exact'`, `'graph'` or `null`). `IndexMode` is exported.
+- **Serialized format version 2.** It adds `exactBelow` and the mode. Version-1 blobs still load: as a graph, with `exactBelow` 0, so a later `compact()` keeps building the graph they were made with.
+
 ## 2026.10.29
 
 ### The knowledge graph (`/knowledge`)

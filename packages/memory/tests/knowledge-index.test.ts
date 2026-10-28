@@ -15,7 +15,7 @@ import {
 import { codeTokenize } from '../src/retrieval/knowledge-index/tokenize.js';
 import { makeDocs, makeEmbedder, makeQueries, shuffled } from './knowledge-index.fixture.js';
 
-const FAST = { m: 8, efConstruction: 48 };
+const FAST = { m: 8, efConstruction: 48, exactBelow: 0 };
 
 describe('sha256', () => {
     it('matches the FIPS 180-4 test vectors, incrementally too', () => {
