@@ -17,6 +17,7 @@
  */
 
 import type { MetadataRecord, MetadataValue } from '../vectorstore/types.js';
+import { extractHtml, extractMarkdown, extractPlainText } from './docsExtract.js';
 import type { DocumentParser, ParsedSection, SourceDocument, StructuredRow } from './types.js';
 
 const textOf = (source: SourceDocument): string =>
@@ -237,6 +238,7 @@ export const markdownParser: DocumentParser = {
         flush();
         return sections;
     },
+    extract: extractMarkdown,
 };
 
 // ── HTML ──────────────────────────────────────────────────────────────────────
@@ -270,6 +272,7 @@ export const htmlParser: DocumentParser = {
         if (titleMatch?.[1]) metadata['htmlTitle'] = titleMatch[1].trim();
         return [{ text, metadata }];
     },
+    extract: extractHtml,
 };
 
 // ── plain text ────────────────────────────────────────────────────────────────
@@ -281,6 +284,7 @@ export const plainTextParser: DocumentParser = {
         const text = textOf(source).trim();
         return text ? [{ text }] : [];
     },
+    extract: extractPlainText,
 };
 
 // ── registry ──────────────────────────────────────────────────────────────────

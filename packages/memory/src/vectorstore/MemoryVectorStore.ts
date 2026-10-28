@@ -20,6 +20,7 @@
 
 import { bm25Search } from '../retrieval/bm25.js';
 import { HnswIndex, type HnswOptions } from '../retrieval/hnsw.js';
+import { compareScoreThenId, DENSE_SCORE_QUANTUM } from '../retrieval/order.js';
 import { cosineSimilarity } from '../similarity/index.js';
 import { combineFilters, matchesFilter } from './filter.js';
 import type {
@@ -192,7 +193,7 @@ export class MemoryVectorStore implements VectorStore {
         const exactScan = () => embedded
             .filter((r) => matchesFilter(r.metadata, filter))
             .map((r) => ({ record: r, score: cosineSimilarity(vector, r.vector as Float32Array) }))
-            .sort((a, b) => b.score - a.score);
+            .sort((a, b) => compareScoreThenId(a.score, a.record.id, b.score, b.record.id, DENSE_SCORE_QUANTUM));
 
         if (embedded.length < this._annThreshold) return exactScan();
 

@@ -8,6 +8,8 @@
  * Pure and zero-dependency.
  */
 
+import { compareHits } from './order.js';
+
 export interface RankedList {
     /** Ordered ids, most relevant first. */
     ids: string[];
@@ -35,7 +37,8 @@ export function rrfTerm(rank: number, k: number = RRF_DEFAULT_K): number {
 /**
  * Reciprocal Rank Fusion over any number of ranked lists.
  * score(d) = Σ_lists weight / (k + rank(d)).  `k` (default 60) damps the
- * contribution of low-ranked items; the canonical TREC value.
+ * contribution of low-ranked items; the canonical TREC value. Ordered by
+ * {@link compareHits}: fused score descending, then id.
  */
 export function reciprocalRankFusion(lists: RankedList[], k = RRF_DEFAULT_K): FusedHit[] {
     const acc = new Map<string, number>();
@@ -47,5 +50,5 @@ export function reciprocalRankFusion(lists: RankedList[], k = RRF_DEFAULT_K): Fu
     }
     return [...acc.entries()]
         .map(([id, score]) => ({ id, score }))
-        .sort((a, b) => b.score - a.score);
+        .sort(compareHits);
 }

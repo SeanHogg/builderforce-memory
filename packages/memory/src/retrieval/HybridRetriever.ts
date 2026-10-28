@@ -22,6 +22,7 @@ import { mmrSelect } from './mmr.js';
 import { denseSearch } from './hnsw.js';
 import { calculateTemporalDecayMultiplier } from './decay.js';
 import { cosineSimilarity } from '../similarity/index.js';
+import { compareHits } from './order.js';
 
 export interface RetrievalCandidate {
     id: string;
@@ -146,7 +147,7 @@ export function hybridRetrieve(
     const factor = new Map(fused.map(f => [f.id, signalFactor(byId.get(f.id)!, opts, now)]));
     const weighted = fused
         .map(f => ({ id: f.id, score: f.score * factor.get(f.id)! }))
-        .sort((a, b) => b.score - a.score);
+        .sort(compareHits);
 
     // ── Rerank (MMR over the weighted top, using whatever vectors we have) ────
     const rerank = opts.rerank ?? true;
@@ -166,6 +167,7 @@ export function hybridRetrieve(
                 similarity: (a, b) => cosineSimilarity(a.vector, b.vector),
                 lambda: opts.mmrLambda ?? 0.7,
                 topK,
+                idOf: (c) => c.id,
             }).map(c => c.id);
             // MMR only ranks the vectored subset; append any remaining ids after.
             const seen = new Set(reranked);

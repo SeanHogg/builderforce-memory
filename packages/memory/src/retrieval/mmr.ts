@@ -18,6 +18,7 @@
  */
 
 import { cosineSimilarity, jaccardSimilarity, tokenize } from '../similarity/index.js';
+import { compareHits, compareIds, quantizeScore, DENSE_SCORE_QUANTUM } from './order.js';
 
 export interface MmrSelectOptions<T> {
     /** Relevance of one candidate, on the same scale as {@link similarity}. */
@@ -29,19 +30,44 @@ export interface MmrSelectOptions<T> {
     /** Stop after this many picks. Default: every candidate. */
     topK?: number;
     /**
-     * Breaks an exact MMR tie in favour of the higher value. Without it the earlier
-     * candidate wins, so input order decides.
+     * Breaks an MMR tie in favour of the higher value. Ties are judged on the MMR
+     * score quantized to {@link quantum}.
      */
     tieScore?: (item: T) => number;
+    /**
+     * The candidate's id — the last tie-break, ascending. Without it the explicit
+     * id is the candidate's index in `items`, so the earlier candidate wins.
+     */
+    idOf?: (item: T) => string;
+    /** Quantum the MMR score is compared at. Default 1e-4 (cosine noise). */
+    quantum?: number;
 }
 
 /** Greedy MMR selection. Returns the picked candidates in pick order. */
 export function mmrSelect<T>(items: readonly T[], opts: MmrSelectOptions<T>): T[] {
     const lambda = opts.lambda ?? 0.7;
+    const quantum = opts.quantum ?? DENSE_SCORE_QUANTUM;
     const limit = Math.min(opts.topK ?? items.length, items.length);
     const remaining = [...items];
     const relevance = new Map<T, number>();
-    for (const item of remaining) relevance.set(item, opts.relevance(item));
+    const position = new Map<T, number>();
+    items.forEach((item, i) => {
+        relevance.set(item, opts.relevance(item));
+        if (!position.has(item)) position.set(item, i);
+    });
+    const idOf = (item: T): string | number => (opts.idOf ? opts.idOf(item) : position.get(item)!);
+    // Higher quantized MMR score, then higher tieScore, then lower id.
+    const beats = (a: T, aScore: number, b: T, bScore: number): boolean => {
+        const qa = quantizeScore(aScore, quantum);
+        const qb = quantizeScore(bScore, quantum);
+        if (qa !== qb) return qa > qb;
+        if (opts.tieScore) {
+            const ta = opts.tieScore(a);
+            const tb = opts.tieScore(b);
+            if (ta !== tb) return ta > tb;
+        }
+        return compareIds(idOf(a), idOf(b)) < 0;
+    };
 
     const selected: T[] = [];
     while (selected.length < limit && remaining.length > 0) {
@@ -55,10 +81,7 @@ export function mmrSelect<T>(items: readonly T[], opts: MmrSelectOptions<T>): T[
                 if (sim > maxSimToSelected) maxSimToSelected = sim;
             }
             const score = lambda * relevance.get(candidate)! - (1 - lambda) * maxSimToSelected;
-            const wins = score > bestScore
-                || (score === bestScore && bestIdx >= 0 && opts.tieScore !== undefined
-                    && opts.tieScore(candidate) > opts.tieScore(remaining[bestIdx]!));
-            if (wins) { bestScore = score; bestIdx = i; }
+            if (bestIdx < 0 || beats(candidate, score, remaining[bestIdx]!, bestScore)) { bestScore = score; bestIdx = i; }
         }
         if (bestIdx < 0) break;
         selected.push(remaining.splice(bestIdx, 1)[0]!);
@@ -87,6 +110,7 @@ export function maximalMarginalRelevance(
         similarity: (a, b) => cosineSimilarity(a.vector, b.vector),
         lambda,
         topK,
+        idOf: (c) => c.id,
     }).map((c) => c.id);
 }
 
@@ -101,13 +125,13 @@ export interface TextMmrItem {
 /**
  * Text MMR. Reorders every item, judging diversity by Jaccard similarity of word
  * tokens, and relevance by the item's `score` min-max normalised onto [0,1] (all
- * equal → 1). An exact tie goes to the higher raw score. `lambda` is clamped to
- * [0,1]; at 1 this is a plain score sort.
+ * equal → 1). A tie goes to the higher raw score, then the lower id. `lambda` is
+ * clamped to [0,1]; at 1 this is a plain {@link compareHits} sort.
  */
 export function textMaximalMarginalRelevance<T extends TextMmrItem>(items: readonly T[], lambda = 0.7): T[] {
     if (items.length <= 1) return [...items];
     const l = Math.max(0, Math.min(1, lambda));
-    if (l === 1) return [...items].sort((a, b) => b.score - a.score);
+    if (l === 1) return [...items].sort(compareHits);
 
     const tokens = new Map<string, Set<string>>();
     for (const item of items) tokens.set(item.id, new Set(tokenize(item.content)));
@@ -122,5 +146,6 @@ export function textMaximalMarginalRelevance<T extends TextMmrItem>(items: reado
         similarity: (a, b) => jaccardSimilarity(tokensOf(a), tokensOf(b)),
         lambda: l,
         tieScore: (item) => item.score,
+        idOf: (item) => item.id,
     });
 }

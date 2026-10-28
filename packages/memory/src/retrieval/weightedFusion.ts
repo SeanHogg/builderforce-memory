@@ -14,6 +14,8 @@
  * Pure and zero-dependency.
  */
 
+import { compareScoreThenId, DENSE_SCORE_QUANTUM } from './order.js';
+
 /** Weight on the semantic arm when a caller states none. */
 export const DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7;
 /** Weight on the lexical arm when a caller states none. */
@@ -70,7 +72,8 @@ export function bm25RankToScore(rank: number): number {
 
 /**
  * Fuse two arms keyed by a caller-supplied id and return the candidates ordered
- * best-first. `merge` builds the output row from the winning payload of each id;
+ * best-first: fused score (quantized at the dense quantum — the vector arm carries
+ * float noise) descending, then id ascending. `merge` builds the output row from the winning payload of each id;
  * later duplicates of the same id keep the first payload seen (arm order decides).
  */
 export function fuseHybridArms<TVector extends { id: string }, TText extends { id: string }, TOut>(params: {
@@ -91,11 +94,11 @@ export function fuseHybridArms<TVector extends { id: string }, TText extends { i
         if (existing) existing.scores.textScore = params.textScoreOf(row);
         else byId.set(row.id, { row, scores: { vectorScore: 0, textScore: params.textScoreOf(row) } });
     }
-    return [...byId.values()]
-        .map((entry) => {
+    return [...byId.entries()]
+        .map(([id, entry]) => {
             const score = hybridScore(entry.scores, weights);
-            return { out: params.merge(entry.row, score), score };
+            return { id, out: params.merge(entry.row, score), score };
         })
-        .sort((a, b) => b.score - a.score)
+        .sort((a, b) => compareScoreThenId(a.score, a.id, b.score, b.id, DENSE_SCORE_QUANTUM))
         .map((entry) => entry.out);
 }

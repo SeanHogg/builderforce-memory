@@ -23,6 +23,7 @@
  */
 
 import { tokenize } from '../similarity/index.js';
+import { compareHits } from './order.js';
 
 /** Splits text into the terms BM25 scores over. */
 export type Bm25Tokenizer = (text: string) => string[];
@@ -91,8 +92,9 @@ export function bm25TermScore(frequency: number, idf: number, lengthNorm: number
 }
 
 /**
- * Scores every document against `query` with Okapi BM25, returning hits sorted by
- * descending score (documents with no query-term overlap score 0 and are dropped).
+ * Scores every document against `query` with Okapi BM25, returning hits in
+ * {@link compareHits} order — score descending, then id (documents with no
+ * query-term overlap score 0 and are dropped).
  * Builds the index inline — for a recall over a bounded candidate set (the memory
  * store / a vector pre-filter) this is O(N·terms) and needs no persistence.
  */
@@ -136,6 +138,6 @@ export function bm25Search(query: string, docs: Bm25Doc[], opts: Bm25Options = {
         if (score > 0) hits.push({ id: d.id, score });
     }
 
-    hits.sort((a, b) => b.score - a.score);
+    hits.sort(compareHits);
     return hits;
 }

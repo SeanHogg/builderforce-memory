@@ -14,6 +14,7 @@
 
 import { tokenize, jaccardSimilarity } from '../similarity/index.js';
 import { hybridRetrieve, denseSearch, HnswIndex, type RetrievalCandidate, type HybridRetrieveOptions } from '../retrieval/index.js';
+import { compareScoreThenId } from '../retrieval/order.js';
 import type { MemoryEntry, RankedRecall, ScoredMemory, SSMRuntimeRef } from './types.js';
 
 export interface SemanticRecallOptions {
@@ -80,7 +81,8 @@ export class SemanticRecall {
         }
         const queryTokens = new Set(tokenize(query));
         const scored = all.map((entry) => ({ entry, score: jaccardSimilarity(queryTokens, new Set(tokenize(entry.content))) }));
-        scored.sort((a, b) => b.score - a.score);
+        // Jaccard is an exact ratio: the lexical quantum, then the fact key.
+        scored.sort((a, b) => compareScoreThenId(a.score, a.entry.key, b.score, b.entry.key));
         return this._floor(scored).slice(0, topK);
     }
 

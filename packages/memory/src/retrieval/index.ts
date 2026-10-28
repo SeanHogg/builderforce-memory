@@ -1,6 +1,7 @@
 /**
  * Retrieval layer — chunking, BM25, rank and score fusion, MMR, recency decay, the
- * similarity primitives they rest on, and the HybridRetriever.
+ * similarity primitives they rest on, the HybridRetriever, the ONE total order every
+ * ranker returns (`compareHits`), and the deterministic knowledge index.
  *
  * Zero-dependency and engine-free: this is the `@seanhogg/builderforce-memory/retrieval`
  * subpath, which a Cloudflare Worker, Node and the browser can all import without
@@ -41,5 +42,18 @@ export type {
     HybridHit,
 } from './HybridRetriever.js';
 
-export { HnswIndex, denseSearch } from './hnsw.js';
-export type { HnswOptions, SearchHit } from './hnsw.js';
+export { HnswIndex, denseSearch, levelOf } from './hnsw.js';
+export type { HnswOptions, SearchHit, HnswVector, HnswGraphView } from './hnsw.js';
+
+export {
+    compareHits,
+    compareDenseHits,
+    compareScoreThenId,
+    compareIds,
+    quantizeScore,
+    DENSE_SCORE_QUANTUM,
+    LEXICAL_SCORE_QUANTUM,
+} from './order.js';
+export type { ScoredId } from './order.js';
+
+export * from './knowledge-index/index.js';

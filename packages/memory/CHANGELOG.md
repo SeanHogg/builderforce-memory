@@ -1,5 +1,40 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.29
+
+### The knowledge graph (`/knowledge`)
+
+- **Knowledge is a structure of memory.** A fact alone is a memory. A fact connected to other facts, and to the sources it came from, is knowledge.
+- **`buildGraph`** joins a directory's extracted structure (computed, cached by content hash, never stored) with stored `model`, `human` and `agent` facts and relations.
+  - Importance is a deterministic PageRank.
+  - Partitions give each edge a verdict: `same`, `allowed`, `upward` or `skips`.
+  - Output is bounded: by default 400 nodes are kept, plus every focus node, finding node and changed node with their neighbours, and the rest fold into areas.
+  - The output is byte-identical for equal input in any order, and is named by `graphDigest`.
+- **`reviewDirectory` / `planReview`** review any directory through the one `ingest` pipeline.
+  - **Planning:** a walk plus a manifest diff; unchanged files are never read.
+  - **Extraction** goes through each pack's parsers, and analyzers run where the pack has them.
+  - **Entity resolution:** deterministic keys merge entities; near-duplicates become `possible-same` findings, never merges.
+  - **Judgement:** model judgement (claims, entities, contradicts/agrees) is budgeted, at 200 calls by default, and schema-validated.
+  - **Staleness:** model facts are anchored to the content hash they were judged from and go stale when it changes. On re-review, sections whose hash is unchanged keep their claims.
+- **`traceGraph` / `toMermaid`**: deterministic path traces, such as a layer sequence. **`computeFindings`**: cycles, clone groups, near-duplicates, partition violations, the unpartitioned share and stale facts, each with a `requestKey` for a fixed fix request. **`toCards`**: one index card per node.
+- **The docs pack (`DOCS_PACK`).** The builtin markdown, HTML and plain-text parsers gain an optional `extract` on `DocumentParser`. It produces sections, `contains` edges, relative and `[[wiki]]` links, mentions and front-matter keys, plus broken-link and orphan findings. `hashText` moved to `ingest/hash.ts` and is re-exported unchanged.
+- **`localSnapshotStore`**: a `KnowledgeStore` over a pluggable persistence port, for folders that are not linked to a project.
+
+### One total order for every ranker, and an insertion-order-free HNSW (`/retrieval`)
+
+- **`compareHits`** (`retrieval/order.ts`) orders by score descending, then id ascending. Scores are quantized first: cosine to 1e-4 (`DENSE_SCORE_QUANTUM`), BM25 / RRF to 1e-6 (`LEXICAL_SCORE_QUANTUM`), so float noise cannot flip a near-tie. `compareDenseHits`, `compareScoreThenId`, `compareIds` and `quantizeScore` are exported.
+- **Every ranker uses it.** This covers `bm25Search`, `reciprocalRankFusion`, `fuseHybridArms`, `mmrSelect` and both MMR wrappers, `denseSearch`, `HnswIndex`, `hybridRetrieve`, `SemanticRecall` and `MemoryVectorStore`. Equal scores used to keep input order; they now come back in id order. `mmrSelect` takes `idOf` and `quantum`; without `idOf`, the candidate's position is its id.
+- **HNSW levels come from the id.** `levelOf(id, M)` is a geometric draw from the id's sha-256, not from a sequential RNG. `HnswIndex.canonicalBuild` inserts in id order, so the same (id, vector) set gives the same graph in any input order, and `denseSearch` uses it. `HnswOptions.seed` is kept but no longer affects anything. Vectors may be any numeric array, including int8 codes. `graph()` exposes the built layers.
+
+### The deterministic knowledge index (`/retrieval`, `/knowledge`)
+
+- **`createKnowledgeIndex` / `loadKnowledgeIndex`** build a LEANN-style index over cards. Search is a cascade: exact keys first, then BM25 with a code-aware tokenizer (`codeTokenize`), then a dense graph search over int8 codes with integer dot products. The dense candidates are reranked with float vectors recomputed through a hash-keyed LRU, and the tiers are fused with RRF.
+- **Storage.** The graph's base layer is pruned with high-degree-preserving pruning and every layer is stored as CSR. Codes are int8, with one symmetric scale fixed at the first compaction. Lean mode drops non-hub codes and recomputes them on the search path.
+- **Determinism.** `compact()` is a canonical rebuild, and `digest()` (sha-256) names the state, so a result is a pure function of `(digest, query, opts)`. `serialize()` gives a versioned binary form.
+- **No silent fallback.** With no embedder, or one of another fingerprint, the dense tier is absent from `tiers()` and from hits. `compact()` then re-embeds every card under the new fingerprint.
+- **More.** `expand` adds graph neighbours to the hits, and `similarPairs` returns deterministic near-duplicate pairs. `sha256` / `sha256Hex` / `Sha256` are a synchronous, pure-TS SHA-256.
+- **`./knowledge` subpath export.**
+
 ## 2026.10.27
 
 ### Code maps: one size floor, a recallable root area, and the read side (`/working`)

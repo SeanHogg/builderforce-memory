@@ -11,6 +11,7 @@
  */
 
 import type { MetadataRecord, MetadataValue } from '../vectorstore/types.js';
+import type { ExtractContext, Extracted } from '../knowledge/model.js';
 
 /** One row of a structured source (a DB result set, a CSV, a spreadsheet). */
 export type StructuredRow = Record<string, MetadataValue>;
@@ -57,6 +58,12 @@ export interface DocumentParser {
     /** True when this parser handles the source. First match in registry order wins. */
     accepts(source: SourceDocument): boolean;
     parse(source: SourceDocument): ParsedSection[];
+    /**
+     * Optional, pure: the knowledge-graph structure of a parsed source (file/section nodes,
+     * links, mentions, keys). Perception, never memory — recomputed from the source and
+     * cached by content hash. Parsers without it contribute a bare file node.
+     */
+    extract?(source: SourceDocument, sections: ParsedSection[], ctx: ExtractContext): Extracted;
 }
 
 /** Identity of one stored chunk, for incremental sync. */

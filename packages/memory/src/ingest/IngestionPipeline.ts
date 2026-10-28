@@ -33,6 +33,7 @@ import {
     type VectorRecord,
     type VectorStore,
 } from '../vectorstore/types.js';
+import { hashText } from './hash.js';
 import { ParserRegistry } from './parsers.js';
 import {
     CHUNK_INDEX_FIELD,
@@ -345,21 +346,8 @@ export class InMemoryIngestManifest implements IngestManifest {
     get size(): number { return this._entries.size; }
 }
 
-/**
- * FNV-1a, 32-bit, rendered as hex.
- *
- * A content hash here answers "did this chunk change", not "was this chunk
- * tampered with", so a fast non-cryptographic hash is the right tool — and it is
- * synchronous, unlike WebCrypto, which keeps chunking a pure function.
- */
-export function hashText(text: string): string {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) {
-        hash ^= text.charCodeAt(i);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash.toString(16).padStart(8, '0');
-}
+// hashText moved to ./hash.ts (shared with the knowledge graph); re-exported for callers.
+export { hashText } from './hash.js';
 
 /** Bounded-concurrency map — the reason a large corpus does not become a 429. */
 export async function mapWithConcurrency<T>(
