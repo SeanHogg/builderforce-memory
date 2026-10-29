@@ -4,7 +4,8 @@
  * `planReview` and `reviewDirectory`, so the plan's numbers and the run agree.
  */
 
-import { ParserRegistry } from '../ingest/parsers.js';
+import { htmlParser, markdownParser, ParserRegistry, plainTextParser } from '../ingest/parsers.js';
+import { isBinaryDocumentType, mediaTypeOf } from '../ingest/parserSupport.js';
 import { CONTENT_HASH_FIELD, type ChunkFingerprint, type IngestManifest, type SourceDocument } from '../ingest/types.js';
 import type { KnowledgePack, KnowledgeParser } from './model.js';
 import { matchGlob } from './partitions.js';
@@ -14,9 +15,9 @@ import { compareStr, walkRelative } from './refs.js';
 export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 /**
  * Version of the extractors' output. Bump it whenever an extractor emits different nodes,
- * edges or keys for the same text: cached `Extracted` of another version is ignored, and the
- * files manifest is keyed by it, so every file is re-extracted exactly once after an upgrade
- * (judged sections with unchanged text are re-anchored, not judged again).
+ * edges or keys for the same text: cached `Extracted` of another version is ignored, and a
+ * review that finds a different version in {@link extractorManifestKey} re-extracts every file
+ * exactly once (judged sections with unchanged text are re-anchored, not judged again).
  */
 export const EXTRACTOR_VERSION = 1;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
@@ -70,8 +71,9 @@ export function isDocumentPath(path: string): boolean {
 
 /**
  * The pack whose parser claims a pdf/office file's media type — a host-registered
- * extractor, wherever its pack sits: the builtin text parsers refuse binary document types
- * ({@link isBinaryDocumentType}), so without a host parser nothing claims it and it stays binary.
+ * extractor, wherever its pack sits: {@link composePacks} makes the builtin text parsers
+ * refuse binary document types ({@link isBinaryDocumentType}), so without a host parser
+ * nothing claims it and it stays binary.
  */
 export function resolveDocument(composed: ComposedPacks, path: string): ReturnType<ComposedPacks['resolve']> {
     return composed.resolve(stubSource(path));
@@ -101,9 +103,28 @@ export interface ComposedPacks {
     resolve(source: SourceDocument): { parser: KnowledgeParser; pack: KnowledgePack } | undefined;
 }
 
+/** The builtin text parsers, which would otherwise claim an office file's XML/plain-text media type. */
+const BUILTIN_TEXT_PARSERS: ReadonlySet<KnowledgeParser> = new Set<KnowledgeParser>([markdownParser, htmlParser, plainTextParser]);
+
+/**
+ * Within knowledge composition the builtin docs parsers do not accept binary document media
+ * types; a host-registered parser (any pack, any order) is untouched. The ingest pipeline
+ * keeps the builtins as they are.
+ */
+const guardBuiltin = (p: KnowledgeParser): KnowledgeParser =>
+    BUILTIN_TEXT_PARSERS.has(p) ? { ...p, accepts: (s) => !isBinaryDocumentType(mediaTypeOf(s)) && p.accepts(s) } : p;
+
 export function composePacks(packs: readonly KnowledgePack[]): ComposedPacks {
     const owner = new Map<KnowledgeParser, KnowledgePack>();
-    for (const pack of packs) for (const p of pack.parsers) if (!owner.has(p)) owner.set(p, pack);
+    const guarded = new Map<KnowledgeParser, KnowledgeParser>();
+    for (const pack of packs) {
+        for (const p of pack.parsers) {
+            if (guarded.has(p)) continue;
+            const g = guardBuiltin(p);
+            guarded.set(p, g);
+            owner.set(g, pack);
+        }
+    }
     const registry = new ParserRegistry([...owner.keys()]);
     return {
         registry,
@@ -172,8 +193,10 @@ export function ignoreSourcesOf(paths: readonly string[]): Array<{ path: string;
     return builderforce ? [...git, { path: '.builderforce/ignore', base: '' }] : git;
 }
 
-/** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root (per extractor version). */
-export const filesManifestKey = (rootId: string): string => `knowledge:${rootId}:files:v${EXTRACTOR_VERSION}`;
+/** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root. */
+export const filesManifestKey = (rootId: string): string => `knowledge:${rootId}`;
+/** Manifest entry holding `{ id: 'version', hash: String(EXTRACTOR_VERSION) }`: the extractor version the files were last reviewed with. */
+export const extractorManifestKey = (rootId: string): string => `knowledge:${rootId}:extractor`;
 /** Manifest entry holding `{ id: sectionRef, hash: textHash }` for every judged section. */
 export const judgedManifestKey = (rootId: string): string => `knowledge:${rootId}:judged`;
 /** Manifest entry holding `{ id: claimRef, hash: fileHash }` for every claim still awaiting comparison. */
@@ -182,6 +205,16 @@ export const compareManifestKey = (rootId: string): string => `knowledge:${rootI
 export async function manifestMap(manifest: IngestManifest, key: string): Promise<Map<string, string>> {
     const prior: ChunkFingerprint[] = (await manifest.get(key)) ?? [];
     return new Map(prior.map((f) => [f.id, f.hash] as const));
+}
+
+/** The extractor version a root was last fully reviewed with; undefined when never recorded (a pre-versioning manifest). */
+export async function storedExtractorVersion(manifest: IngestManifest, rootId: string): Promise<number | undefined> {
+    const v = Number((await manifestMap(manifest, extractorManifestKey(rootId))).get('version'));
+    return Number.isFinite(v) ? v : undefined;
+}
+
+export async function saveExtractorVersion(manifest: IngestManifest, rootId: string): Promise<void> {
+    await manifest.set(extractorManifestKey(rootId), [{ id: 'version', hash: String(EXTRACTOR_VERSION) }]);
 }
 
 export async function saveManifestMap(manifest: IngestManifest, key: string, map: ReadonlyMap<string, string>): Promise<void> {

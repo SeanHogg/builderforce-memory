@@ -5,10 +5,13 @@
  *   plan (walk + manifest diff) → per changed file: read · parse (the ONE ParserRegistry,
  *   composed from the packs) · extract (cached by content hash) · judge (changed sections
  *   of judged kinds, within budget) · write · markStale → analyzers → compare near-duplicate
- *   claims → manifest + scope digest.
+ *   claims → manifest + scope digest. Claims whose compare pairs were skipped wait in the
+ *   compare manifest for *Continue*.
  *
  * Store judgement, compute perception: only `model` facts and relations are written —
  * `extracted` output goes to the extracted cache, never to memory ({@link assertStoredBatch}).
+ * A file whose read throws is skipped, never retired: its knowledge and manifest hash stay
+ * as they were (`readErrors`); only a file the fresh plan no longer lists is removed.
  * Abort is honoured between files and inside judgement; a file is written whole or not at
  * all. A file whose sections were cut by the budget stays "changed" in the manifest, so
  * *Continue* (the confirmed plan passed back as `args.plan`, no re-walk) judges only the
@@ -16,103 +19,24 @@
  */
 
 import { hashText } from '../ingest/hash.js';
+import type { SourceDocument } from '../ingest/types.js';
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
-import type {
-    ExtractContext, Extracted, KnowledgeParser, KnowledgeStore, NodeRef, ReviewArgs, ReviewReport, ScopeRecord,
-    StoredFact, StoredRelation,
-} from './model.js';
-import type { SourceDocument, ParsedSection } from '../ingest/types.js';
+import type { NodeRef, ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
 import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
 import { planDetail, refreshPlan } from './plan.js';
 import {
-    asPathSource, composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, resolveRelativePath,
-    saveManifestMap,
+    composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, saveExtractorVersion, saveManifestMap,
 } from './sources.js';
-import {
-    compareClaims, DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type JudgeBudget,
-} from './judge.js';
-import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
-import { basenameOf, canonicalJson, compareStr, factKeyOf, srcRef } from './refs.js';
+import { extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
+import { DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type CompareOutcome, type JudgeBudget } from './judge.js';
+import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
+import { factsWithoutAnchor, StoredIndex } from './reviewStored.js';
+import { canonicalJson, compareStr, srcRef } from './refs.js';
 
 /** Throws if a batch carries `extracted` items — perception is never memory. */
 export function assertStoredBatch(batch: { facts: readonly StoredFact[]; relations: readonly StoredRelation[] }): void {
     const bad = [...batch.facts, ...batch.relations].find((x) => (x.origin as string) === 'extracted');
     if (bad) throw new Error('knowledge: extracted output is never written to a KnowledgeStore');
-}
-
-async function extractedFor(
-    store: KnowledgeStore, parser: KnowledgeParser, pack: string, src: SourceDocument, sections: ParsedSection[],
-    ctx: ExtractContext, hash: string,
-): Promise<Extracted> {
-    const ref = srcRef(ctx.rootId, src.id);
-    const cached = await store.getExtracted?.(hash);
-    const hit = cached?.find((e) => e.sourceRef === ref);
-    if (hit) return hit;
-    const ex: Extracted = parser.extract
-        ? { ...parser.extract(src, sections, ctx), sourceHash: hash }
-        : {
-            sourceRef: ref, sourceHash: hash, edges: [], keys: [{ ref, key: src.id }],
-            nodes: [{ ref, kind: 'file', label: basenameOf(src.id), pack, importance: 0, origin: 'extracted', sourceHash: hash }],
-        };
-    await store.putExtracted?.(hash, [...(cached ?? []).filter((e) => e.sourceRef !== ref), ex]);
-    return ex;
-}
-
-/** Stored knowledge, indexed for re-anchoring unchanged sections without a model call. */
-class StoredIndex {
-    readonly facts: Map<string, StoredFact>;
-    private readonly from = new Map<string, StoredRelation[]>();
-    private readonly to = new Map<string, StoredRelation[]>();
-
-    constructor(facts: StoredFact[], relations: StoredRelation[]) {
-        this.facts = new Map(facts.map((f) => [f.key, f] as const));
-        for (const r of relations) {
-            if (r.origin !== 'model') continue;
-            (this.from.get(r.from) ?? this.from.set(r.from, []).get(r.from)!).push(r);
-            (this.to.get(r.to) ?? this.to.set(r.to, []).get(r.to)!).push(r);
-        }
-    }
-
-    /** An unchanged section keeps its claims and mentions; they are re-anchored to the file's new hash. */
-    refresh(section: NodeRef, path: string, hash: string, batch: JudgedBatch, entities: Map<string, StoredFact>): void {
-        const reanchor = (f: StoredFact): StoredFact => ({
-            ...f, fileAnchors: f.fileAnchors.map((a) => (a.path === path ? { ...a, contentHash: hash } : a)),
-        });
-        const relation = (r: StoredRelation) => batch.relation({ ...r, sourceHash: hash, staleAt: null });
-        for (const r of this.to.get(section) ?? []) {
-            if (r.kind !== 'about') continue;
-            relation(r);
-            const key = factKeyOf(r.from);
-            const fact = key && (batch.facts.get(key) ?? this.facts.get(key));
-            if (fact && fact.origin === 'model') batch.fact(reanchor(fact));
-            for (const m of this.from.get(r.from) ?? []) if (m.kind === 'mentions') relation(m);
-        }
-        for (const r of this.from.get(section) ?? []) {
-            if (r.kind !== 'mentions') continue;
-            relation(r);
-            const ent = entities.get(r.to);
-            if (ent && ent.origin === 'model') {
-                const next = reanchor(ent);
-                entities.set(r.to, next);
-                batch.fact(next);
-            }
-        }
-    }
-}
-
-/**
- * `[[Name]]` → the one listed file named `Name` (or `Name.md`), case-insensitively, anywhere
- * in the root. Ambiguous names resolve to none, so the link falls back to the linking folder.
- */
-export function nameResolver(paths: readonly string[]): (name: string) => string | undefined {
-    const byName = new Map<string, string | null>();
-    for (const p of [...paths].sort(compareStr)) {
-        const base = basenameOf(p).toLowerCase();
-        for (const key of new Set([base, base.replace(/\.md$/, '')])) {
-            byName.set(key, byName.has(key) && byName.get(key) !== p ? null : p);
-        }
-    }
-    return (name) => byName.get(name.trim().toLowerCase()) ?? undefined;
 }
 
 export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
@@ -124,10 +48,12 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     const progress = (p: Parameters<NonNullable<ReviewArgs['onProgress']>>[0]) => args.onProgress?.(p);
     const report: ReviewReport = {
         rootId, digest: '', extracted: 0, judged: 0, unjudged: 0, invalidJudgements: 0,
-        factsWritten: 0, relationsWritten: 0, staleMarked: 0, aborted: false, durationMs: 0,
+        factsWritten: 0, relationsWritten: 0, staleMarked: 0, readErrors: 0, aborted: false, durationMs: 0,
     };
 
-    const detail = args.plan ? await refreshPlan(args.plan, manifest) : await planDetail(source, manifest, packs);
+    const detail = args.plan
+        ? await refreshPlan(args.plan, manifest)
+        : await planDetail(source, manifest, packs, args.force ? { force: true } : {});
     progress({ phase: 'plan', done: detail.files.length, total: detail.files.length });
     const composed = composePacks(packs);
     const packIds = packs.map((p) => p.id).sort(compareStr);
@@ -135,12 +61,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     const [storedFacts, storedRelations] = await Promise.all([store.facts(scope), store.relations(scope)]);
     const stored = new StoredIndex(storedFacts, storedRelations);
     const entities = new Map(storedFacts.filter((f) => f.key.startsWith('ent:')).map((f) => [f.key, f] as const));
-    const ctx: ExtractContext = {
-        rootId,
-        knownKeys: knownKeysOf(resolveEntities([...entities.keys()].map((k) => ({ ref: k as NodeRef, key: entityName(k) })))),
-        resolvePath: resolveRelativePath,
-        resolveName: nameResolver(detail.files.map((f) => f.path)),
-    };
+    const knownKeys = knownKeysOfEntities(entities.keys());
     const budget: JudgeBudget = {
         modelCalls: args.budget?.modelCalls ?? DEFAULT_REVIEW_MODEL_CALLS,
         deadline: started + (Number.isFinite(args.budget?.ms) ? args.budget.ms : Number.POSITIVE_INFINITY),
@@ -150,7 +71,8 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     const judgedPrior = await manifestMap(manifest, judgedManifestKey(rootId));
     const judgedNow = new Map(judgedPrior);
     const filesNow = new Map(detail.prior);
-    const newClaims = new Map<string, { text: string; hash: string }>();
+    // Claims awaiting comparison: those a previous run could not compare, then this run's.
+    const newClaims = await pendingClaims(manifest, rootId, stored.facts);
 
     const write = async (withScope: ScopeRecord = scopeRecord) => {
         const out = batch.take();
@@ -161,21 +83,51 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         report.relationsWritten += out.relations.length;
     };
 
+    // A source that is gone: its knowledge goes stale at no hash, its judged sections are forgotten, and
+    // facts other sources still back drop its anchor. `rewritten` is the run's one record of such facts,
+    // so a later retire() never restores an anchor an earlier one dropped.
+    const rewritten = new Map<string, StoredFact>();
+    const retire = async (paths: readonly string[]) => {
+        const live = new Map([...stored.facts, ...entities, ...rewritten]);
+        for (const path of paths) {
+            await store.markStale(scope, srcRef(rootId, path), '');
+            report.staleMarked += 1;
+            filesNow.delete(path);
+            const sectionPrefix = `${srcRef(rootId, path)}#`;
+            for (const section of [...judgedNow.keys()]) if (section.startsWith(sectionPrefix)) judgedNow.delete(section);
+            for (const fact of factsWithoutAnchor(live.values(), path)) {
+                batch.fact(fact);
+                live.set(fact.key, fact);
+                rewritten.set(fact.key, fact);
+                if (entities.has(fact.key)) entities.set(fact.key, fact);
+            }
+        }
+        await write();
+    };
+
     const changed = detail.files.filter((f) => f.changed);
     for (const [i, f] of changed.entries()) {
         if (signal?.aborted) { report.aborted = true; break; }
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
-        const doc = await source.read(f.path);
+        // A read that throws (permissions, a lock, a race with a delete) says nothing about the file:
+        // skipped with its knowledge and manifest hash intact, tried again next review.
+        let doc: SourceDocument;
+        try { doc = await source.read(f.path); } catch { report.readErrors += 1; continue; }
         // Recorded, so a file found binary on read is not re-read by every later review.
-        if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) { filesNow.set(f.path, f.hash); continue; }
-        const src = asPathSource(doc, f.path, f.hash);
-        const hit = composed.resolve(src);
-        if (!hit) continue;
-        const sections = hit.parser.parse(src);
-        const ex = await extractedFor(store, hit.parser, hit.pack.id, src, sections, ctx, f.hash);
+        if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) {
+            filesNow.set(f.path, f.hash);
+            await store.markStale(scope, srcRef(rootId, f.path), f.hash);
+            report.staleMarked += 1;
+            continue;
+        }
+        const extraction = await extractFileDetailed({
+            rootId, path: f.path, hash: f.hash, doc, packs, store, composed, knownKeys,
+        });
+        if (!extraction) continue;
+        const { extracted: ex, sections, pack } = extraction;
         report.extracted += 1;
 
-        const spec = hit.pack.judgement;
+        const spec = pack.judgement;
         let complete = true;
         if (spec && args.judgement && (spec.claims || spec.entities)) {
             const kinds = new Set(spec.nodeKinds);
@@ -194,7 +146,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
             progress({ phase: 'judge', done: i, total: changed.length, path: f.path });
             try {
                 const claims = await judgeSections({
-                    port: args.judgement, pack: hit.pack.id, path: f.path, fileHash: f.hash, sections: toJudge,
+                    port: args.judgement, pack: pack.id, path: f.path, fileHash: f.hash, sections: toJudge,
                     budget, batch, entities, ...(signal ? { signal } : {}),
                     onJudged: (ref) => judgedHere.set(ref, hashText(toJudge.find((s) => s.ref === ref)!.text)),
                 });
@@ -216,11 +168,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     }
 
     if (!report.aborted) {
-        for (const path of detail.plan.removed) {
-            await store.markStale(scope, srcRef(rootId, path), '');
-            report.staleMarked += 1;
-            filesNow.delete(path);
-        }
+        await retire(detail.plan.removed);
         for (const pack of packs) {
             if (!pack.analyzers) continue;
             for (const ex of await pack.analyzers.analyse(rootId, signal)) {
@@ -229,23 +177,20 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
             }
         }
         progress({ phase: 'resolve', done: 0, total: newClaims.size });
-        const wantsCompare = packs.some((p) => p.judgement?.contradictions);
-        // Run even with the budget spent: compareClaims counts every pair it skips as unjudged.
-        if (wantsCompare && args.judgement && args.similar && newClaims.size > 0) {
-            const pairs = await args.similar([...newClaims.keys()].sort(compareStr));
-            const claims = new Map(newClaims);
-            for (const p of pairs) {
-                for (const id of [p.a, p.b]) {
-                    const fact = !claims.has(id) ? stored.facts.get(factKeyOf(id as NodeRef) ?? '') : undefined;
-                    if (fact?.key.startsWith('claim:')) claims.set(id, { text: fact.content, hash: fact.fileAnchors[0]?.contentHash ?? '' });
-                }
-            }
-            progress({ phase: 'judge', done: 0, total: pairs.length });
-            await compareClaims({ port: args.judgement, pairs, claims, budget, batch, ...(signal ? { signal } : {}) })
-                .catch((err: unknown) => { if (!signal?.aborted) throw err; });
-            if (signal?.aborted) report.aborted = true;
-        }
     }
+
+    // The compare phase needs a pack asking for it AND both ports; without them nothing waits for it.
+    const canCompare = packs.some((p) => p.judgement?.contradictions) && !!args.judgement && !!args.similar;
+    let outcome: CompareOutcome | undefined;
+    if (!report.aborted && canCompare) {
+        outcome = await compareNew({
+            args, pending: newClaims, known: stored.facts, budget, batch,
+            onPairs: (total) => progress({ phase: 'judge', done: 0, total }),
+        });
+        // Aborted only if the abort landed before the last pair was compared.
+        if (outcome?.aborted) report.aborted = true;
+    }
+    await saveAwaiting(manifest, rootId, newClaims, outcome, canCompare);
 
     report.judged = batch.judged;
     report.unjudged = batch.unjudged;
@@ -253,6 +198,8 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     report.digest = sha256Hex(canonicalJson({ rootId, packs: packIds, files: [...filesNow].sort((a, b) => compareStr(a[0], b[0])) }));
     await saveManifestMap(manifest, filesManifestKey(rootId), filesNow);
     await saveManifestMap(manifest, judgedManifestKey(rootId), judgedNow);
+    // Recorded only once every changed file was handled: an abort or a skipped read leaves the next review to redo them.
+    if (!report.aborted && report.readErrors === 0) await saveExtractorVersion(manifest, rootId);
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
     progress({ phase: 'done', done: changed.length, total: changed.length });

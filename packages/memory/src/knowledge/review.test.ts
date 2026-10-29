@@ -8,29 +8,16 @@
 
 import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
 import { hashText } from '../ingest/hash.js';
-import { buildGraph } from './build.js';
-import type { Extracted, JudgementRequest, KnowledgeStore, ReviewArgs, StoredFact, StoredRelation } from './model.js';
+import type { JudgementRequest, KnowledgeStore, ReviewArgs, StoredFact, StoredRelation } from './model.js';
 import { DOCS_PACK } from './packs/docs.js';
 import { planReview } from './plan.js';
 import { assertStoredBatch, reviewDirectory } from './review.js';
-import { fakeJudge, memSource, memStore, ROOT, type SpySource } from './testkit.test-util.js';
+import { fakeJudge, graphOf, memSource, memStore, ROOT, type SpySource } from './testkit.test-util.js';
 
 const BUDGET = { modelCalls: 200, ms: 60_000 };
 
 function args(source: SpySource, store: KnowledgeStore, manifest: InMemoryIngestManifest, extra: Partial<ReviewArgs> = {}): ReviewArgs {
     return { source, store, manifest, packs: [DOCS_PACK], budget: BUDGET, ...extra };
-}
-
-async function graphOf(source: SpySource, store: KnowledgeStore) {
-    const extracted: Extracted[] = [];
-    for await (const f of source.list()) {
-        const hit = (await store.getExtracted!(f.hash))?.find((e) => e.sourceRef === `src:${ROOT}::${f.path}`);
-        if (hit) extracted.push(hit);
-    }
-    return buildGraph({
-        rootId: ROOT, extracted, packs: [DOCS_PACK],
-        facts: await store.facts({ rootId: ROOT }), relations: await store.relations({ rootId: ROOT }),
-    });
 }
 
 const anchoredTo = (facts: StoredFact[], path: string) => facts.filter((f) => f.fileAnchors.some((a) => a.path === path));

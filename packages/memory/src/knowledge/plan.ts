@@ -11,8 +11,8 @@
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
 import {
-    composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
-    isDocumentPath, manifestMap, resolveDocument, stubSource,
+    composePacks, DEFAULT_MAX_FILE_BYTES, EXTRACTOR_VERSION, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
+    isDocumentPath, manifestMap, resolveDocument, storedExtractorVersion, stubSource,
 } from './sources.js';
 import { compareStr, sortBy } from './refs.js';
 
@@ -24,6 +24,14 @@ const SECTIONS_PER_COMPARE = 10;
 export interface PlanOptions {
     /** Per-file size cap in bytes. Default 2 MB. */
     maxFileBytes?: number;
+    /**
+     * *Re-review all*: every file is `changed`, whatever its hash — but `removed` still comes
+     * from the real prior manifest, and the estimate still counts only files whose content
+     * changed (sections whose text was judged before are re-anchored, not judged again).
+     * A forced run cut short is forced again, not continued: *Continue* re-derives what is
+     * left from content hashes.
+     */
+    force?: boolean;
 }
 
 export interface PlannedFile {
@@ -70,6 +78,9 @@ export async function planDetail(
     const ignored = ignoreMatcher(ignoreTexts);
     const composed = composePacks(packs);
     const prior = await manifestMap(manifest, filesManifestKey(source.rootId));
+    // Another extractor version than the one that reviewed these files: all are re-extracted
+    // once, but `prior` stays the real manifest (removals) and the estimate counts content changes only.
+    const everything = opts.force === true || (await storedExtractorVersion(manifest, source.rootId)) !== EXTRACTOR_VERSION;
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
@@ -84,11 +95,12 @@ export async function planDetail(
         if (e.size > maxBytes) { skipped.push({ path: e.path, reason: 'too-large' }); continue; }
         const hit = document ?? composed.resolve(stubSource(e.path));
         if (!hit) { skipped.push({ path: e.path, reason: 'no-pack' }); continue; }
-        const changed = prior.get(e.path) !== e.hash;
+        const contentChanged = prior.get(e.path) !== e.hash;
+        const changed = everything || contentChanged;
         files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed });
         byPack[hit.pack.id] = (byPack[hit.pack.id] ?? 0) + 1;
         const spec = packById.get(hit.pack.id)?.judgement;
-        if (changed && spec && (spec.claims || spec.entities)) {
+        if (contentChanged && spec && (spec.claims || spec.entities)) {
             const sections = Math.max(1, Math.ceil(e.size / AVG_SECTION_BYTES));
             estimatedSections += sections;
             if (spec.contradictions) compareSections += sections;
@@ -117,11 +129,14 @@ export async function planDetail(
 
 /**
  * *Continue*: the confirmed plan without a re-walk. Only `changed` is re-read — against the
- * manifest as the last run left it — so files finished since are not reviewed again.
+ * manifest as the last run left it — so files finished since are not reviewed again. (While
+ * the stored extractor version is not today's, every file still counts as changed.)
  */
 export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
     const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
-    const files = detail.files.map((f) => ({ ...f, changed: prior.get(f.path) !== f.hash }));
+    // The version entry is written only by a run that finished, so an upgrade cut short stays "everything".
+    const everything = (await storedExtractorVersion(manifest, detail.plan.rootId)) !== EXTRACTOR_VERSION;
+    const files = detail.files.map((f) => ({ ...f, changed: everything || prior.get(f.path) !== f.hash }));
     const changed = files.filter((f) => f.changed).map((f) => f.path);
     const removed = detail.plan.removed.filter((p) => prior.has(p));
     return {

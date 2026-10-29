@@ -10,10 +10,11 @@
  *     links (beside the linking file, marked `byName` so `buildGraph` can re-point them to
  *     the one file of that name anywhere in the root) and HTML hrefs, resolved through
  *     `ctx.resolvePath`. A missing target stays an edge, so the graph can report it broken —
- *     as does one outside the root, under a normalized `../…` path; a link to the root
- *     itself is no link;
- *   • text before the first markdown heading (or a file with none) is a `section` too, so
- *     it is judged and carded like any other;
+ *     as does one outside the root, under a normalized `../…` path; a target written as
+ *     directory navigation (`.`, `./`, `..`, `/`, anything ending in `/`) is no file link;
+ *   • text before the first markdown heading (or a file with none) is a `section` too, under
+ *     the reserved ref `#~preamble` (no heading slug can equal it), so it is judged and
+ *     carded like any other;
  *   • `mentions` edges where a section's normalized text contains a known entity key;
  *   • keys: path, basename, heading slugs and front-matter values.
  *
@@ -29,6 +30,8 @@ import { CONTENT_HASH_FIELD, type ParsedSection, type SourceDocument } from './t
 export const DOCS_PACK_ID = 'docs';
 /** Badge: index of the section in the parser's output. */
 export const SECTION_INDEX_BADGE = 'section';
+/** The ref slug of text before a markdown file's first heading. */
+const PREAMBLE_SLUG = '~preamble';
 const EXCERPT_CHARS = 400;
 const BREADCRUMB_SEPARATOR = ' › ';
 
@@ -84,6 +87,8 @@ class ExtractBuilder {
         if (!clean || /^[a-z][a-z0-9+.-]*:/i.test(clean)) return;
         let decoded = clean;
         try { decoded = decodeURI(clean); } catch { /* keep the raw target */ }
+        // Written as directory navigation (`.`, `./`, `..`, `/`, `docs/`): a folder, not a file link.
+        if (/^[./\\]*$/.test(decoded) || /[/\\]$/.test(decoded)) return;
         const { ups, segments } = walkRelative(this.path, decoded);
         if (segments.length === 0) return;
         // Outside the root: kept as a broken link under its normalized root-relative path, so
@@ -113,9 +118,13 @@ class ExtractBuilder {
         }
     }
 
-    /** A whole-body `section` (HTML, plain text): judged like a markdown section. */
-    bodySection(index: number, text: string): NodeRef {
-        const ref: NodeRef = `${this.fileRef}#${index === 0 ? 'body' : `body-${index + 1}`}`;
+    /**
+     * A whole-body `section` (HTML, plain text): judged like a markdown section. `reserved`
+     * (a markdown preamble) uses a ref no heading slug can equal — `slugOf` never yields `~` —
+     * so a top-level `# Body` heading keeps `#body`.
+     */
+    bodySection(index: number, text: string, reserved = false): NodeRef {
+        const ref: NodeRef = `${this.fileRef}#${reserved ? PREAMBLE_SLUG : index === 0 ? 'body' : `body-${index + 1}`}`;
         this.node(ref, 'section', basenameOf(this.path), { [SECTION_INDEX_BADGE]: index, excerpt: excerpt(text) });
         this.edge(this.fileRef, ref, 'contains');
         return ref;
@@ -223,7 +232,7 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
             // Text before the first heading (or a file with none) is judged like a section;
             // a preamble that is only front matter is the file's, not a section.
             const body = section.text.replace(FRONT_MATTER, '').trim();
-            from = body ? b.bodySection(index, body) : b.fileRef;
+            from = body ? b.bodySection(index, body, true) : b.fileRef;
         }
         for (const m of section.text.matchAll(MD_LINK)) {
             if (!m[1]!.startsWith('#')) b.link(from, m[1]!);

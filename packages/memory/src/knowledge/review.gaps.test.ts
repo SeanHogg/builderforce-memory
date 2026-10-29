@@ -14,7 +14,7 @@ import { buildGraph } from './build.js';
 import type { ExtractContext, KnowledgePack, KnowledgeParser, NodeRef, ReviewArgs, StoredFact } from './model.js';
 import { DOCS_PACK } from './packs/docs.js';
 import { planDetail, planReview } from './plan.js';
-import { nameResolver, reviewDirectory } from './review.js';
+import { reviewDirectory } from './review.js';
 import { asPathSource, resolveRelativePath } from './sources.js';
 import { extractedOf, fakeJudge, fileNode, memSource, memStore, ref, ROOT, type SpySource } from './testkit.test-util.js';
 
@@ -62,9 +62,16 @@ describe('reviewDirectory — audit follow-ups', () => {
         let walks = 0;
         const list = source.list.bind(source);
         source.list = () => { walks += 1; return list(); };
-        const report = await reviewDirectory(args(source, memStore(), manifest, { plan: detail }));
+        const store = memStore();
+        const report = await reviewDirectory(args(source, store, manifest, { plan: detail }));
         expect(walks).toBe(0);
         expect(report.extracted).toBe(2);
+
+        // Run again with the same plan: what the first run finished is not reviewed (or read) again.
+        source.reads.length = 0;
+        const again = await reviewDirectory(args(source, store, manifest, { plan: detail }));
+        expect(again.extracted).toBe(0);
+        expect(source.reads).toEqual([]);
     });
 
     it('counts compare pairs skipped for budget as unjudged', async () => {
@@ -119,7 +126,7 @@ describe('buildGraph — stale knowledge', () => {
             relations: [{ from: ref('a.md'), to: ref('b.md'), kind: 'agrees', weight: 1, origin: 'model', staleAt: '2026-10-28' }],
         });
         expect(g.edges.find((e) => e.kind === 'agrees')?.stale).toBe(true);
-        expect(g.stats.stale).toBe(1);
+        expect(g.stats.stale).toBe(0); // stale NODES only; the edge carries its own flag
     });
 
     it('reports a contradiction naming both sections', () => {
@@ -139,29 +146,22 @@ describe('buildGraph — stale knowledge', () => {
 });
 
 describe('docs extract — links and sections', () => {
-    const ctxWith = (paths: string[]): ExtractContext => ({
-        rootId: ROOT, knownKeys: new Map(), resolvePath: resolveRelativePath, resolveName: nameResolver(paths),
-    });
-    const extract = (path: string, text: string, ctx: ExtractContext) => {
+    const ctx: ExtractContext = { rootId: ROOT, knownKeys: new Map(), resolvePath: resolveRelativePath };
+    const extract = (path: string, text: string) => {
         const src: SourceDocument = asPathSource({ id: path, tenantId: 't', content: { kind: 'text', text } }, path, `h:${path}`);
         return markdownParser.extract!(src, markdownParser.parse(src), ctx);
     };
     const links = (ex: ReturnType<typeof extract>) => ex.edges.filter((e) => e.kind === 'links').map((e) => e.to as NodeRef);
 
-    it('resolves [[Name]] by file name anywhere in the root', () => {
-        const ex = extract('a/one.md', '# One\nSee [[Two]].\n', ctxWith(['a/one.md', 'b/Two.md']));
-        expect(links(ex)).toEqual([ref('b/Two.md')]);
-    });
-
     it('extracts reference-style links and keeps out-of-root targets as broken', () => {
-        const ex = extract('one.md', '# One\nSee [the guide][g] and [up](../outside.md).\n\n[g]: docs/guide.md\n', ctxWith([]));
+        const ex = extract('one.md', '# One\nSee [the guide][g] and [up](../outside.md).\n\n[g]: docs/guide.md\n');
         expect(links(ex).sort()).toEqual([ref('../outside.md'), ref('docs/guide.md')].sort());
     });
 
     it('makes text before the first heading a section, but not front matter alone', () => {
-        const pre = extract('p.md', 'Intro before any heading.\n# H\nbody\n', ctxWith([]));
-        expect(pre.nodes.some((n) => n.ref === `${ref('p.md')}#body`)).toBe(true);
-        const fm = extract('f.md', '---\ntitle: T\n---\n# H\nbody\n', ctxWith([]));
+        const pre = extract('p.md', 'Intro before any heading.\n# H\nbody\n');
+        expect(pre.nodes.some((n) => n.ref === `${ref('p.md')}#~preamble`)).toBe(true);
+        const fm = extract('f.md', '---\ntitle: T\n---\n# H\nbody\n');
         expect(fm.nodes.some((n) => n.ref.endsWith('#body'))).toBe(false);
     });
 });

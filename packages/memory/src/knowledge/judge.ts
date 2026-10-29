@@ -23,8 +23,29 @@ export const DEFAULT_REVIEW_MODEL_CALLS = 200;
 export const REVIEW_FACT_SOURCE = 'knowledge-review';
 const MAX_TERM = 200;
 const MAX_NAME = 120;
-const MAX_QUOTE_CHARS = 300;
-const MAX_QUOTE_LINES = 3;
+/** A stored claim quotes at most this many characters and lines of its source (privacy: never a document). */
+export const MAX_QUOTE_CHARS = 300;
+export const MAX_QUOTE_LINES = 3;
+
+/** A quote as it may be stored: at most {@link MAX_QUOTE_LINES} lines and {@link MAX_QUOTE_CHARS} characters, trimmed. */
+export function clampQuote(text: string): string {
+    return text.split(/\r?\n/).slice(0, MAX_QUOTE_LINES).join('\n').trim().slice(0, MAX_QUOTE_CHARS);
+}
+
+const QUOTE_SEPARATOR = ' — “';
+
+/** A claim's stored `content`: its text, then its quote when it has one. */
+export const claimContent = (text: string, quote: string): string => (quote ? `${text}${QUOTE_SEPARATOR}${quote}”` : text);
+
+/**
+ * The text a claim is compared by: `subject predicate object`, the form a first run hands the
+ * model — a stored claim's `content` without its quote. Both phases use it, so a claim reads
+ * the same whether it was judged this run or left awaiting by an earlier one.
+ */
+export function claimTextOf(content: string): string {
+    const i = content.indexOf(QUOTE_SEPARATOR);
+    return i < 0 ? content : content.slice(0, i);
+}
 
 export interface JudgeBudget {
     modelCalls: number;
@@ -70,7 +91,7 @@ function validClaim(c: unknown): JudgedClaim | undefined {
     const o = c as Record<string, unknown>;
     const subject = str(o['subject'], MAX_TERM), predicate = str(o['predicate'], MAX_TERM), object = str(o['object'], MAX_TERM);
     if (!subject || !predicate || !object || typeof o['quote'] !== 'string') return undefined;
-    const quote = (o['quote'] as string).split(/\r?\n/).slice(0, MAX_QUOTE_LINES).join('\n').trim().slice(0, MAX_QUOTE_CHARS);
+    const quote = clampQuote(o['quote'] as string);
     return { subject, predicate, object, quote };
 }
 
@@ -179,7 +200,7 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
             const key = `claim:${hashText([section.ref, c.subject, c.predicate, c.object].join('\u0000'))}`;
             const text = `${c.subject} ${c.predicate} ${c.object}`;
             a.batch.fact({
-                key, content: c.quote ? `${text} — “${c.quote}”` : text, source: REVIEW_FACT_SOURCE,
+                key, content: claimContent(text, c.quote), source: REVIEW_FACT_SOURCE,
                 importance: 0.5, origin: 'model', fileAnchors: [anchor],
             });
             const ref = factRef(key);

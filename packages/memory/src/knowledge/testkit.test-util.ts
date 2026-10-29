@@ -4,9 +4,11 @@
  */
 
 import { hashText } from '../ingest/hash.js';
+import { buildGraph } from './build.js';
 import type {
-    DirectorySource, Extracted, JudgementPort, JudgementRequest, JudgementResult, KEdge, KNode, NodeRef,
+    DirectorySource, Extracted, JudgementPort, JudgementRequest, JudgementResult, KEdge, KNode, KnowledgeStore, NodeRef,
 } from './model.js';
+import { DOCS_PACK } from './packs/docs.js';
 import { LocalSnapshotStore, type SnapshotPersistence } from './stores/localSnapshotStore.js';
 import { srcRef } from './refs.js';
 
@@ -90,3 +92,16 @@ export function extractedOf(node: KNode, edges: KEdge[] = []): Extracted {
 }
 
 export const ref = (path: string): NodeRef => srcRef(ROOT, path);
+
+/** The graph of a reviewed source: its files' cached extracts joined with what the store holds. */
+export async function graphOf(source: SpySource, store: KnowledgeStore) {
+    const extracted: Extracted[] = [];
+    for await (const f of source.list()) {
+        const hit = (await store.getExtracted!(f.hash))?.find((e) => e.sourceRef === srcRef(ROOT, f.path));
+        if (hit) extracted.push(hit);
+    }
+    return buildGraph({
+        rootId: ROOT, extracted, packs: [DOCS_PACK],
+        facts: await store.facts({ rootId: ROOT }), relations: await store.relations({ rootId: ROOT }),
+    });
+}

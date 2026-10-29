@@ -47,6 +47,12 @@ export interface ReviewReport {
     factsWritten: number;
     relationsWritten: number;
     staleMarked: number;
+    /**
+     * Files whose read threw: skipped, not retired — their facts, anchors and manifest hash are
+     * untouched, so the next review tries them again. A file that is truly gone shows up in
+     * the next fresh plan's `removed`.
+     */
+    readErrors: number;
     aborted: boolean;
     durationMs: number;
 }
@@ -62,6 +68,8 @@ export interface ReviewArgs {
     budget: { modelCalls: number; ms: number };
     /** *Continue*: the plan the person confirmed. Reused without a re-walk; `changed` is re-read from the manifest. */
     plan?: PlanDetail;
+    /** *Re-review all*: every file is reviewed whatever its hash (see `PlanOptions.force`). Ignored with `plan`. */
+    force?: boolean;
     signal?: AbortSignal;
     onProgress?(p: ReviewProgress): void;
 }

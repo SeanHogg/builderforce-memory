@@ -35,7 +35,8 @@ const LABEL_CHARS = 120;
 
 const edgeId = (from: string, to: string, kind: string) => `${from}\u0000${to}\u0000${kind}`;
 export const compareEdges = (a: KEdge, b: KEdge): number =>
-    compareStr(a.from, b.from) || compareStr(a.to, b.to) || compareStr(a.kind, b.kind);
+    compareStr(a.from, b.from) || compareStr(a.to, b.to) || compareStr(a.kind, b.kind)
+    || compareStr(a.byName ?? '', b.byName ?? '');
 
 /** sha-256 over the canonical input: equal inputs (in any order) ⇒ equal digests. */
 export function graphDigest(input: BuildGraphInput): string {
@@ -74,7 +75,8 @@ function mergeBadges(a?: Record<string, number | string>, b?: Record<string, num
     return out;
 }
 
-function oneLine(text: string): string {
+/** A node label: one line, at most 120 characters. */
+export function oneLineLabel(text: string): string {
     const flat = text.replace(/\s+/g, ' ').trim();
     return flat.length > LABEL_CHARS ? `${flat.slice(0, LABEL_CHARS - 1)}…` : flat;
 }
@@ -123,7 +125,7 @@ function factNode(f: StoredFact, rootId: string, g: GraphBuilder, sources: Reado
     });
     const first = anchors[0];
     return {
-        ref, kind, label: oneLine(kind === 'entity' ? f.content || entityName(ref) : f.content), pack,
+        ref, kind, label: oneLineLabel(kind === 'entity' ? f.content || entityName(ref) : f.content), pack,
         importance: 0, origin: f.origin,
         ...(first?.contentHash ? { sourceHash: first.contentHash } : {}),
         ...(stale ? { stale: true } : {}),
