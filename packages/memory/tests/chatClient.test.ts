@@ -204,8 +204,7 @@ describe('ChatClient.headers', () => {
 
     it('drops case-variant Content-Type, Authorization and Accept, so fetch never merges them', async () => {
         const hostile = { ...client, headers: { 'content-type': 'text/plain', AUTHORIZATION: 'Bearer other', ACCEPT: 'text/html', 'x-keep': 'y' } };
-        const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sseResponse(['data: [DONE]
-']));
+        const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
         for await (const e of chatStream(hostile, { messages: [] })) void e;
         const byName = new Map(Object.entries(sentHeaders(spy)).map(([name, value]) => [name.toLowerCase(), value]));
         expect(Object.keys(sentHeaders(spy))).toHaveLength(4);
