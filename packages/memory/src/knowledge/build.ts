@@ -25,7 +25,7 @@ import { pageRank } from './importance.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
 import {
-    basenameOf, canonicalJson, compareStr, factRef, pathOfRef, round6, sortBy, srcRef,
+    basenameOf, canonicalJson, compareStr, factRef, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
 } from './refs.js';
 import { truncateGraph } from './truncate.js';
 
@@ -97,7 +97,7 @@ class GraphBuilder {
         prior.weight = Math.max(prior.weight, e.weight);
         if (e.cycle) prior.cycle = true;
         if (e.confidence !== undefined) prior.confidence = Math.max(prior.confidence ?? 0, e.confidence);
-        if (e.stale) prior.stale = true;
+        if (e.stale && e.origin === 'model') prior.stale = true;
     }
 
     has(from: NodeRef, to: NodeRef, kind: string): boolean {
@@ -136,10 +136,18 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     const g = new GraphBuilder();
     const sources = new Set<string>();
 
-    for (const ex of sortBy(input.extracted, (e) => e.sourceRef, (e) => e.sourceHash)) {
+    const extracted = sortBy(input.extracted, (e) => e.sourceRef, (e) => e.sourceHash);
+    for (const ex of extracted) {
         if (ex.sourceRef.startsWith('src:')) sources.add(ex.sourceRef);
         for (const n of sortBy(ex.nodes, (x) => x.ref)) g.node({ ...n, origin: 'extracted' });
-        for (const e of [...ex.edges].sort(compareEdges)) g.edge({ ...e, origin: 'extracted' });
+    }
+    // `[[Name]]` links are re-pointed here, over the files PRESENT now — never in the cached extract.
+    const byName = nameResolver([...g.nodes.values()].filter((n) => n.kind === 'file').flatMap((n) => pathOfRef(n.ref) ?? []));
+    for (const ex of extracted) {
+        for (const e of [...ex.edges].sort(compareEdges)) {
+            const edge = repointByName(e, rootId, byName);
+            if (edge) g.edge({ ...edge, origin: 'extracted' });
+        }
     }
 
     const facts = sortBy(input.facts, (f) => f.key);
@@ -183,7 +191,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false },
     };
     full.findings = computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
-    full.stats.stale = allNodes.filter((n) => n.stale).length + allEdges.filter((e) => e.stale).length;
+    full.stats.stale = allNodes.filter((n) => n.stale).length;
 
     const maxNodes = Math.min(MAX_NODES_CAP, Math.max(1, Math.floor(opts.maxNodes ?? DEFAULT_MAX_NODES)));
     const cut = truncateGraph(full, { maxNodes, focus: opts.focus ?? [], changed });
@@ -214,6 +222,18 @@ function applyLive(input: BuildGraphInput, g: GraphBuilder): NodeRef[] {
     return changed;
 }
 
+/**
+ * An extracted `byName` edge goes to the one present file of that name (ambiguous or none:
+ * it keeps the beside-the-file target); `byName` itself is dropped. Null: it would link a file to itself.
+ */
+function repointByName(e: KEdge, rootId: string, resolve: (name: string) => string | undefined): KEdge | null {
+    const { byName, ...edge } = e;
+    const path = byName === undefined ? undefined : resolve(byName);
+    if (path === undefined) return edge;
+    const to = srcRef(rootId, path);
+    return fileRefOf(e.from) === to ? null : { ...edge, to };
+}
+
 /** A missing `src:` endpoint becomes a `missing` placeholder (a broken link); a missing fact drops the edge. */
 function closeEndpoints(g: GraphBuilder): void {
     for (const [id, e] of [...g.edges.entries()].sort((a, b) => compareStr(a[0], b[0]))) {
@@ -235,7 +255,8 @@ function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, Par
         const path = pathOfRef(n.ref);
         if (path === undefined) continue;
         const reg = registries.get(n.pack);
-        const partition = reg ? partitionOf(path, reg) : undefined;
+        // A broken link out of the root (`../…`) has no folder in it to be a plane of.
+        const partition = reg && !(n.kind === 'missing' && path.startsWith('../')) ? partitionOf(path, reg) : undefined;
         if (partition !== undefined) n.partition = partition;
         const area = areaOfPath(path);
         if (area) n.area = srcRef(rootId, area);

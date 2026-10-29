@@ -111,11 +111,11 @@ export function validateCompare(result: unknown, a: NodeRef, b: NodeRef): { rela
     return { confidence: 0, invalid: Math.max(invalid, 1) };
 }
 
-/** One model call, or a counted invalid when the port throws (an abort is re-thrown). */
-async function call(port: JudgementPort, req: Parameters<JudgementPort['judge']>[0], b: JudgeBudget): Promise<unknown> {
+/** One model call; `undefined` when the port throws (an abort is re-thrown) — the item was NOT judged. */
+async function call(port: JudgementPort, req: Parameters<JudgementPort['judge']>[0], b: JudgeBudget): Promise<{ result: unknown } | undefined> {
     b.used += 1;
     try {
-        return await port.judge(req);
+        return { result: await port.judge(req) };
     } catch (err) {
         if (req.signal?.aborted) throw err;
         return undefined;
@@ -139,7 +139,7 @@ export interface ExtractArgs {
     onJudged(ref: NodeRef): void;
 }
 
-/** Judges each section within the budget; the rest are counted `unjudged`. */
+/** Judges each section within the budget; the rest — and any whose call failed — are counted `unjudged`. */
 export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRef; text: string }>> {
     const claims: Array<{ ref: NodeRef; text: string }> = [];
     const anchor = { path: a.path, contentHash: a.fileHash };
@@ -147,11 +147,13 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
         // Honoured per section, not only when the port throws: the caller drops this file whole.
         if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
         if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; continue; }
-        const result = await call(a.port, {
+        const answer = await call(a.port, {
             kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
             ...(a.signal ? { signal: a.signal } : {}),
         }, a.budget);
-        const v = validateExtract(result, section.ref);
+        // A failed call judged nothing: not counted judged, so the file stays changed and is retried.
+        if (!answer) { a.batch.unjudged += 1; continue; }
+        const v = validateExtract(answer.result, section.ref);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
         a.onJudged(section.ref);

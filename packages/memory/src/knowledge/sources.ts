@@ -8,12 +8,17 @@ import { ParserRegistry } from '../ingest/parsers.js';
 import { CONTENT_HASH_FIELD, type ChunkFingerprint, type IngestManifest, type SourceDocument } from '../ingest/types.js';
 import type { KnowledgePack, KnowledgeParser } from './model.js';
 import { matchGlob } from './partitions.js';
-import { compareStr } from './refs.js';
+import { compareStr, walkRelative } from './refs.js';
 
 /** Default per-file size cap (bytes). */
 export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
-/** Ignore files read through the source, when present (`.gitignore` also in any sub-folder). */
-export const IGNORE_FILES = ['.gitignore', '.builderforce/ignore'] as const;
+/**
+ * Version of the extractors' output. Bump it whenever an extractor emits different nodes,
+ * edges or keys for the same text: cached `Extracted` of another version is ignored, and the
+ * files manifest is keyed by it, so every file is re-extracted exactly once after an upgrade
+ * (judged sections with unchanged text are re-anchored, not judged again).
+ */
+export const EXTRACTOR_VERSION = 1;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
 const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore'];
 
@@ -63,16 +68,13 @@ export function isDocumentPath(path: string): boolean {
     return DOCUMENT_EXT.has(extOf(path));
 }
 
-/** The builtin catch-all text parser; it never claims a binary document. */
-const CATCH_ALL_PARSER = 'text';
-
 /**
  * The pack whose parser claims a pdf/office file's media type — a host-registered
- * extractor. The builtin catch-all text parser never counts, so without one it stays binary.
+ * extractor, wherever its pack sits: the builtin text parsers refuse binary document types
+ * ({@link isBinaryDocumentType}), so without a host parser nothing claims it and it stays binary.
  */
 export function resolveDocument(composed: ComposedPacks, path: string): ReturnType<ComposedPacks['resolve']> {
-    const hit = composed.resolve(stubSource(path));
-    return hit && hit.parser.id !== CATCH_ALL_PARSER ? hit : undefined;
+    return composed.resolve(stubSource(path));
 }
 
 /** A NUL in the first 8 KB means binary, whatever the extension said. */
@@ -151,23 +153,31 @@ export function ignoreMatcher(texts: ReadonlyArray<string | { text: string; base
     };
 }
 
-/** The ignore files present in a listing, each with the folder its patterns are relative to. */
+/**
+ * The ignore files present in a listing, each with the folder its patterns are relative to,
+ * in precedence order (the last match wins): every `.gitignore` — the root's first, then
+ * nested ones by path — and `.builderforce/ignore` LAST, so it can override them.
+ */
 export function ignoreSourcesOf(paths: readonly string[]): Array<{ path: string; base: string }> {
-    const out: Array<{ path: string; base: string }> = [];
+    const git: Array<{ path: string; base: string }> = [];
+    let builderforce = false;
     for (const path of [...paths].sort(compareStr)) {
-        if (path === '.builderforce/ignore') out.push({ path, base: '' });
+        if (path === '.builderforce/ignore') builderforce = true;
         else if (path === '.gitignore' || path.endsWith('/.gitignore')) {
             if (path.split('/').some((seg) => seg === 'node_modules' || seg === '.git')) continue;
-            out.push({ path, base: path.slice(0, -'.gitignore'.length).replace(/\/$/, '') });
+            git.push({ path, base: path.slice(0, -'.gitignore'.length).replace(/\/$/, '') });
         }
     }
-    return out;
+    git.sort((a, b) => Number(a.base !== '') - Number(b.base !== '') || compareStr(a.path, b.path));
+    return builderforce ? [...git, { path: '.builderforce/ignore', base: '' }] : git;
 }
 
-/** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root. */
-export const filesManifestKey = (rootId: string): string => `knowledge:${rootId}`;
+/** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root (per extractor version). */
+export const filesManifestKey = (rootId: string): string => `knowledge:${rootId}:files:v${EXTRACTOR_VERSION}`;
 /** Manifest entry holding `{ id: sectionRef, hash: textHash }` for every judged section. */
 export const judgedManifestKey = (rootId: string): string => `knowledge:${rootId}:judged`;
+/** Manifest entry holding `{ id: claimRef, hash: fileHash }` for every claim still awaiting comparison. */
+export const compareManifestKey = (rootId: string): string => `knowledge:${rootId}:compare`;
 
 export async function manifestMap(manifest: IngestManifest, key: string): Promise<Map<string, string>> {
     const prior: ChunkFingerprint[] = (await manifest.get(key)) ?? [];
@@ -181,17 +191,9 @@ export async function saveManifestMap(manifest: IngestManifest, key: string, map
 
 /**
  * Resolves a link/import target against the linking file's folder (a leading `/` is the
- * root). Pure path arithmetic: undefined only when the target escapes the root.
+ * root). Pure path arithmetic: undefined when the target escapes the root or is the root itself.
  */
 export function resolveRelativePath(fromPath: string, target: string): string | undefined {
-    const t = target.replace(/\\/g, '/');
-    const out = t.startsWith('/') ? [] : fromPath.split('/').slice(0, -1);
-    for (const seg of t.split('/')) {
-        if (seg === '' || seg === '.') continue;
-        if (seg === '..') {
-            if (out.length === 0) return undefined;
-            out.pop();
-        } else out.push(seg);
-    }
-    return out.length ? out.join('/') : undefined;
+    const { ups, segments } = walkRelative(fromPath, target);
+    return ups > 0 || segments.length === 0 ? undefined : segments.join('/');
 }

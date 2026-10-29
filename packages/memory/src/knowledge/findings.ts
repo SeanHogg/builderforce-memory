@@ -12,7 +12,7 @@ import { hashText } from '../ingest/hash.js';
 import type { Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { possibleSameFindings } from './resolve.js';
-import { compareStr, round6 } from './refs.js';
+import { aboutTargets, compareStr, round6 } from './refs.js';
 
 /** Node badge naming the clone group (e.g. a jscpd issue id) its `duplicate` edges belong to. */
 export const CLONE_GROUP_BADGE = 'cloneGroup';
@@ -30,10 +30,18 @@ export function requestKeyFor(kind: string): string {
     return `knowledgeGraph.fix.${kind.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}`;
 }
 
-function finding(kind: string, pack: string, nodes: NodeRef[], severity: Finding['severity'], params: Finding['params']): Finding {
+/**
+ * The ONE finding builder: nodes deduped, sorted and capped at {@link MAX_FINDING_NODES}.
+ * The id hashes `idRefs` (default: all the nodes) — pass a narrower set to keep it stable
+ * while the listed nodes change.
+ */
+export function finding(
+    kind: string, pack: string, nodes: readonly NodeRef[], severity: Finding['severity'], params: Finding['params'],
+    idRefs?: readonly string[],
+): Finding {
     const sorted = [...new Set(nodes)].sort(compareStr);
     return {
-        id: findingId(kind, sorted), kind, pack, nodes: sorted.slice(0, MAX_FINDING_NODES), severity, params,
+        id: findingId(kind, idRefs ?? sorted), kind, pack, nodes: sorted.slice(0, MAX_FINDING_NODES), severity, params,
         requestKey: requestKeyFor(kind),
     };
 }
@@ -119,8 +127,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
 
 /** One finding per source whose stored knowledge went stale (unanchored stale nodes: one each). */
 function staleFindings(g: KnowledgeGraph, byRef: ReadonlyMap<NodeRef, KNode>): Finding[] {
-    const about = new Map<NodeRef, NodeRef>();
-    for (const e of g.edges) if (e.kind === 'about' && !about.has(e.from)) about.set(e.from, e.to);
+    const about = aboutTargets(g.edges);
     const bySource = new Map<NodeRef, NodeRef[]>();
     for (const n of g.nodes) {
         if (!n.stale) continue;

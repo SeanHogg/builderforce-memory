@@ -9,7 +9,7 @@
 
 import type { EdgeVerdict, KEdge, KNode, KnowledgeGraph, NodeRef } from './model.js';
 import { areaImportance, byImportance } from './importance.js';
-import { compareStr, pathOfRef, srcRef } from './refs.js';
+import { aboutTargets, compareStr, pathOfRef, srcRef } from './refs.js';
 
 /** Hard cap on nodes, however many the keep rules ask for. */
 export const TRUNCATION_HARD_CAP = 2000;
@@ -53,8 +53,7 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
     for (const n of [...g.nodes].sort(byImportance).slice(0, opts.maxNodes)) keep(n.ref);
 
     // Fold the rest into areas.
-    const aboutTarget = new Map<NodeRef, NodeRef>();
-    for (const e of g.edges) if (e.kind === 'about' && !aboutTarget.has(e.from)) aboutTarget.set(e.from, e.to);
+    const aboutTarget = aboutTargets(g.edges);
     const rootId = g.scope.rootId;
     const areaOf = (n: KNode): NodeRef => {
         if (n.area) return n.area;

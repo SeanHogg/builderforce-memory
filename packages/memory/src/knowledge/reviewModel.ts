@@ -41,7 +41,7 @@ export interface ReviewReport {
     digest: string;
     extracted: number;
     judged: number;
-    /** Sections left extracted-only because the budget ran out. */
+    /** Sections and compare pairs left for *Continue* (budget ran out, or a model call failed). */
     unjudged: number;
     invalidJudgements: number;
     factsWritten: number;

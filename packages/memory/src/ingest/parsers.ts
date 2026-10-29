@@ -26,6 +26,17 @@ const textOf = (source: SourceDocument): string =>
 const mediaTypeOf = (source: SourceDocument): string =>
     source.content.kind === 'text' ? (source.content.mediaType ?? 'text/plain').toLowerCase() : '';
 
+/**
+ * Binary documents — pdf, legacy and OOXML/OpenDocument office files. Their bytes are not
+ * text, so NO builtin parser claims them (the csv/json/markdown matchers cannot match these
+ * types; html and plain text refuse them explicitly): only a host extractor that turns them
+ * into text may, in any pack order.
+ */
+export function isBinaryDocumentType(mediaType: string): boolean {
+    return /^application\/(?:pdf|msword|vnd\.(?:openxmlformats-officedocument\.|ms-|oasis\.opendocument\.))/
+        .test(mediaType.trim().toLowerCase());
+}
+
 // ── structured rows ───────────────────────────────────────────────────────────
 
 /**
@@ -245,7 +256,10 @@ export const markdownParser: DocumentParser = {
 
 export const htmlParser: DocumentParser = {
     id: 'html',
-    accepts: (source) => mediaTypeOf(source).includes('html') || mediaTypeOf(source).includes('xml'),
+    accepts: (source) => {
+        const type = mediaTypeOf(source);
+        return !isBinaryDocumentType(type) && (type.includes('html') || type.includes('xml'));
+    },
     parse: (source) => {
         const raw = textOf(source);
         const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw);
@@ -279,7 +293,7 @@ export const htmlParser: DocumentParser = {
 
 export const plainTextParser: DocumentParser = {
     id: 'text',
-    accepts: (source) => source.content.kind === 'text',
+    accepts: (source) => source.content.kind === 'text' && !isBinaryDocumentType(mediaTypeOf(source)),
     parse: (source) => {
         const text = textOf(source).trim();
         return text ? [{ text }] : [];

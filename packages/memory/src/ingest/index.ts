@@ -22,6 +22,7 @@ export {
     plainTextParser,
     parseCsv,
     serializeRow,
+    isBinaryDocumentType,
 } from './parsers.js';
 
 export {

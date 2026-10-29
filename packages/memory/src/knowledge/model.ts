@@ -51,12 +51,20 @@ export interface KEdge {
     cycle?: boolean;
     /** A stored relation whose source changed since it was judged (§5.2): shown, never treated as current. */
     stale?: boolean;
+    /**
+     * Extracted edges only: the `[[Name]]` this link was written with. `buildGraph` re-points
+     * the edge to the one present file of that name (else it keeps its beside-the-file
+     * target) — so the cached extract never depends on which other files exist. Never emitted.
+     */
+    byName?: string;
 }
 
 /** Output of a pack's deterministic extractor (or analyzer) for one source. Never stored. */
 export interface Extracted {
     sourceRef: NodeRef;
     sourceHash: string;
+    /** The extractor version (`EXTRACTOR_VERSION`) that produced it; a cached entry of another version is ignored. */
+    extractorVersion?: number;
     nodes: KNode[];
     edges: KEdge[];
     /** Exact keys for entity resolution and the index's exact tier. */
@@ -69,8 +77,6 @@ export interface ExtractContext {
     knownKeys: ReadonlyMap<string, NodeRef>;
     /** Resolves a relative link/import from `fromPath` to a root-relative path, or undefined. */
     resolvePath(fromPath: string, target: string): string | undefined;
-    /** Resolves a bare `[[Name]]` to a root-relative path by file name anywhere in the root (the review's listing). */
-    resolveName?(name: string): string | undefined;
 }
 
 /** A finding a person can act on. `kind` is pack-defined; `requestKey` names an i18n template. */

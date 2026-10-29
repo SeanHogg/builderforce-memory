@@ -7,9 +7,11 @@
  *
  *   • a `file` node, and a `section` node per heading breadcrumb, joined by `contains`;
  *   • `links` edges for relative markdown links (inline and reference-style), `[[wiki]]`
- *     links (by name anywhere in the root through `ctx.resolveName`, else beside the linking
- *     file) and HTML hrefs, resolved through `ctx.resolvePath`. A missing target — or one
- *     outside the root — stays an edge, so the graph can report it broken;
+ *     links (beside the linking file, marked `byName` so `buildGraph` can re-point them to
+ *     the one file of that name anywhere in the root) and HTML hrefs, resolved through
+ *     `ctx.resolvePath`. A missing target stays an edge, so the graph can report it broken —
+ *     as does one outside the root, under a normalized `../…` path; a link to the root
+ *     itself is no link;
  *   • text before the first markdown heading (or a file with none) is a `section` too, so
  *     it is judged and carded like any other;
  *   • `mentions` edges where a section's normalized text contains a known entity key;
@@ -20,7 +22,7 @@
  */
 
 import type { ExtractContext, Extracted, KEdge, KNode, NodeRef } from '../knowledge/model.js';
-import { basenameOf, compareStr, normalizeKey, slugOf, srcRef } from '../knowledge/refs.js';
+import { basenameOf, compareStr, normalizeKey, slugOf, srcRef, walkRelative } from '../knowledge/refs.js';
 import { hashText } from './hash.js';
 import { CONTENT_HASH_FIELD, type ParsedSection, type SourceDocument } from './types.js';
 
@@ -63,37 +65,41 @@ class ExtractBuilder {
         return node;
     }
 
-    edge(from: NodeRef, to: NodeRef, kind: string): void {
+    /** `byName` keeps a by-name link apart from a written one to the same target (only it is re-pointed). */
+    edge(from: NodeRef, to: NodeRef, kind: string, byName?: string): void {
         if (from === to) return;
-        const id = `${from}\u0000${to}\u0000${kind}`;
+        const id = `${from}\u0000${to}\u0000${kind}${byName === undefined ? '' : `\u0000${byName}`}`;
         const prior = this.edges.get(id);
         if (prior) prior.weight += 1;
-        else this.edges.set(id, { from, to, kind, weight: 1, origin: 'extracted' });
+        else this.edges.set(id, { from, to, kind, weight: 1, origin: 'extracted', ...(byName !== undefined ? { byName } : {}) });
     }
 
     key(ref: NodeRef, key: string): void {
         if (key) this.keys.set(`${ref}\u0000${key}`, { ref, key });
     }
 
-    /** `links` edges to each resolvable target. */
-    link(from: NodeRef, target: string): void {
+    /** A `links` edge to the target, unless it is the root itself (or a folder above it). */
+    link(from: NodeRef, target: string, byName?: string): void {
         const clean = target.split('#')[0]!.split('?')[0]!.trim();
         if (!clean || /^[a-z][a-z0-9+.-]*:/i.test(clean)) return;
         let decoded = clean;
         try { decoded = decodeURI(clean); } catch { /* keep the raw target */ }
-        const resolved = this.ctx.resolvePath(this.path, decoded);
-        // Outside the root: kept under its written path, so it surfaces as a broken link.
-        const target = resolved ?? decoded.replace(/^\.\//, '');
-        if (target !== this.path) this.edge(from, srcRef(this.ctx.rootId, target), 'links');
+        const { ups, segments } = walkRelative(this.path, decoded);
+        if (segments.length === 0) return;
+        // Outside the root: kept as a broken link under its normalized root-relative path, so
+        // folders that reach different real files never share a ref.
+        const dest = ups > 0
+            ? `${'../'.repeat(ups)}${segments.join('/')}`
+            : this.ctx.resolvePath(this.path, decoded) ?? segments.join('/');
+        if (dest !== this.path) this.edge(from, srcRef(this.ctx.rootId, dest), 'links', byName);
     }
 
+    /** `[[Name]]`: beside the linking file here; `buildGraph` re-points a bare name to the unique file of that name. */
     wikiLinks(from: NodeRef, text: string): void {
         for (const m of text.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
             const name = m[1]!.trim();
             if (!name) continue;
-            const byName = name.includes('/') ? undefined : this.ctx.resolveName?.(name);
-            if (byName !== undefined) { if (byName !== this.path) this.edge(from, srcRef(this.ctx.rootId, byName), 'links'); continue; }
-            this.link(from, /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(name) ? name : `${name}.md`);
+            this.link(from, /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(name) ? name : `${name}.md`, name.includes('/') ? undefined : name);
         }
     }
 
@@ -122,7 +128,8 @@ class ExtractBuilder {
             sourceHash: this.hash,
             nodes: [...this.nodes.values()].sort(byRef),
             edges: [...this.edges.values()].sort((a, b) =>
-                compareStr(a.from, b.from) || compareStr(a.to, b.to) || compareStr(a.kind, b.kind)),
+                compareStr(a.from, b.from) || compareStr(a.to, b.to) || compareStr(a.kind, b.kind)
+                || compareStr(a.byName ?? '', b.byName ?? '')),
             keys: [...this.keys.values()].sort((a, b) => byRef(a, b) || compareStr(a.key, b.key)),
         };
     }
@@ -160,7 +167,7 @@ function excerpt(text: string): string {
 
 const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 /** `[id]: target` definitions (reference-style links); the use is `[text][id]` or `[id][]`. */
-const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?$/gm;
+const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?[ \t\r]*$/gm;
 const MD_REF_USE = /(?<!!)\[([^\]]*)\]\[([^\]]*)\]/g;
 
 /** Reference-link definitions of a whole markdown text, by lower-cased label. */

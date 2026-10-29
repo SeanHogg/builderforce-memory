@@ -11,9 +11,9 @@
 import { htmlParser, markdownParser, plainTextParser } from '../../ingest/parsers.js';
 import { DOCS_PACK_ID } from '../../ingest/docsExtract.js';
 import type { Finding, FindingRule, KnowledgeGraph, KnowledgePack, NodeRef } from '../model.js';
-import { findingId, MAX_FINDING_NODES, requestKeyFor } from '../findings.js';
+import { finding, findingId, MAX_FINDING_NODES, requestKeyFor } from '../findings.js';
 import { TOP_LEVEL_FOLDER } from '../partitions.js';
-import { basenameOf, compareStr, fileRefOf, pathOfRef } from '../refs.js';
+import { aboutTargets, basenameOf, compareStr, fileRefOf, pathOfRef } from '../refs.js';
 
 export { DOCS_PACK_ID };
 
@@ -78,23 +78,13 @@ export const orphanDocumentRule: FindingRule = {
     },
 };
 
-/** The section (else file) a claim is `about`: the most specific source it was judged from. */
-function claimSource(g: KnowledgeGraph): Map<NodeRef, NodeRef> {
-    const out = new Map<NodeRef, NodeRef>();
-    for (const e of [...g.edges].sort((a, b) => compareStr(a.to, b.to))) {
-        if (e.kind !== 'about') continue;
-        const prior = out.get(e.from);
-        if (!prior || (prior === fileRefOf(prior) && e.to !== fileRefOf(e.to))) out.set(e.from, e.to);
-    }
-    return out;
-}
-
 /** Two claims a model judged `contradicts`: one finding per pair, naming both sources to reconcile. */
 export const contradictionRule: FindingRule = {
     id: 'docs.contradiction',
     find(g) {
         const label = new Map(g.nodes.map((n) => [n.ref, n.label] as const));
-        const source = claimSource(g);
+        // The section (else file) a claim is `about`: the most specific source it was judged from.
+        const source = aboutTargets(g.edges, { preferSection: true });
         const where = (claim: NodeRef) => {
             const at = source.get(claim);
             const file = at ? fileRefOf(at) : undefined;
@@ -108,16 +98,10 @@ export const contradictionRule: FindingRule = {
             .map((e): Finding => {
                 const a = where(e.from), b = where(e.to);
                 const sources = [source.get(e.from), source.get(e.to)].filter((r): r is NodeRef => !!r);
-                const nodes = [e.from, e.to, ...sources];
-                return {
-                    id: findingId('contradiction', [e.from, e.to]), kind: 'contradiction', pack: DOCS_PACK_ID,
-                    nodes, severity: e.stale ? 'info' : 'warn',
-                    params: {
-                        fileA: a.file, sectionA: a.section, fileB: b.file, sectionB: b.section,
-                        confidence: Math.round((e.confidence ?? e.weight) * 100),
-                    },
-                    requestKey: requestKeyFor('contradiction'),
-                };
+                return finding('contradiction', DOCS_PACK_ID, [e.from, e.to, ...sources], e.stale ? 'info' : 'warn', {
+                    fileA: a.file, sectionA: a.section, fileB: b.file, sectionB: b.section,
+                    confidence: Math.round((e.confidence ?? e.weight) * 100),
+                }, [e.from, e.to]);
             });
     },
 };

@@ -11,7 +11,7 @@
  *   fact:${key}                       any other fact (claims: fact:claim:${hash})
  */
 
-import type { NodeRef } from './model.js';
+import type { KEdge, NodeRef } from './model.js';
 
 /** Code-unit ordering — never `localeCompare`, whose result depends on the host's ICU. */
 export function compareStr(a: string, b: string): number {
@@ -105,4 +105,52 @@ export function sortBy<T>(items: readonly T[], ...keys: Array<(t: T) => string>)
         }
         return 0;
     });
+}
+
+/**
+ * A relative target walked from the linking file's folder (a leading `/` is the root):
+ * `segments` is where it lands under the root, `ups` how many levels it climbed ABOVE the
+ * root. Pure path arithmetic — the one place that decides "inside", "root itself" and "escapes".
+ */
+export function walkRelative(fromPath: string, target: string): { ups: number; segments: string[] } {
+    const t = target.replace(/\\/g, '/');
+    const segments = t.startsWith('/') ? [] : fromPath.split('/').slice(0, -1);
+    let ups = 0;
+    for (const seg of t.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') {
+            if (segments.length) segments.pop();
+            else ups += 1;
+        } else segments.push(seg);
+    }
+    return { ups, segments };
+}
+
+/**
+ * `[[Name]]` → the one listed file named `Name` (or `Name.md`), case-insensitively, anywhere
+ * in the root. Ambiguous names resolve to none, so the link keeps its beside-the-file fallback.
+ */
+export function nameResolver(paths: readonly string[]): (name: string) => string | undefined {
+    const byName = new Map<string, string | null>();
+    for (const p of [...paths].sort(compareStr)) {
+        const base = basenameOf(p).toLowerCase();
+        for (const key of new Set([base, base.replace(/\.md$/, '')])) {
+            byName.set(key, byName.has(key) && byName.get(key) !== p ? null : p);
+        }
+    }
+    return (name) => byName.get(name.trim().toLowerCase()) ?? undefined;
+}
+
+/**
+ * The `about` target of each node, from edges in graph order. By default the first; with
+ * `preferSection` a section wins over the file it belongs to (the most specific source).
+ */
+export function aboutTargets(edges: readonly KEdge[], opts: { preferSection?: boolean } = {}): Map<NodeRef, NodeRef> {
+    const out = new Map<NodeRef, NodeRef>();
+    for (const e of edges) {
+        if (e.kind !== 'about') continue;
+        const prior = out.get(e.from);
+        if (!prior || (opts.preferSection && prior === fileRefOf(prior) && e.to !== fileRefOf(e.to))) out.set(e.from, e.to);
+    }
+    return out;
 }
