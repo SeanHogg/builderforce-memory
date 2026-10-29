@@ -33,18 +33,19 @@ export {
 } from './resolve.js';
 export type { ResolvedEntity } from './resolve.js';
 export { toCards } from './cards.js';
-export { planReview, planDetail, AVG_SECTION_BYTES } from './plan.js';
+export { planReview, planDetail, refreshPlan, AVG_SECTION_BYTES } from './plan.js';
 export type { PlanOptions, PlannedFile, PlanDetail } from './plan.js';
-export { reviewDirectory, assertStoredBatch } from './review.js';
+export { reviewDirectory, assertStoredBatch, nameResolver } from './review.js';
 export {
     validateExtract, validateCompare, DEFAULT_REVIEW_MODEL_CALLS, REVIEW_FACT_SOURCE,
 } from './judge.js';
 export {
-    composePacks, ignoreMatcher, isBinaryPath, isBinaryText, mediaTypeOfPath, resolveRelativePath,
+    composePacks, ignoreMatcher, ignoreSourcesOf, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,
+    resolveDocument, resolveRelativePath,
     DEFAULT_MAX_FILE_BYTES, IGNORE_FILES, filesManifestKey, judgedManifestKey,
 } from './sources.js';
 export { srcRef, pathOfRef, fileRefOf, factRef, factKeyOf, slugOf, canonicalJson, compareStr } from './refs.js';
-export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule } from './packs/docs.js';
+export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule, contradictionRule } from './packs/docs.js';
 export { frontMatterOf, SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
 export { LocalSnapshotStore, localSnapshotStore } from './stores/localSnapshotStore.js';
 export type { SnapshotPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions } from './stores/localSnapshotStore.js';

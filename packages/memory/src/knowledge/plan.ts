@@ -2,16 +2,17 @@
  * knowledge/plan.ts — `planReview`: the confirm chip's numbers (PRD 38 §4.3).
  *
  * A walk plus a manifest diff by hash, nothing more: a file whose hash is unchanged is
- * never read. The only reads are the ignore files (`.gitignore`, `.builderforce/ignore`)
- * when the listing has them. Binary files (by extension), oversized files and files no
- * pack accepts are skipped with a reason.
+ * never read. The only reads are the ignore files (`.builderforce/ignore` and every
+ * `.gitignore`, a nested one scoped to its folder) when the listing has them. Binary files
+ * (by extension — pdf/office only when a host parser claims their media type), oversized
+ * files and files no pack accepts are skipped with a reason.
  */
 
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
 import {
-    composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, IGNORE_FILES, ignoreMatcher, isBinaryPath,
-    manifestMap, stubSource,
+    composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
+    isDocumentPath, manifestMap, resolveDocument, stubSource,
 } from './sources.js';
 import { compareStr, sortBy } from './refs.js';
 
@@ -61,11 +62,10 @@ export async function planDetail(
     for await (const entry of source.list()) listed.push({ ...entry, path: entry.path.replace(/\\/g, '/').replace(/^\.?\//, '') });
     const entries = sortBy(listed, (e) => e.path);
 
-    const ignoreTexts: string[] = [];
-    for (const name of IGNORE_FILES) {
-        if (!entries.some((e) => e.path === name)) continue;
-        const doc = await source.read(name);
-        if (doc.content.kind === 'text') ignoreTexts.push(doc.content.text);
+    const ignoreTexts: Array<{ text: string; base: string }> = [];
+    for (const { path, base } of ignoreSourcesOf(entries.map((e) => e.path))) {
+        const doc = await source.read(path);
+        if (doc.content.kind === 'text') ignoreTexts.push({ text: doc.content.text, base });
     }
     const ignored = ignoreMatcher(ignoreTexts);
     const composed = composePacks(packs);
@@ -79,9 +79,10 @@ export async function planDetail(
     let compareSections = 0;
     for (const e of entries) {
         if (ignored(e.path)) { skipped.push({ path: e.path, reason: 'ignored' }); continue; }
-        if (isBinaryPath(e.path)) { skipped.push({ path: e.path, reason: 'binary' }); continue; }
+        const document = isDocumentPath(e.path) ? resolveDocument(composed, e.path) : undefined;
+        if (isBinaryPath(e.path) && !document) { skipped.push({ path: e.path, reason: 'binary' }); continue; }
         if (e.size > maxBytes) { skipped.push({ path: e.path, reason: 'too-large' }); continue; }
-        const hit = composed.resolve(stubSource(e.path));
+        const hit = document ?? composed.resolve(stubSource(e.path));
         if (!hit) { skipped.push({ path: e.path, reason: 'no-pack' }); continue; }
         const changed = prior.get(e.path) !== e.hash;
         files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed });
@@ -109,6 +110,22 @@ export async function planDetail(
             skipped,
             estimatedModelCalls: estimatedSections + Math.ceil(compareSections / SECTIONS_PER_COMPARE),
         },
+        files,
+        prior,
+    };
+}
+
+/**
+ * *Continue*: the confirmed plan without a re-walk. Only `changed` is re-read — against the
+ * manifest as the last run left it — so files finished since are not reviewed again.
+ */
+export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
+    const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
+    const files = detail.files.map((f) => ({ ...f, changed: prior.get(f.path) !== f.hash }));
+    const changed = files.filter((f) => f.changed).map((f) => f.path);
+    const removed = detail.plan.removed.filter((p) => prior.has(p));
+    return {
+        plan: { ...detail.plan, unchanged: files.length - changed.length, changed, removed },
         files,
         prior,
     };

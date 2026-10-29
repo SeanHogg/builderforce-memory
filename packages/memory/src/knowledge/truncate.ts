@@ -1,10 +1,10 @@
 /**
  * knowledge/truncate.ts — the graph opens bounded (PRD 38 §5.3).
  *
- * Always kept: focus nodes, every node named by a finding, changed nodes, and the 1-hop
- * neighbours of all of those (up to the hard cap). The rest of the budget goes by
- * importance (then ref). Everything else folds into `area` nodes; edges are re-pointed to
- * the areas, merged, and self-loops dropped.
+ * The top `maxNodes` by importance (then ref), PLUS focus nodes, every node named by a
+ * finding, changed nodes and the 1-hop neighbours of all of those — up to the hard cap.
+ * Everything else folds into `area` nodes; edges are re-pointed to the areas, merged, and
+ * self-loops dropped.
  */
 
 import type { EdgeVerdict, KEdge, KNode, KnowledgeGraph, NodeRef } from './model.js';
@@ -50,10 +50,7 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
         const around = [...(neighbours.get(s) ?? [])].map((r) => byRef.get(r)!).filter(Boolean).sort(byImportance);
         for (const n of around) keep(n.ref);
     }
-    for (const n of [...g.nodes].sort(byImportance)) {
-        if (kept.length >= opts.maxNodes) break;
-        keep(n.ref);
-    }
+    for (const n of [...g.nodes].sort(byImportance).slice(0, opts.maxNodes)) keep(n.ref);
 
     // Fold the rest into areas.
     const aboutTarget = new Map<NodeRef, NodeRef>();
@@ -96,6 +93,7 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
         if (!prior) { edges.set(id, { ...e, from, to }); continue; }
         prior.weight += e.weight;
         if (e.cycle) prior.cycle = true;
+        if (e.stale) prior.stale = true;
         if (e.confidence !== undefined) prior.confidence = Math.max(prior.confidence ?? 0, e.confidence);
         if (e.verdict && (!prior.verdict || VERDICT_RANK[e.verdict] > VERDICT_RANK[prior.verdict])) prior.verdict = e.verdict;
     }

@@ -97,6 +97,7 @@ class GraphBuilder {
         prior.weight = Math.max(prior.weight, e.weight);
         if (e.cycle) prior.cycle = true;
         if (e.confidence !== undefined) prior.confidence = Math.max(prior.confidence ?? 0, e.confidence);
+        if (e.stale) prior.stale = true;
     }
 
     has(from: NodeRef, to: NodeRef, kind: string): boolean {
@@ -104,15 +105,21 @@ class GraphBuilder {
     }
 }
 
-function factNode(f: StoredFact, rootId: string, g: GraphBuilder): KNode {
+/**
+ * A model fact is stale when a source it was judged from changed (another hash) or is gone
+ * (reviewed sources are present, the anchored one is not) — §5.2: never silently current.
+ */
+function factNode(f: StoredFact, rootId: string, g: GraphBuilder, sources: ReadonlySet<string>): KNode {
     const ref = factRef(f.key);
     const kind = f.key.startsWith('ent:') ? 'entity' : f.key.startsWith('claim:') ? 'claim' : 'fact';
     const anchors = sortBy(f.fileAnchors, (a) => a.path);
     const anchoredPack = anchors.map((a) => g.nodes.get(srcRef(rootId, a.path))?.pack).find(Boolean);
     const pack = kind === 'entity' ? f.key.split(':')[1] || 'memory' : anchoredPack ?? 'memory';
     const stale = f.origin === 'model' && anchors.some((a) => {
-        const current = g.nodes.get(srcRef(rootId, a.path))?.sourceHash;
-        return !!a.contentHash && !!current && current !== a.contentHash;
+        if (!a.contentHash) return false;
+        const ref = srcRef(rootId, a.path);
+        const current = g.nodes.get(ref)?.sourceHash;
+        return current ? current !== a.contentHash : sources.size > 0 && !sources.has(ref);
     });
     const first = anchors[0];
     return {
@@ -136,7 +143,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     }
 
     const facts = sortBy(input.facts, (f) => f.key);
-    for (const f of facts) g.node(factNode(f, rootId, g));
+    for (const f of facts) g.node(factNode(f, rootId, g, sources));
     for (const f of facts) {
         for (const a of sortBy(f.fileAnchors, (x) => x.path)) {
             const to = srcRef(rootId, a.path);
@@ -148,6 +155,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         g.edge({
             from: r.from, to: r.to, kind: r.kind, weight: r.weight, origin: r.origin,
             ...(r.confidence !== undefined ? { confidence: r.confidence } : {}),
+            ...(r.origin === 'model' && r.staleAt ? { stale: true } : {}),
         });
     }
 
@@ -175,7 +183,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false },
     };
     full.findings = computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
-    full.stats.stale = allNodes.filter((n) => n.stale).length;
+    full.stats.stale = allNodes.filter((n) => n.stale).length + allEdges.filter((e) => e.stale).length;
 
     const maxNodes = Math.min(MAX_NODES_CAP, Math.max(1, Math.floor(opts.maxNodes ?? DEFAULT_MAX_NODES)));
     const cut = truncateGraph(full, { maxNodes, focus: opts.focus ?? [], changed });
@@ -262,5 +270,6 @@ export function finalEdge(e: KEdge): KEdge {
         ...(e.confidence !== undefined ? { confidence: round6(e.confidence) } : {}),
         ...(e.verdict ? { verdict: e.verdict } : {}),
         ...(e.cycle ? { cycle: true } : {}),
+        ...(e.stale ? { stale: true } : {}),
     };
 }

@@ -12,16 +12,29 @@ import { compareStr } from './refs.js';
 
 /** Default per-file size cap (bytes). */
 export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
-/** Ignore files read through the source, when present. */
+/** Ignore files read through the source, when present (`.gitignore` also in any sub-folder). */
 export const IGNORE_FILES = ['.gitignore', '.builderforce/ignore'] as const;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
-const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '/.gitignore'];
+const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore'];
 
 const MEDIA_TYPES: Record<string, string> = {
     md: 'text/markdown', markdown: 'text/markdown', mdx: 'text/markdown',
     html: 'text/html', htm: 'text/html', xhtml: 'application/xhtml+xml', xml: 'application/xml',
     json: 'application/json', csv: 'text/csv', tsv: 'text/tab-separated-values',
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    odt: 'application/vnd.oasis.opendocument.text',
+    ods: 'application/vnd.oasis.opendocument.spreadsheet',
+    odp: 'application/vnd.oasis.opendocument.presentation',
 };
+
+/** Binary documents whose text a HOST extractor may supply (§4.5); otherwise skipped as binary. */
+const DOCUMENT_EXT = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp']);
 
 const BINARY_EXT = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'icns', 'tif', 'tiff', 'psd', 'avif', 'heic',
@@ -44,6 +57,22 @@ export function mediaTypeOfPath(path: string): string {
 /** By extension — the plan never reads a file to decide. (pdf/office text needs a host extractor.) */
 export function isBinaryPath(path: string): boolean {
     return BINARY_EXT.has(extOf(path));
+}
+
+export function isDocumentPath(path: string): boolean {
+    return DOCUMENT_EXT.has(extOf(path));
+}
+
+/** The builtin catch-all text parser; it never claims a binary document. */
+const CATCH_ALL_PARSER = 'text';
+
+/**
+ * The pack whose parser claims a pdf/office file's media type — a host-registered
+ * extractor. The builtin catch-all text parser never counts, so without one it stays binary.
+ */
+export function resolveDocument(composed: ComposedPacks, path: string): ReturnType<ComposedPacks['resolve']> {
+    const hit = composed.resolve(stubSource(path));
+    return hit && hit.parser.id !== CATCH_ALL_PARSER ? hit : undefined;
 }
 
 /** A NUL in the first 8 KB means binary, whatever the extension said. */
@@ -88,9 +117,16 @@ export function composePacks(packs: readonly KnowledgePack[]): ComposedPacks {
  * A `.gitignore`-style matcher: `#` comments, `!` negation (last match wins), a trailing
  * `/` for directories only, a `/` elsewhere anchors to the root, otherwise any depth.
  */
-export function ignoreMatcher(texts: readonly string[]): (path: string) => boolean {
+export function ignoreMatcher(texts: ReadonlyArray<string | { text: string; base: string }>): (path: string) => boolean {
     const rules: Array<{ glob: string; negate: boolean; dirOnly: boolean }> = [];
-    for (const line of [...DEFAULT_IGNORES, ...texts.flatMap((t) => t.split(/\r?\n/))]) {
+    const lines = [
+        ...DEFAULT_IGNORES.map((line) => ({ line, base: '' })),
+        ...texts.flatMap((t) => {
+            const { text, base } = typeof t === 'string' ? { text: t, base: '' } : t;
+            return text.split(/\r?\n/).map((line) => ({ line, base }));
+        }),
+    ];
+    for (const { line, base } of lines) {
         let p = line.replace(/\s+$/, '');
         if (!p || p.startsWith('#')) continue;
         const negate = p.startsWith('!');
@@ -99,7 +135,9 @@ export function ignoreMatcher(texts: readonly string[]): (path: string) => boole
         if (dirOnly) p = p.slice(0, -1);
         const anchored = p.includes('/');
         p = p.replace(/^\//, '');
-        if (p) rules.push({ glob: anchored ? p : `**/${p}`, negate, dirOnly });
+        // A nested `.gitignore` scopes its patterns to its own folder.
+        const prefix = base ? `${base}/` : '';
+        if (p) rules.push({ glob: anchored ? `${prefix}${p}` : `${prefix}**/${p}`, negate, dirOnly });
     }
     return (path) => {
         const segments = path.split('/');
@@ -111,6 +149,19 @@ export function ignoreMatcher(texts: readonly string[]): (path: string) => boole
         }
         return ignored;
     };
+}
+
+/** The ignore files present in a listing, each with the folder its patterns are relative to. */
+export function ignoreSourcesOf(paths: readonly string[]): Array<{ path: string; base: string }> {
+    const out: Array<{ path: string; base: string }> = [];
+    for (const path of [...paths].sort(compareStr)) {
+        if (path === '.builderforce/ignore') out.push({ path, base: '' });
+        else if (path === '.gitignore' || path.endsWith('/.gitignore')) {
+            if (path.split('/').some((seg) => seg === 'node_modules' || seg === '.git')) continue;
+            out.push({ path, base: path.slice(0, -'.gitignore'.length).replace(/\/$/, '') });
+        }
+    }
+    return out;
 }
 
 /** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root. */

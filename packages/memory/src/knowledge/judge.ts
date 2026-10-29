@@ -144,6 +144,8 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
     const claims: Array<{ ref: NodeRef; text: string }> = [];
     const anchor = { path: a.path, contentHash: a.fileHash };
     for (const section of a.sections) {
+        // Honoured per section, not only when the port throws: the caller drops this file whole.
+        if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
         if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; continue; }
         const result = await call(a.port, {
             kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
@@ -211,6 +213,7 @@ export async function compareClaims(a: CompareArgs): Promise<void> {
         const id = `${p.a}\u0000${p.b}`;
         if (seen.has(id)) continue;
         seen.add(id);
+        if (a.signal?.aborted) return;
         if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; continue; }
         const ca = a.claims.get(p.a)!, cb = a.claims.get(p.b)!;
         const A = p.a as NodeRef, B = p.b as NodeRef;

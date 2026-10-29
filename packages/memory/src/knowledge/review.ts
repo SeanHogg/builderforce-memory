@@ -9,9 +9,10 @@
  *
  * Store judgement, compute perception: only `model` facts and relations are written —
  * `extracted` output goes to the extracted cache, never to memory ({@link assertStoredBatch}).
- * Abort is honoured between files; a file is written whole or not at all. A file whose
- * sections were cut by the budget stays "changed" in the manifest, so continuing re-plans it
- * and judges only the sections not judged yet.
+ * Abort is honoured between files and inside judgement; a file is written whole or not at
+ * all. A file whose sections were cut by the budget stays "changed" in the manifest, so
+ * *Continue* (the confirmed plan passed back as `args.plan`, no re-walk) judges only the
+ * sections not judged yet.
  */
 
 import { hashText } from '../ingest/hash.js';
@@ -22,13 +23,13 @@ import type {
 } from './model.js';
 import type { SourceDocument, ParsedSection } from '../ingest/types.js';
 import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
-import { planDetail } from './plan.js';
+import { planDetail, refreshPlan } from './plan.js';
 import {
     asPathSource, composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, resolveRelativePath,
     saveManifestMap,
 } from './sources.js';
 import {
-    budgetLeft, compareClaims, DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type JudgeBudget,
+    compareClaims, DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type JudgeBudget,
 } from './judge.js';
 import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
 import { basenameOf, canonicalJson, compareStr, factKeyOf, srcRef } from './refs.js';
@@ -99,6 +100,21 @@ class StoredIndex {
     }
 }
 
+/**
+ * `[[Name]]` → the one listed file named `Name` (or `Name.md`), case-insensitively, anywhere
+ * in the root. Ambiguous names resolve to none, so the link falls back to the linking folder.
+ */
+export function nameResolver(paths: readonly string[]): (name: string) => string | undefined {
+    const byName = new Map<string, string | null>();
+    for (const p of [...paths].sort(compareStr)) {
+        const base = basenameOf(p).toLowerCase();
+        for (const key of new Set([base, base.replace(/\.md$/, '')])) {
+            byName.set(key, byName.has(key) && byName.get(key) !== p ? null : p);
+        }
+    }
+    return (name) => byName.get(name.trim().toLowerCase()) ?? undefined;
+}
+
 export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     const now = () => Date.now();
     const started = now();
@@ -111,7 +127,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         factsWritten: 0, relationsWritten: 0, staleMarked: 0, aborted: false, durationMs: 0,
     };
 
-    const detail = await planDetail(source, manifest, packs);
+    const detail = args.plan ? await refreshPlan(args.plan, manifest) : await planDetail(source, manifest, packs);
     progress({ phase: 'plan', done: detail.files.length, total: detail.files.length });
     const composed = composePacks(packs);
     const packIds = packs.map((p) => p.id).sort(compareStr);
@@ -123,6 +139,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         rootId,
         knownKeys: knownKeysOf(resolveEntities([...entities.keys()].map((k) => ({ ref: k as NodeRef, key: entityName(k) })))),
         resolvePath: resolveRelativePath,
+        resolveName: nameResolver(detail.files.map((f) => f.path)),
     };
     const budget: JudgeBudget = {
         modelCalls: args.budget?.modelCalls ?? DEFAULT_REVIEW_MODEL_CALLS,
@@ -149,7 +166,8 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         if (signal?.aborted) { report.aborted = true; break; }
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
         const doc = await source.read(f.path);
-        if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) continue;
+        // Recorded, so a file found binary on read is not re-read by every later review.
+        if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) { filesNow.set(f.path, f.hash); continue; }
         const src = asPathSource(doc, f.path, f.hash);
         const hit = composed.resolve(src);
         if (!hit) continue;
@@ -170,12 +188,15 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
                 else toJudge.push({ ref: node.ref, text });
             }
             const unjudgedBefore = batch.unjudged;
+            // Staged per file: a section counts as judged only once its facts are written,
+            // so an abort mid-file leaves it to be judged again (written whole or not at all).
+            const judgedHere = new Map<NodeRef, string>();
             progress({ phase: 'judge', done: i, total: changed.length, path: f.path });
             try {
                 const claims = await judgeSections({
                     port: args.judgement, pack: hit.pack.id, path: f.path, fileHash: f.hash, sections: toJudge,
                     budget, batch, entities, ...(signal ? { signal } : {}),
-                    onJudged: (ref) => judgedNow.set(ref, hashText(toJudge.find((s) => s.ref === ref)!.text)),
+                    onJudged: (ref) => judgedHere.set(ref, hashText(toJudge.find((s) => s.ref === ref)!.text)),
                 });
                 for (const c of claims) newClaims.set(c.ref, { text: c.text, hash: f.hash });
             } catch (err) {
@@ -184,6 +205,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
                 report.aborted = true;
                 break;
             }
+            for (const [ref, h] of judgedHere) judgedNow.set(ref, h);
             complete = batch.unjudged === unjudgedBefore;
         }
         progress({ phase: 'write', done: i, total: changed.length, path: f.path });
@@ -208,7 +230,8 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         }
         progress({ phase: 'resolve', done: 0, total: newClaims.size });
         const wantsCompare = packs.some((p) => p.judgement?.contradictions);
-        if (wantsCompare && args.judgement && args.similar && newClaims.size > 0 && budgetLeft(budget)) {
+        // Run even with the budget spent: compareClaims counts every pair it skips as unjudged.
+        if (wantsCompare && args.judgement && args.similar && newClaims.size > 0) {
             const pairs = await args.similar([...newClaims.keys()].sort(compareStr));
             const claims = new Map(newClaims);
             for (const p of pairs) {
@@ -218,7 +241,9 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
                 }
             }
             progress({ phase: 'judge', done: 0, total: pairs.length });
-            await compareClaims({ port: args.judgement, pairs, claims, budget, batch, ...(signal ? { signal } : {}) });
+            await compareClaims({ port: args.judgement, pairs, claims, budget, batch, ...(signal ? { signal } : {}) })
+                .catch((err: unknown) => { if (!signal?.aborted) throw err; });
+            if (signal?.aborted) report.aborted = true;
         }
     }
 

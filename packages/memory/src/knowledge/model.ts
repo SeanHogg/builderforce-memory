@@ -10,7 +10,7 @@
  * ones are stored with the content hash they were judged from and go stale when it changes.
  */
 
-import type { IngestManifest, SourceDocument, ParsedSection } from '../ingest/types.js';
+import type { SourceDocument, ParsedSection } from '../ingest/types.js';
 import type { IndexDoc, SimilarPair } from '../retrieval/knowledge-index/types.js';
 
 /** `src:${rootId}::${path}` · `ent:${pack}:${normalizedName}` · `fact:${key}` (claims are `fact:claim:${hash}`). */
@@ -49,6 +49,8 @@ export interface KEdge {
     confidence?: number;
     verdict?: EdgeVerdict;
     cycle?: boolean;
+    /** A stored relation whose source changed since it was judged (§5.2): shown, never treated as current. */
+    stale?: boolean;
 }
 
 /** Output of a pack's deterministic extractor (or analyzer) for one source. Never stored. */
@@ -67,6 +69,8 @@ export interface ExtractContext {
     knownKeys: ReadonlyMap<string, NodeRef>;
     /** Resolves a relative link/import from `fromPath` to a root-relative path, or undefined. */
     resolvePath(fromPath: string, target: string): string | undefined;
+    /** Resolves a bare `[[Name]]` to a root-relative path by file name anywhere in the root (the review's listing). */
+    resolveName?(name: string): string | undefined;
 }
 
 /** A finding a person can act on. `kind` is pack-defined; `requestKey` names an i18n template. */
@@ -204,15 +208,6 @@ export interface KnowledgeStore {
     putExtracted?(hash: string, extracted: Extracted[]): Promise<void>;
 }
 
-/** Where files come from: one adapter per host. */
-export interface DirectorySource {
-    rootId: string;
-    title: string;
-    list(): AsyncIterable<{ path: string; hash: string; size: number }>;
-    read(path: string): Promise<SourceDocument>;
-    watch?(cb: (paths: string[]) => void): () => void;
-}
-
 export interface LiveOverlay {
     changes: Array<{ path: string; status: string; added: number; removed: number }>;
     /** Files touched together in one run → co-changed edges. */
@@ -225,53 +220,6 @@ export interface KnowledgeGraph {
     edges: KEdge[];
     findings: Finding[];
     stats: { sources: number; nodes: number; edges: number; stale: number; truncated: boolean };
-}
-
-export interface ReviewPlan {
-    rootId: string;
-    files: number;
-    byPack: Record<string, number>;
-    unchanged: number;
-    changed: string[];
-    removed: string[];
-    skipped: Array<{ path: string; reason: 'ignored' | 'binary' | 'too-large' | 'no-pack' }>;
-    /** ≈ judgement calls for changed files (sections of judged kinds). */
-    estimatedModelCalls: number;
-}
-
-export interface ReviewProgress {
-    phase: 'plan' | 'extract' | 'resolve' | 'judge' | 'write' | 'index' | 'done';
-    done: number;
-    total: number;
-    path?: string;
-}
-
-export interface ReviewReport {
-    rootId: string;
-    digest: string;
-    extracted: number;
-    judged: number;
-    /** Sections left extracted-only because the budget ran out. */
-    unjudged: number;
-    invalidJudgements: number;
-    factsWritten: number;
-    relationsWritten: number;
-    staleMarked: number;
-    aborted: boolean;
-    durationMs: number;
-}
-
-export interface ReviewArgs {
-    source: DirectorySource;
-    store: KnowledgeStore;
-    packs: KnowledgePack[];
-    manifest: IngestManifest;
-    judgement?: JudgementPort;
-    /** Near-duplicate claim pairs to compare / possible-same entities; from the knowledge index. */
-    similar?: (ids: string[]) => Promise<SimilarPair[]>;
-    budget: { modelCalls: number; ms: number };
-    signal?: AbortSignal;
-    onProgress?(p: ReviewProgress): void;
 }
 
 export interface BuildGraphInput {
@@ -310,3 +258,7 @@ export interface Trace {
 
 /** Re-exported for card consumers. */
 export type { IndexDoc };
+/** The review's ports and reports live beside it (reviewModel.ts); re-exported so one import serves. */
+export type {
+    DirectorySource, ReviewPlan, ReviewProgress, ReviewReport, ReviewArgs,
+} from './reviewModel.js';

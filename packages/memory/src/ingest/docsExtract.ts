@@ -6,9 +6,12 @@
  * sections and the extract context. Emits, all with `origin: 'extracted'`:
  *
  *   • a `file` node, and a `section` node per heading breadcrumb, joined by `contains`;
- *   • `links` edges for relative markdown links, `[[wiki]]` links and HTML hrefs, resolved
- *     through `ctx.resolvePath` (an unresolvable target is skipped; a missing one stays an
- *     edge, so the graph can report it broken);
+ *   • `links` edges for relative markdown links (inline and reference-style), `[[wiki]]`
+ *     links (by name anywhere in the root through `ctx.resolveName`, else beside the linking
+ *     file) and HTML hrefs, resolved through `ctx.resolvePath`. A missing target — or one
+ *     outside the root — stays an edge, so the graph can report it broken;
+ *   • text before the first markdown heading (or a file with none) is a `section` too, so
+ *     it is judged and carded like any other;
  *   • `mentions` edges where a section's normalized text contains a known entity key;
  *   • keys: path, basename, heading slugs and front-matter values.
  *
@@ -79,13 +82,18 @@ class ExtractBuilder {
         let decoded = clean;
         try { decoded = decodeURI(clean); } catch { /* keep the raw target */ }
         const resolved = this.ctx.resolvePath(this.path, decoded);
-        if (resolved !== undefined && resolved !== this.path) this.edge(from, srcRef(this.ctx.rootId, resolved), 'links');
+        // Outside the root: kept under its written path, so it surfaces as a broken link.
+        const target = resolved ?? decoded.replace(/^\.\//, '');
+        if (target !== this.path) this.edge(from, srcRef(this.ctx.rootId, target), 'links');
     }
 
     wikiLinks(from: NodeRef, text: string): void {
         for (const m of text.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
             const name = m[1]!.trim();
-            if (name) this.link(from, /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(name) ? name : `${name}.md`);
+            if (!name) continue;
+            const byName = name.includes('/') ? undefined : this.ctx.resolveName?.(name);
+            if (byName !== undefined) { if (byName !== this.path) this.edge(from, srcRef(this.ctx.rootId, byName), 'links'); continue; }
+            this.link(from, /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(name) ? name : `${name}.md`);
         }
     }
 
@@ -120,10 +128,13 @@ class ExtractBuilder {
     }
 }
 
+/** Leading `---` fenced front matter; group 1 is its body. */
+const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+
 /** `key: value` and `- item` front matter between leading `---` fences. */
 export function frontMatterOf(text: string): Record<string, string[]> {
     const out: Record<string, string[]> = {};
-    const m = /^---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/.exec(text);
+    const m = FRONT_MATTER.exec(text);
     if (!m) return out;
     let current: string | undefined;
     for (const line of m[1]!.split(/\r?\n/)) {
@@ -148,6 +159,19 @@ function excerpt(text: string): string {
 }
 
 const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+/** `[id]: target` definitions (reference-style links); the use is `[text][id]` or `[id][]`. */
+const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?$/gm;
+const MD_REF_USE = /(?<!!)\[([^\]]*)\]\[([^\]]*)\]/g;
+
+/** Reference-link definitions of a whole markdown text, by lower-cased label. */
+function refDefinitions(text: string): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const m of text.matchAll(MD_REF_DEF)) {
+        const label = m[1]!.trim().toLowerCase();
+        if (!out.has(label)) out.set(label, m[2]!);
+    }
+    return out;
+}
 
 export function extractMarkdown(source: SourceDocument, sections: ParsedSection[], ctx: Ctx): Extracted {
     const b = new ExtractBuilder(source, ctx);
@@ -177,9 +201,10 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
         return ref;
     };
 
+    const refs = refDefinitions(textOf(source));
     sections.forEach((section, index) => {
         const headingPath = section.metadata?.['headingPath'];
-        let from = b.fileRef;
+        let from: NodeRef;
         if (typeof headingPath === 'string' && headingPath) {
             const crumbs = headingPath.split(BREADCRUMB_SEPARATOR);
             // Headings with no body of their own are not emitted by the parser; recover them.
@@ -187,9 +212,18 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
                 if (!refByCrumb.has(crumbs.slice(0, k).join('\u0000'))) sectionNode(crumbs.slice(0, k));
             }
             from = sectionNode(crumbs, index, section.text);
+        } else {
+            // Text before the first heading (or a file with none) is judged like a section;
+            // a preamble that is only front matter is the file's, not a section.
+            const body = section.text.replace(FRONT_MATTER, '').trim();
+            from = body ? b.bodySection(index, body) : b.fileRef;
         }
         for (const m of section.text.matchAll(MD_LINK)) {
             if (!m[1]!.startsWith('#')) b.link(from, m[1]!);
+        }
+        for (const m of section.text.matchAll(MD_REF_USE)) {
+            const target = refs.get((m[2] || m[1] || '').trim().toLowerCase());
+            if (target && !target.startsWith('#')) b.link(from, target);
         }
         b.wikiLinks(from, section.text);
         b.mentions(from, section.text);
