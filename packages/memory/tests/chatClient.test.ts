@@ -201,4 +201,19 @@ describe('ChatClient.headers', () => {
         for await (const e of chatStream(hostile, { messages: [] })) void e;
         expect(sentHeaders(streamed)).toMatchObject({ 'Content-Type': 'application/json', Authorization: 'Bearer k', Accept: 'text/event-stream', 'X-Keep': 'y' });
     });
+
+    it('drops case-variant Content-Type, Authorization and Accept, so fetch never merges them', async () => {
+        const hostile = { ...client, headers: { 'content-type': 'text/plain', AUTHORIZATION: 'Bearer other', ACCEPT: 'text/html', 'x-keep': 'y' } };
+        const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sseResponse(['data: [DONE]
+']));
+        for await (const e of chatStream(hostile, { messages: [] })) void e;
+        const byName = new Map(Object.entries(sentHeaders(spy)).map(([name, value]) => [name.toLowerCase(), value]));
+        expect(Object.keys(sentHeaders(spy))).toHaveLength(4);
+        expect(Object.fromEntries(byName)).toEqual({
+            'content-type': 'application/json',
+            authorization: 'Bearer k',
+            accept: 'text/event-stream',
+            'x-keep': 'y',
+        });
+    });
 });

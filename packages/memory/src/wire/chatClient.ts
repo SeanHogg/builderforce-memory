@@ -93,6 +93,13 @@ export class ChatCompletionError extends Error {
 
 const ERROR_BODY_CHARS = 300;
 
+/** Header names the client owns; `ChatClient.headers` may not set them, in any letter case. */
+const RESERVED_HEADERS = new Set(['content-type', 'authorization', 'accept']);
+
+function extraHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+    return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !RESERVED_HEADERS.has(name.toLowerCase())));
+}
+
 function chatBody(req: ChatRequest, stream: boolean): string {
     return JSON.stringify({
         ...(req.model ? { model: req.model } : {}),
@@ -113,7 +120,7 @@ async function post(client: ChatClient, req: ChatRequest, stream: boolean, signa
     const res = await fetch(`${client.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
-            ...client.headers,
+            ...extraHeaders(client.headers),
             'Content-Type': 'application/json',
             Authorization: `Bearer ${client.apiKey}`,
             ...(stream ? { Accept: 'text/event-stream' } : {}),
