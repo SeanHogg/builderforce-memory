@@ -109,7 +109,10 @@ describe("VideoRVQCodec — structure & roundtrip", () => {
     expect(recon.length).toBe(video.length);
     for (const f of recon) {
       expect(f.length).toBe(8 * 8 * 3);
-      for (const px of f) expect(px).toBeGreaterThanOrEqual(0), expect(px).toBeLessThanOrEqual(1);
+      for (const px of f) {
+        expect(px).toBeGreaterThanOrEqual(0);
+        expect(px).toBeLessThanOrEqual(1);
+      }
     }
   });
 
