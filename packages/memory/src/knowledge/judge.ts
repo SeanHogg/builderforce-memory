@@ -204,27 +204,45 @@ export interface CompareArgs {
     signal?: AbortSignal;
 }
 
+export interface CompareOutcome {
+    /** Claim refs in a pair that was NOT compared (budget, failed call, abort) — still awaiting comparison. */
+    skipped: Set<string>;
+    /** The abort landed before every pair was compared. */
+    aborted: boolean;
+}
+
 /** Near-duplicate claim pairs, most similar first, compared within the budget. */
-export async function compareClaims(a: CompareArgs): Promise<void> {
+export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
+    const out: CompareOutcome = { skipped: new Set(), aborted: false };
     const pairs = [...a.pairs]
         .filter((p) => p.a !== p.b && a.claims.has(p.a) && a.claims.has(p.b))
         .map((p) => (compareStr(p.a, p.b) <= 0 ? p : { a: p.b, b: p.a, similarity: p.similarity }))
         .sort((x, y) => y.similarity - x.similarity || compareStr(x.a, y.a) || compareStr(x.b, y.b));
+    const skip = (p: { a: string; b: string }) => { out.skipped.add(p.a); out.skipped.add(p.b); };
+    const abort = (from: number) => { out.aborted = true; for (const p of pairs.slice(from)) skip(p); return out; };
     const seen = new Set<string>();
-    for (const p of pairs) {
+    for (const [i, p] of pairs.entries()) {
         const id = `${p.a}\u0000${p.b}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        if (a.signal?.aborted) return;
-        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; continue; }
+        if (a.signal?.aborted) return abort(i);
+        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; skip(p); continue; }
         const ca = a.claims.get(p.a)!, cb = a.claims.get(p.b)!;
         const A = p.a as NodeRef, B = p.b as NodeRef;
-        const result = await call(a.port, {
-            kind: 'compare',
-            items: [{ ref: A, text: ca.text, sourceHash: ca.hash }, { ref: B, text: cb.text, sourceHash: cb.hash }],
-            ...(a.signal ? { signal: a.signal } : {}),
-        }, a.budget);
-        const v = validateCompare(result, A, B);
+        let answer;
+        try {
+            answer = await call(a.port, {
+                kind: 'compare',
+                items: [{ ref: A, text: ca.text, sourceHash: ca.hash }, { ref: B, text: cb.text, sourceHash: cb.hash }],
+                ...(a.signal ? { signal: a.signal } : {}),
+            }, a.budget);
+        } catch (err) {
+            if (!a.signal?.aborted) throw err;
+            return abort(i);
+        }
+        // A failed call compared nothing: counted unjudged, and the claims stay awaiting.
+        if (!answer) { a.batch.unjudged += 1; skip(p); continue; }
+        const v = validateCompare(answer.result, A, B);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
         if (v.relation === 'contradicts' || v.relation === 'agrees') {
@@ -233,4 +251,5 @@ export async function compareClaims(a: CompareArgs): Promise<void> {
             });
         }
     }
+    return out;
 }
