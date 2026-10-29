@@ -9,7 +9,7 @@
  */
 
 import { hashText } from '../ingest/hash.js';
-import type { Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
+import type { EdgeVerdict, Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { possibleSameFindings } from './resolve.js';
 import { aboutTargets, compareStr, round6 } from './refs.js';
@@ -20,6 +20,11 @@ export const CLONE_GROUP_BADGE = 'cloneGroup';
 export const MAX_FINDING_NODES = 50;
 
 const SEVERITY_RANK = { error: 0, warn: 1, info: 2 } as const;
+
+/** A partition violation's severity: an upward edge is an error, a skipped layer a warning. */
+export function partitionSeverity(verdict: EdgeVerdict): Finding['severity'] {
+    return verdict === 'upward' ? 'error' : 'warn';
+}
 
 export function findingId(kind: string, refs: readonly string[]): string {
     return `${kind}:${hashText([...refs].sort(compareStr).join('\u0000'))}`;
@@ -105,7 +110,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
         }
         if (e.verdict === 'upward' || e.verdict === 'skips') {
             const from = byRef.get(e.from), to = byRef.get(e.to);
-            out.push(finding('partition-violation', packOf(e.from), [e.from, e.to], e.verdict === 'upward' ? 'error' : 'warn', {
+            out.push(finding('partition-violation', packOf(e.from), [e.from, e.to], partitionSeverity(e.verdict), {
                 verdict: e.verdict, from: from?.partition ?? '', to: to?.partition ?? '', kind: e.kind,
             }));
         }

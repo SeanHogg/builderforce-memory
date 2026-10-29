@@ -83,6 +83,8 @@ export interface KnowledgeIndex {
     digest(): string;
     /** Tiers available right now (dense only with a matching embedder). */
     tiers(): IndexTier[];
+    /** Whether a doc with this id is indexed. */
+    has(id: string): boolean;
     size(): number;
     serialize(): Uint8Array;
 }

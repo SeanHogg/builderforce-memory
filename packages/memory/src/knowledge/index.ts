@@ -26,7 +26,7 @@ export {
 } from './trace.js';
 export type { LanedTrace, TraceOptions } from './trace.js';
 export {
-    computeFindings, genericFindings, finding, findingId, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
+    computeFindings, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
 } from './findings.js';
 export {
     resolveEntities, knownKeysOf, possibleSameFindings, normalizeKey, entityName, entityKey,

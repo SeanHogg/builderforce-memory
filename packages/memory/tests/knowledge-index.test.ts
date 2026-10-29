@@ -77,6 +77,17 @@ describe('tiers', () => {
     });
 });
 
+describe('has', () => {
+    it('is false before upsert, true after, false after remove', async () => {
+        const index = createKnowledgeIndex({ embedder: makeEmbedder(24), params: FAST });
+        expect(index.has('doc00001')).toBe(false);
+        await index.upsert(makeDocs(5));
+        expect(index.has('doc00001')).toBe(true);
+        index.remove(['doc00001']);
+        expect(index.has('doc00001')).toBe(false);
+    });
+});
+
 describe('serialize', () => {
     it('round-trips to the same digest, bytes and results', async () => {
         const embedder = makeEmbedder(24);

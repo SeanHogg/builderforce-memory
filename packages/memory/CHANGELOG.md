@@ -1,5 +1,12 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.35
+
+### Index membership and partition severity (`/knowledge`)
+
+- **`KnowledgeIndex.has(id)`** says whether a doc with that id is indexed. A host that adds provisional cards for a compare can now skip claims it already holds. Before this, a host could only see whether `size()` grew, and re-upserting an indexed claim replaced its card (label, sections and entity keys) with the raw claim text.
+- **`partitionSeverity(verdict)`** is exported from `/knowledge`: an `upward` edge is an `error`, a skipped layer a `warn`. `genericFindings` uses it, so a host that re-judges a partition violation from its own edge applies the same rule.
+
 ## 2026.10.34
 
 ### Claim text is bounded to 3 lines again (`/knowledge`)

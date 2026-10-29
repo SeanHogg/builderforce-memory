@@ -98,6 +98,10 @@ class DeterministicKnowledgeIndex implements KnowledgeIndex {
         return availableTiers(this._state, this._embedder);
     }
 
+    has(id: string): boolean {
+        return this._state.docs.has(id);
+    }
+
     size(): number {
         return this._state.docs.size;
     }
