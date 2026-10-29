@@ -1,5 +1,18 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.34
+
+### Claim text is bounded to 3 lines again (`/knowledge`)
+
+- **`clampClaim` bounds the claim text to `MAX_QUOTE_LINES` lines as well as `MAX_CLAIM_TEXT_CHARS` characters.** 2026.10.33 bounded the text by length only, so a model claim whose terms spanned many lines passed whole. The privacy rule is that fact text and quote spans are each at most 3 lines. Single-line judge output still passes unchanged. The quote keeps its own 3-line, 300-character bound, and `clampClaim` stays idempotent.
+- **README.** The `/knowledge` section documents the review flow:
+  - planning, including `PlanOptions.compare` and `force`;
+  - the manifest keys a host persists;
+  - `similar(ids, texts?)`;
+  - single-file re-extraction;
+  - the privacy bounds;
+  - a minimal host example.
+
 ## 2026.10.33
 
 ### Directory review closes the PRD 38 audit (`/knowledge`)

@@ -104,6 +104,150 @@ The brief changes every turn, so where it goes decides what the prompt cache can
 - **Reading a stored map.** `consolidatedFiles(content)` lists the files a map names. A store can anchor the map to them. `withoutConsolidatedFiles(content, paths)` drops files that changed since the map was written and keeps the rest. It returns `null` when no file is left.
 - **Choosing maps for a run.** `consolidatedFactsFor(facts, areas)` keeps the maps whose area overlaps the areas a run is about, most specific first. `areasOfPathsIn(text)` gives the areas of the repo-relative paths a request names. `areasNamedIn(text, areas)` finds stored areas a request names by word (`"the run store"` matches `…/runStore`). Generic directory names such as `src` never match.
 
+## Knowledge graph (`@seanhogg/builderforce-memory/knowledge`)
+
+A directory review turns a folder into a graph of facts connected to each other and to the sources they came from (PRD 38). The subpath is pure TypeScript and runs in a browser, a Worker and Node. A host supplies ports only, never graph logic: a `DirectorySource`, a `KnowledgeStore`, an `IngestManifest`, and optionally a `JudgementPort` and a `similar` function.
+
+**Store judgement, compute perception.** Nodes and edges derived from source text (`origin: 'extracted'`) are recomputed from the sources and cached by content hash through `KnowledgeStore.getExtracted` / `putExtracted`. They are never written as knowledge, and `assertStoredBatch` throws if a batch carries one. Only what a model, a person or an agent judged (`model`, `human`, `agent`) is stored, together with the content hash it was judged from. That judgement goes stale when the hash changes.
+
+### What a review is
+
+`reviewDirectory(args)` walks a `DirectorySource`, diffs it against the `IngestManifest` by content hash, and reviews only the changed files:
+
+```
+plan → per changed file: read · parse · extract (cached) · judge · write · markStale
+     → analyzers → compare near-duplicate claims → manifest + scope digest
+```
+
+| `ReviewArgs` field | Meaning |
+|---|---|
+| `source: DirectorySource` | `{ rootId, title, list(), read(path), watch?() }`. One adapter per host. |
+| `store: KnowledgeStore` | Where judgement is persisted. `LocalSnapshotStore` persists to a single JSON snapshot for a folder not linked to a project. |
+| `packs: KnowledgePack[]` | Parsers, partitions, findings and a `JudgementSpec`. `DOCS_PACK` is built in. A host registers its own (for example a code pack). |
+| `manifest: IngestManifest` | `get` / `set` / `delete` of `ChunkFingerprint[]` (`{ id, hash }`) per key. |
+| `judgement?: JudgementPort` | `judge({ kind: 'extract' \| 'compare', items })`. Without it the review extracts and writes no model facts. |
+| `similar?` | Near-duplicate claim pairs from a knowledge index. Needed, with `judgement`, for the compare phase. See below. |
+| `budget: { modelCalls, ms }` | Judge-call and wall-clock caps. `DEFAULT_REVIEW_MODEL_CALLS` is 200. |
+| `plan?: PlanDetail` | *Continue*: the plan the person confirmed. It is refreshed against the manifest, not re-walked. |
+| `force?: boolean` | *Re-review all*. Ignored when `plan` is given. |
+| `signal?`, `onProgress?` | Abort and progress. Phases: `plan`, `extract`, `resolve`, `judge`, `write`, `index`, `done`. |
+
+Abort is honoured between files and inside judgement. A file is written whole or not at all. A file cut short by the budget stays changed in the manifest, so *Continue* judges only the sections not judged yet. A read that throws never retires a file: its knowledge and manifest hash stay as they were, `ReviewReport.readErrors` counts it, and the next review tries it again. Only a file absent from a fresh plan is removed.
+
+`ReviewReport` carries `digest`, `extracted`, `judged`, `unjudged` (sections and compare pairs left for *Continue*), `invalidJudgements`, `factsWritten`, `relationsWritten`, `staleMarked`, `readErrors`, `aborted` and `durationMs`.
+
+### Planning (the confirm chip)
+
+`planReview(source, manifest, packs, opts?)` returns a `ReviewPlan` (`files`, `byPack`, `unchanged`, `changed`, `removed`, `skipped`, `estimatedModelCalls`). `planDetail` returns the same plan plus what `reviewDirectory` needs to *Continue*: a `PlanDetail` of `{ plan, files: PlannedFile[], prior, extractor, carried }`. A plan reads no file whose hash is unchanged. The only reads are the ignore files.
+
+- **`PlanOptions.force`** marks every file changed, whatever its hash. Removals still come from the real manifest, which a fake empty manifest would lose along with the compare backlog. A forced run that is cut short is forced again; *Continue* re-derives what is left from content hashes.
+- **`PlanOptions.compare`** (default `true`) says whether the run will compare near-duplicate claims. **A host that will not pass `similar` must pass `compare: false`.** Otherwise the estimate counts compare calls, including the waiting backlog of up to 2000 claims, that the run never spends.
+- **`refreshPlan(detail, manifest)`** is *Continue*: it re-reads `changed` and `owed` against the manifest as the last run left it, without walking the directory. A file finished since is not reviewed again. A file the last run left owed is picked up.
+
+`PlannedFile` is `{ path, hash, size, pack, changed, owed }`. `skipped` entries carry a reason: `ignored`, `binary`, `too-large` (default cap `DEFAULT_MAX_FILE_BYTES`, 2 MB, set with `maxFileBytes`) or `no-pack`.
+
+`estimatedModelCalls` counts:
+
+- one call per judged section of each file whose content changed, estimated at `AVG_SECTION_BYTES` (1500) bytes per section, for packs whose `JudgementSpec` asks for `claims` or `entities`;
+- for an unchanged file that is owed a re-extraction, the calls it is still owed, plus one while an extractor upgrade is pending;
+- when `compare` is true and a pack asks for `contradictions`, one compare call per 10 of those sections, including the claims already waiting in the compare backlog.
+
+### Manifest keys a host persists
+
+The review keeps its state in the `IngestManifest` you pass, under four keys per root. The host stores each value as an opaque list of `{ id, hash }` rows and returns them unchanged. It must not interpret, parse or drop rows.
+
+| Key | Helper | Rows |
+|---|---|---|
+| `knowledge:<root>` | `filesManifestKey` | `{ id: path, hash }` for every reviewed file. |
+| `knowledge:<root>:judged` | `judgedManifestKey` | `{ id: sectionRef, hash: textHash }` for every judged section. |
+| `knowledge:<root>:compare` | `compareManifestKey` | `{ id: claimRef, hash: '<age>:<fileHash>' }` for claims awaiting comparison. Age 0 is the oldest. |
+| `knowledge:<root>:extractor` | `extractorManifestKey` | The extractor version and the owed files. |
+
+The `:extractor` entry holds `{ id: 'version', hash: '<EXTRACTOR_VERSION>' }` plus one `{ id: 'owed:<path>', hash: '<calls>' }` per file still owed a re-extraction, where `<calls>` is the number of model calls the file is expected to cost. A file is owed when the stored version differs from `EXTRACTOR_VERSION`, or when an earlier run left it unfinished: cut by the budget, a failed judge call, a read error, or an abort before it. Every run writes the entry, including a run that aborts. Unchanged sections re-anchor for free after an upgrade; only new sections cost a call. `ExtractorState` is the parsed form.
+
+The compare backlog keeps the age in each row because a host manifest may return rows sorted by id. The review trims the backlog only after a compare actually ran. It is capped at 2000 claims, oldest dropped first. Only packs whose `judgement.contradictions` is true queue claims. A run without ports leaves the backlog as it found it.
+
+### `similar(ids, texts?)`
+
+```ts
+similar?: (ids: string[], texts?: ReadonlyMap<string, string>) => Promise<SimilarPair[]>
+```
+
+`ids` are the pending claim refs, sorted. `texts` maps each ref to its claim text (`subject predicate object`), so a host can embed the claims without re-reading facts. A `SimilarPair` is `{ a, b, similarity }`. A port that accepts only `ids` keeps working. Typically the port upserts the claims into a `KnowledgeIndex` (exported from the same subpath) and returns its `similarPairs(...)`.
+
+### Re-extracting one file
+
+A host watching edits does not need a review to refresh a single file:
+
+```ts
+import { extractFile, extractFileDetailed, knownKeysOfEntities } from '@seanhogg/builderforce-memory/knowledge';
+
+const extracted = await extractFile({ rootId, path, hash, doc, packs, store });
+```
+
+`ExtractFileArgs` is `{ rootId, path, hash, doc, packs, store, composed?, knownKeys? }`. `extractFile` returns the file's `Extracted`, stamped with `EXTRACTOR_VERSION`, or `undefined` when no pack's parser accepts it. `extractFileDetailed` returns `{ extracted, parser, pack, sections }`. Both read and write only the extracted cache, keyed by content hash, so a repeat call for the same hash is free. A cached entry of another extractor version is ignored. `mentions` edges resolve against the store's `ent:` facts unless you pass `knownKeys`, which `knownKeysOfEntities(keys)` builds from fact keys.
+
+### Privacy bounds
+
+A server that stores claims applies the same bounds the review applies to judge output:
+
+- `clampQuote(text)` keeps at most `MAX_QUOTE_LINES` (3) lines and `MAX_QUOTE_CHARS` (300) characters.
+- `clampClaim(content)` bounds the claim text to `MAX_CLAIM_TEXT_CHARS` (602: three terms of 200 characters plus two separators) and clamps its quote.
+
+Both are idempotent, and `clampClaim` passes judge output through unchanged.
+
+### Parsers, packs and the docs pack
+
+`composePacks(packs)` builds the one `ParserRegistry` a review and a plan share and resolves each file to a `{ parser, pack }`. The built-in text parsers decline PDF and Office media types. Those files are reviewed only when a host parser claims their media type; otherwise they are skipped as `binary`. `.builderforce/ignore` and every `.gitignore` apply, a nested one to its own folder.
+
+The built-in `DOCS_PACK` extracts:
+
+- inline and reference-style links, and `[[wiki]]` links resolved by file name anywhere in the root;
+- links that point outside the root, kept as broken links;
+- a section for the text before the first heading (`#~preamble`).
+
+Its findings are `brokenLinkRule`, `orphanDocumentRule` and `contradictionRule`. A stale relation (`KEdge.stale`) is shown, never treated as current.
+
+### Building and tracing the graph
+
+```ts
+const graph = buildGraph({ rootId, extracted, facts, relations, packs }, { maxNodes: 400 });
+const trace = traceGraph(graph, someRef, { maxDepth: 4 });
+```
+
+`buildGraph(input, opts?)` joins the cached extracts with the stored facts and relations into a `KnowledgeGraph` (`scope`, `nodes`, `edges`, `findings`, `stats`). Importance is PageRank, so the graph truncates to `maxNodes` (default 400, cap 2000) by importance. `[[Name]]` links are re-pointed here, over the files present now, so a cached extract never depends on which other files exist. `graphDigest(input)` is a content hash of the inputs. `traceGraph(graph, from, opts?)` follows `references`, `links` and `mentions` edges (`edgeKinds`) to `maxDepth` (4) and `maxSteps` (60), and groups the steps into partition lanes; `toMermaid` draws a trace as a sequence diagram. `computeFindings` combines the generic findings (`cycle`, `clone-group`, `near-duplicate`, `partition-violation`, `unpartitioned`, `stale`) with each pack's `FindingRule`s.
+
+### A minimal host
+
+```ts
+import {
+  DOCS_PACK, planDetail, reviewDirectory,
+  type DirectorySource, type JudgementPort, type KnowledgeStore, type PlanDetail,
+} from '@seanhogg/builderforce-memory/knowledge';
+import type { IngestManifest } from '@seanhogg/builderforce-memory';
+
+declare const source: DirectorySource;
+declare const store: KnowledgeStore;
+declare const manifest: IngestManifest;
+declare const judgement: JudgementPort | undefined;
+declare const confirm: (calls: number) => Promise<boolean>;
+
+const packs = [DOCS_PACK];
+// This host passes no `similar`, so it must plan with compare: false.
+const detail: PlanDetail = await planDetail(source, manifest, packs, { compare: false });
+
+if (await confirm(detail.plan.estimatedModelCalls)) {
+  const report = await reviewDirectory({
+    source, store, packs, manifest, judgement,
+    budget: { modelCalls: 200, ms: 120_000 },
+    plan: detail,            // omit to let the review plan for itself
+  });
+  console.log(report.judged, 'judged,', report.unjudged, 'left for Continue,', report.readErrors, 'unreadable');
+}
+```
+
+When `plan` is omitted, `reviewDirectory` plans with `compare` set to whether it was given both `similar` and `judgement`, so a host that does not pass `similar` is estimated correctly. When a host passes a `plan` it built itself, the `compare` option it planned with must match the ports it passes.
+
 ## Installation
 
 ```bash

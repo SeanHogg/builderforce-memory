@@ -1,6 +1,6 @@
 {
   "name": "@seanhogg/builderforce-memory",
-  "version": "2026.10.33",
+  "version": "2026.10.34",
   "description": "BuilderForce Agent Memory — runtime layer. SSM execution, Transformer orchestration, online distillation, enterprise RAG (ingestion pipelines, vector-store adapters, tenant/ACL-scoped hybrid retrieval), multi-agent graph orchestration, LLM telemetry and cost accounting, persistent agent memory, and token-saving agent-run memory (code maps, a prompt-cache-safe working memory, chunked transcript windowing) for BuilderForce.ai agents.",
   "main": "dist/index.js",
   "module": "dist/index.js",

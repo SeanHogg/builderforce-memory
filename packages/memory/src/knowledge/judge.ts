@@ -40,7 +40,10 @@ export function clampQuote(text: string): string {
 
 const QUOTE_SEPARATOR = ' — “';
 const QUOTE_CLOSE = '”';
-/** The longest a claim's own text may be: subject, predicate and object at {@link MAX_TERM} characters each, joined by two spaces. */
+/**
+ * The longest a claim's own text may be: subject, predicate and object at {@link MAX_TERM} characters
+ * each, joined by two spaces — and at most {@link MAX_QUOTE_LINES} lines, like a quote (PRD 38 §4.8).
+ */
 export const MAX_CLAIM_TEXT_CHARS = 3 * MAX_TERM + 2;
 
 /** A claim's stored `content`: its text, then its quote when it has one. */
@@ -57,14 +60,17 @@ export function claimTextOf(content: string): string {
 }
 
 /**
- * A claim's `content` as a host may store it (privacy: a judgement, never a document): the
- * text bounded to {@link MAX_CLAIM_TEXT_CHARS} characters (its terms may span lines, as the
- * judge validates them), the quote it rests on by {@link clampQuote} — so a long claim is not
- * cut mid-quote. Content the judge produced passes unchanged; an empty quote is dropped (the
- * canonical {@link claimContent} form); clamping a clamped claim changes nothing.
+ * A claim's `content` as a host may store it (privacy, PRD 38 §4.8: fact text and quote spans
+ * of no more than {@link MAX_QUOTE_LINES} lines, never a whole file): the text bounded to
+ * {@link MAX_QUOTE_LINES} lines AND {@link MAX_CLAIM_TEXT_CHARS} characters, the quote it rests
+ * on by {@link clampQuote} — so a long claim is not cut mid-quote. Content the judge produced
+ * passes unchanged when its terms are single-line, as they are in practice; terms spanning
+ * lines are cut to {@link MAX_QUOTE_LINES} by design. Each part is trimmed at both ends, an
+ * empty quote is dropped (the canonical {@link claimContent} form), and clamping a clamped
+ * claim changes nothing.
  */
 export function clampClaim(content: string): string {
-    const text = claimTextOf(content).slice(0, MAX_CLAIM_TEXT_CHARS);
+    const text = firstLines(claimTextOf(content), MAX_QUOTE_LINES).trim().slice(0, MAX_CLAIM_TEXT_CHARS).trimEnd();
     const at = content.indexOf(QUOTE_SEPARATOR);
     if (at < 0) return text;
     const rest = content.slice(at + QUOTE_SEPARATOR.length);

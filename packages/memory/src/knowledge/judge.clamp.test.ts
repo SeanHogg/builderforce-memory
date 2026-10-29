@@ -14,10 +14,20 @@ describe('clampClaim', () => {
         expect(clampClaim('x'.repeat(20_000))).toHaveLength(MAX_CLAIM_TEXT_CHARS);
     });
 
-    it('keeps the lines of a claim text (its terms may span lines) and only bounds its characters', () => {
-        const text = Array.from({ length: MAX_QUOTE_LINES + 4 }, (_, i) => `line ${i}`).join('\n');
-        expect(clampClaim(text)).toBe(text);
-        expect(clampClaim(claimContent(text, 'it says so'))).toBe(claimContent(text, 'it says so'));
+    it('bounds a claim text to the quote line bound (PRD 38 §4.8): a 5-line text gives 3 lines', () => {
+        const lines = Array.from({ length: 5 }, (_, i) => `line ${i}`);
+        expect(MAX_QUOTE_LINES).toBe(3);
+        expect(clampClaim(lines.join('\n'))).toBe('line 0\nline 1\nline 2');
+        expect(clampClaim(lines.join('\r\n'))).toBe('line 0\nline 1\nline 2');
+        expect(clampClaim(lines.slice(0, MAX_QUOTE_LINES).join('\n'))).toBe('line 0\nline 1\nline 2');
+    });
+
+    it('bounds both parts of a multi-line text with a multi-line quote', () => {
+        const text = Array.from({ length: 5 }, (_, i) => `term ${i}`).join('\n');
+        const quote = Array.from({ length: 6 }, (_, i) => `quote ${i}`).join('\n');
+        const clamped = clampClaim(claimContent(text, quote));
+        expect(clamped).toBe(claimContent('term 0\nterm 1\nterm 2', 'quote 0\nquote 1\nquote 2'));
+        expect(clampClaim(clamped)).toBe(clamped);
     });
 
     it('lets what the judge produces through unchanged, at its longest', () => {
@@ -53,6 +63,17 @@ describe('clampClaim', () => {
         const quote = 'q'.repeat(MAX_QUOTE_CHARS - 1);
         expect(clampQuote(`${quote} ${'r'.repeat(50)}`)).toBe(quote);
         expect(clampQuote(clampQuote(`${quote}\n${'r'.repeat(50)}`))).toBe(quote);
+    });
+
+    it('is idempotent where the text cut lands on a line break or a space', () => {
+        for (const gap of ['\n', ' ']) {
+            const text = `${'a'.repeat(MAX_CLAIM_TEXT_CHARS - 1)}${gap}${'b'.repeat(50)}`;
+            for (const content of [text, claimContent(text, 'short quote')]) {
+                const once = clampClaim(content);
+                expect(claimTextOf(once)).toBe('a'.repeat(MAX_CLAIM_TEXT_CHARS - 1)); // the cut gap is trimmed, not kept
+                expect(clampClaim(once)).toBe(once);
+            }
+        }
     });
 
     it('drops an empty quote to the canonical form', () => {
