@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.32
+
+### Extra headers on the chat client (`/wire`)
+
+- **`ChatClient.headers`.** An optional map of extra request headers a gateway needs, such as tenant or run attribution. `chatComplete` and `chatStream` send them on every request. They are spread first, so they cannot override `Content-Type`, `Authorization` or `Accept`.
+
 ## 2026.10.31
 
 ### Fact authors are user ids (`/knowledge`)

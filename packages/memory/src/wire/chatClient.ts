@@ -76,6 +76,11 @@ export interface ChatClient {
     apiKey: string;
     /** Abort a request after this long. Default: no limit beyond the caller's signal. */
     timeoutMs?: number;
+    /**
+     * Extra request headers a gateway needs (tenant / run attribution, …). They cannot
+     * override `Content-Type`, `Authorization` or `Accept`.
+     */
+    headers?: Record<string, string>;
 }
 
 /** A non-2xx answer, with the status and (bounded) body kept apart for the caller's message. */
@@ -108,6 +113,7 @@ async function post(client: ChatClient, req: ChatRequest, stream: boolean, signa
     const res = await fetch(`${client.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
+            ...client.headers,
             'Content-Type': 'application/json',
             Authorization: `Bearer ${client.apiKey}`,
             ...(stream ? { Accept: 'text/event-stream' } : {}),

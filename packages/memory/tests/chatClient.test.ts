@@ -165,3 +165,40 @@ describe('chatStream', () => {
         await expect(it.next()).rejects.toMatchObject({ name: 'ChatCompletionError', status: 503, body: 'overloaded' });
     });
 });
+
+describe('ChatClient.headers', () => {
+    const attributed = { ...client, headers: { 'X-Tenant-Id': '7', 'X-Run-Id': 'r1' } };
+
+    function sentHeaders(spy: { mock: { calls: unknown[][] } }): Record<string, string> {
+        return (spy.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    }
+
+    it('sends the client headers on a non-streamed completion', async () => {
+        const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: 'hi' } }] }));
+        await chatComplete(attributed, { messages: [] });
+        expect(sentHeaders(spy)).toMatchObject({
+            'X-Tenant-Id': '7',
+            'X-Run-Id': 'r1',
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer k',
+        });
+    });
+
+    it('sends the client headers on a streamed completion', async () => {
+        const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+        for await (const e of chatStream(attributed, { messages: [] })) void e;
+        expect(sentHeaders(spy)).toMatchObject({ 'X-Tenant-Id': '7', 'X-Run-Id': 'r1', Accept: 'text/event-stream' });
+    });
+
+    it('cannot override Content-Type, Authorization or Accept', async () => {
+        const hostile = { ...client, headers: { 'Content-Type': 'text/plain', Authorization: 'Bearer other', Accept: 'text/html', 'X-Keep': 'y' } };
+        const complete = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '' } }] }));
+        await chatComplete(hostile, { messages: [] });
+        expect(sentHeaders(complete)).toMatchObject({ 'Content-Type': 'application/json', Authorization: 'Bearer k', 'X-Keep': 'y' });
+        complete.mockRestore();
+
+        const streamed = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+        for await (const e of chatStream(hostile, { messages: [] })) void e;
+        expect(sentHeaders(streamed)).toMatchObject({ 'Content-Type': 'application/json', Authorization: 'Bearer k', Accept: 'text/event-stream', 'X-Keep': 'y' });
+    });
+});
