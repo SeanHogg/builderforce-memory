@@ -35,11 +35,13 @@ export type { ResolvedEntity } from './resolve.js';
 export { toCards } from './cards.js';
 export { planReview, planDetail, refreshPlan, AVG_SECTION_BYTES } from './plan.js';
 export type { PlanOptions, PlannedFile, PlanDetail } from './plan.js';
+export type { ExtractorState } from './owedFiles.js';
 export { reviewDirectory, assertStoredBatch } from './review.js';
 export { extractFile, extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
 export type { ExtractFileArgs, FileExtraction } from './extractFile.js';
 export {
-    validateExtract, validateCompare, clampQuote, MAX_QUOTE_LINES, MAX_QUOTE_CHARS, DEFAULT_REVIEW_MODEL_CALLS, REVIEW_FACT_SOURCE,
+    validateExtract, validateCompare, clampQuote, clampClaim, MAX_QUOTE_LINES, MAX_QUOTE_CHARS, MAX_CLAIM_TEXT_CHARS,
+    DEFAULT_REVIEW_MODEL_CALLS, REVIEW_FACT_SOURCE,
 } from './judge.js';
 export {
     composePacks, ignoreMatcher, ignoreSourcesOf, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,

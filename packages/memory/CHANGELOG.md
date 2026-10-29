@@ -1,5 +1,45 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.33
+
+### Directory review closes the PRD 38 audit (`/knowledge`)
+
+2026.10.32 already carried part of this work without a changelog entry. This entry covers every `/knowledge` change since 2026.10.31.
+
+**What a review now does**
+
+- **Extractor upgrades are tracked per file.** The `knowledge:<root>:extractor` manifest entry holds the extractor version plus the files still owed a re-extraction (`owed:<path>`, with the calls each still costs).
+  - Every run records it, including runs that abort.
+  - A file a run leaves unfinished stays owed until it completes: cut by the budget, a failed judge call, a read error, or an abort before it.
+  - A permanently unreadable file is the only file re-read; the rest of the root is not re-processed.
+  - On upgrade from 2026.10.32 or earlier every file is owed once. Unchanged sections re-anchor for free; only new sections, such as the text before the first heading, cost a call.
+- **The estimate tracks what a run spends.** `planDetail` and `planReview` count owed files at their recorded cost, plus one call per file while an upgrade is pending. They also count the compare calls for claims waiting to be compared.
+  - New `PlanOptions.compare` (default `true`). A host that will not pass `similar` must pass `compare: false`, or the estimate counts compare calls that never happen.
+  - New `PlanOptions.force` re-reviews every file, unlike a fake empty manifest, which loses removed files and the compare backlog.
+  - `refreshPlan` lets *Continue* reuse a confirmed plan without re-walking the directory.
+- **Claims awaiting comparison keep their order and survive runs without the ports.** The backlog is trimmed only when a pack asks for contradictions and the compare actually ran. It is capped at 2000, oldest dropped first, and the order survives a manifest that comes back sorted by id. Only packs with `judgement.contradictions` queue claims.
+- **`similar(ids, texts?)`.** The port now receives each pending claim's text, so a host need not re-read facts to embed them. A port that takes only `ids` keeps working.
+- **Read errors never retire a file.** `ReviewReport.readErrors` counts them; the file's knowledge and manifest hash stay as they were.
+- **Docs pack.**
+  - Reference-style links are followed.
+  - `[[wiki]]` links resolve by name anywhere in the root; links outside the root stay as broken links.
+  - The text before the first heading is a section (`#~preamble`).
+  - Nested `.gitignore` files apply to their own folder.
+  - PDF and Office files are reviewed only when a host parser claims their media type.
+- **Stale and contradiction findings.** Relations and model facts on a deleted or changed source show as stale. A new `contradictionRule` finding names both sections.
+
+**New exports**
+
+- `extractFile`, `extractFileDetailed`, `knownKeysOfEntities` (with the types `ExtractFileArgs` and `FileExtraction`) re-extract one file the way a review does. They are for a host watching edits.
+- `refreshPlan`, the `ExtractorState` type, `EXTRACTOR_VERSION`, `extractorManifestKey`, `compareManifestKey`.
+- `clampQuote`, `clampClaim`, `MAX_QUOTE_LINES`, `MAX_QUOTE_CHARS`, `MAX_CLAIM_TEXT_CHARS`: the privacy bounds a server applies to stored claims. `clampClaim` is idempotent and passes judge output through unchanged.
+- `oneLineLabel`, `finding`, `nameResolver`, `aboutTargets`, `ignoreSourcesOf`, `isDocumentPath`, `resolveDocument`, `contradictionRule`.
+
+**Breaking for hosts**
+
+- `IGNORE_FILES` is no longer exported.
+- `ReviewReport.readErrors` and `PlannedFile.owed` are required fields. `PlanDetail` gains `extractor` and `carried`.
+
 ## 2026.10.32
 
 ### Extra headers on the chat client (`/wire`)

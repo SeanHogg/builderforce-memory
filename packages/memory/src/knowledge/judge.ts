@@ -27,15 +27,24 @@ const MAX_NAME = 120;
 export const MAX_QUOTE_CHARS = 300;
 export const MAX_QUOTE_LINES = 3;
 
-/** A quote as it may be stored: at most {@link MAX_QUOTE_LINES} lines and {@link MAX_QUOTE_CHARS} characters, trimmed. */
+/** The first `n` lines of `text`, joined with `\n` (line endings normalised). */
+const firstLines = (text: string, n: number): string => text.split(/\r?\n/).slice(0, n).join('\n');
+
+/**
+ * A quote as it may be stored: at most {@link MAX_QUOTE_LINES} lines and {@link MAX_QUOTE_CHARS}
+ * characters, trimmed at both ends — also after the cut, so clamping a clamped quote changes nothing.
+ */
 export function clampQuote(text: string): string {
-    return text.split(/\r?\n/).slice(0, MAX_QUOTE_LINES).join('\n').trim().slice(0, MAX_QUOTE_CHARS);
+    return firstLines(text, MAX_QUOTE_LINES).trim().slice(0, MAX_QUOTE_CHARS).trimEnd();
 }
 
 const QUOTE_SEPARATOR = ' — “';
+const QUOTE_CLOSE = '”';
+/** The longest a claim's own text may be: subject, predicate and object at {@link MAX_TERM} characters each, joined by two spaces. */
+export const MAX_CLAIM_TEXT_CHARS = 3 * MAX_TERM + 2;
 
 /** A claim's stored `content`: its text, then its quote when it has one. */
-export const claimContent = (text: string, quote: string): string => (quote ? `${text}${QUOTE_SEPARATOR}${quote}”` : text);
+export const claimContent = (text: string, quote: string): string => (quote ? `${text}${QUOTE_SEPARATOR}${quote}${QUOTE_CLOSE}` : text);
 
 /**
  * The text a claim is compared by: `subject predicate object`, the form a first run hands the
@@ -45,6 +54,21 @@ export const claimContent = (text: string, quote: string): string => (quote ? `$
 export function claimTextOf(content: string): string {
     const i = content.indexOf(QUOTE_SEPARATOR);
     return i < 0 ? content : content.slice(0, i);
+}
+
+/**
+ * A claim's `content` as a host may store it (privacy: a judgement, never a document): the
+ * text bounded to {@link MAX_CLAIM_TEXT_CHARS} characters (its terms may span lines, as the
+ * judge validates them), the quote it rests on by {@link clampQuote} — so a long claim is not
+ * cut mid-quote. Content the judge produced passes unchanged; an empty quote is dropped (the
+ * canonical {@link claimContent} form); clamping a clamped claim changes nothing.
+ */
+export function clampClaim(content: string): string {
+    const text = claimTextOf(content).slice(0, MAX_CLAIM_TEXT_CHARS);
+    const at = content.indexOf(QUOTE_SEPARATOR);
+    if (at < 0) return text;
+    const rest = content.slice(at + QUOTE_SEPARATOR.length);
+    return claimContent(text, clampQuote(rest.endsWith(QUOTE_CLOSE) ? rest.slice(0, -QUOTE_CLOSE.length) : rest));
 }
 
 export interface JudgeBudget {

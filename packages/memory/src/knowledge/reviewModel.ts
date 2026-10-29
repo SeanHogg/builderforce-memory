@@ -63,8 +63,14 @@ export interface ReviewArgs {
     packs: KnowledgePack[];
     manifest: IngestManifest;
     judgement?: JudgementPort;
-    /** Near-duplicate claim pairs to compare / possible-same entities; from the knowledge index. */
-    similar?: (ids: string[]) => Promise<SimilarPair[]>;
+    /**
+     * Near-duplicate claim pairs to compare / possible-same entities; from the knowledge index.
+     * Called with the pending claim refs (sorted) and, as an optional second argument, each
+     * ref's claim text (`subject predicate object`, the form the compare uses) — so a host
+     * need not re-read every fact to recover what the review already holds. A port that takes
+     * only `ids` keeps working.
+     */
+    similar?: (ids: string[], texts?: ReadonlyMap<string, string>) => Promise<SimilarPair[]>;
     budget: { modelCalls: number; ms: number };
     /** *Continue*: the plan the person confirmed. Reused without a re-walk; `changed` is re-read from the manifest. */
     plan?: PlanDetail;

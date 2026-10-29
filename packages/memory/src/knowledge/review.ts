@@ -15,7 +15,9 @@
  * Abort is honoured between files and inside judgement; a file is written whole or not at
  * all. A file whose sections were cut by the budget stays "changed" in the manifest, so
  * *Continue* (the confirmed plan passed back as `args.plan`, no re-walk) judges only the
- * sections not judged yet.
+ * sections not judged yet. A file owed under an extractor upgrade that this run left
+ * unfinished (a failed read, an abort, the budget) stays owed — see owedFiles.ts — so the
+ * next review or *Continue* picks up exactly those files, whatever their content does.
  */
 
 import { hashText } from '../ingest/hash.js';
@@ -23,10 +25,9 @@ import type { SourceDocument } from '../ingest/types.js';
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
 import type { NodeRef, ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
 import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
+import { owedAfterRun, owedCalls, saveExtractorState } from './owedFiles.js';
 import { planDetail, refreshPlan } from './plan.js';
-import {
-    composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, saveExtractorVersion, saveManifestMap,
-} from './sources.js';
+import { composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
 import { extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
 import { DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type CompareOutcome, type JudgeBudget } from './judge.js';
 import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
@@ -53,7 +54,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
 
     const detail = args.plan
         ? await refreshPlan(args.plan, manifest)
-        : await planDetail(source, manifest, packs, args.force ? { force: true } : {});
+        : await planDetail(source, manifest, packs, { ...(args.force ? { force: true } : {}), compare: !!args.similar && !!args.judgement });
     progress({ phase: 'plan', done: detail.files.length, total: detail.files.length });
     const composed = composePacks(packs);
     const packIds = packs.map((p) => p.id).sort(compareStr);
@@ -106,16 +107,25 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     };
 
     const changed = detail.files.filter((f) => f.changed);
+    // Changed files this run finished (or had nothing to do for); an owed file not in it stays owed,
+    // at the model calls it still costs where this run could measure that (see owedFiles.ts).
+    const finished = new Set<string>();
+    const measured = new Map<string, number>();
     for (const [i, f] of changed.entries()) {
         if (signal?.aborted) { report.aborted = true; break; }
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
         // A read that throws (permissions, a lock, a race with a delete) says nothing about the file:
         // skipped with its knowledge and manifest hash intact, tried again next review.
         let doc: SourceDocument;
-        try { doc = await source.read(f.path); } catch { report.readErrors += 1; continue; }
+        try { doc = await source.read(f.path); } catch {
+            report.readErrors += 1;
+            measured.set(f.path, owedCalls(detail.extractor, f.path)); // a read error learns nothing: keep what it was owed
+            continue;
+        }
         // Recorded, so a file found binary on read is not re-read by every later review.
         if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) {
             filesNow.set(f.path, f.hash);
+            finished.add(f.path);
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
             continue;
@@ -123,7 +133,7 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         const extraction = await extractFileDetailed({
             rootId, path: f.path, hash: f.hash, doc, packs, store, composed, knownKeys,
         });
-        if (!extraction) continue;
+        if (!extraction) { finished.add(f.path); continue; }
         const { extracted: ex, sections, pack } = extraction;
         report.extracted += 1;
 
@@ -150,7 +160,11 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
                     budget, batch, entities, ...(signal ? { signal } : {}),
                     onJudged: (ref) => judgedHere.set(ref, hashText(toJudge.find((s) => s.ref === ref)!.text)),
                 });
-                for (const c of claims) newClaims.set(c.ref, { text: c.text, hash: f.hash });
+                // Only a pack that asks for contradictions has claims to compare (the estimate counts the same).
+                // Deleted first so a re-judged claim moves to the newest position (the awaiting cap drops the oldest).
+                if (spec.contradictions) {
+                    for (const c of claims) { newClaims.delete(c.ref); newClaims.set(c.ref, { text: c.text, hash: f.hash }); }
+                }
             } catch (err) {
                 if (!signal?.aborted) throw err;
                 batch.take();
@@ -159,12 +173,18 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
             }
             for (const [ref, h] of judgedHere) judgedNow.set(ref, h);
             complete = batch.unjudged === unjudgedBefore;
+            // A content-changed file may revert to the manifest bytes: then all it had to judge — and what it was
+            // already owed from earlier cuts — is still owed.
+            if (!complete) {
+                const contentChanged = detail.prior.get(f.path) !== f.hash;
+                measured.set(f.path, contentChanged ? toJudge.length + (detail.extractor.owed.get(f.path) ?? 0) : batch.unjudged - unjudgedBefore);
+            }
         }
         progress({ phase: 'write', done: i, total: changed.length, path: f.path });
         await write();
         await store.markStale(scope, srcRef(rootId, f.path), f.hash);
         report.staleMarked += 1;
-        if (complete) filesNow.set(f.path, f.hash);
+        if (complete) { filesNow.set(f.path, f.hash); finished.add(f.path); }
     }
 
     if (!report.aborted) {
@@ -179,8 +199,9 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         progress({ phase: 'resolve', done: 0, total: newClaims.size });
     }
 
-    // The compare phase needs a pack asking for it AND both ports; without them nothing waits for it.
-    const canCompare = packs.some((p) => p.judgement?.contradictions) && !!args.judgement && !!args.similar;
+    // The compare phase needs a pack asking for it AND both ports.
+    const wantsCompare = packs.some((p) => p.judgement?.contradictions);
+    const canCompare = wantsCompare && !!args.judgement && !!args.similar;
     let outcome: CompareOutcome | undefined;
     if (!report.aborted && canCompare) {
         outcome = await compareNew({
@@ -190,7 +211,8 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         // Aborted only if the abort landed before the last pair was compared.
         if (outcome?.aborted) report.aborted = true;
     }
-    await saveAwaiting(manifest, rootId, newClaims, outcome, canCompare);
+    // No pack asks for contradictions: nothing waits, and an earlier run's awaiting set is left as it was.
+    if (wantsCompare) await saveAwaiting(manifest, rootId, newClaims, outcome);
 
     report.judged = batch.judged;
     report.unjudged = batch.unjudged;
@@ -198,8 +220,11 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     report.digest = sha256Hex(canonicalJson({ rootId, packs: packIds, files: [...filesNow].sort((a, b) => compareStr(a[0], b[0])) }));
     await saveManifestMap(manifest, filesManifestKey(rootId), filesNow);
     await saveManifestMap(manifest, judgedManifestKey(rootId), judgedNow);
-    // Recorded only once every changed file was handled: an abort or a skipped read leaves the next review to redo them.
-    if (!report.aborted && report.readErrors === 0) await saveExtractorVersion(manifest, rootId);
+    // After every run: today's version and every file still owed a re-extraction — the unfinished ones,
+    // content-changed or not, and the owed paths the plan did not list that the manifest still holds.
+    await saveExtractorState(manifest, rootId, owedAfterRun({
+        state: detail.extractor, changed, prior: detail.prior, finished, carried: detail.carried, live: filesNow, measured,
+    }));
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
     progress({ phase: 'done', done: changed.length, total: changed.length });

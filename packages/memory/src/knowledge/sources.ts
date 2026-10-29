@@ -16,8 +16,9 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 /**
  * Version of the extractors' output. Bump it whenever an extractor emits different nodes,
  * edges or keys for the same text: cached `Extracted` of another version is ignored, and a
- * review that finds a different version in {@link extractorManifestKey} re-extracts every file
- * exactly once (judged sections with unchanged text are re-anchored, not judged again).
+ * review that finds a different version in {@link extractorManifestKey} owes every file one
+ * re-extraction (judged sections with unchanged text are re-anchored, not judged again; see
+ * owedFiles.ts for how an unfinished one is carried to the next review).
  */
 export const EXTRACTOR_VERSION = 1;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
@@ -195,26 +196,16 @@ export function ignoreSourcesOf(paths: readonly string[]): Array<{ path: string;
 
 /** Manifest entry holding `{ id: path, hash }` for every reviewed file of a root. */
 export const filesManifestKey = (rootId: string): string => `knowledge:${rootId}`;
-/** Manifest entry holding `{ id: 'version', hash: String(EXTRACTOR_VERSION) }`: the extractor version the files were last reviewed with. */
+/** Manifest entry holding the extractor version the files were last reviewed with, and the files still owed a re-extraction (owedFiles.ts). */
 export const extractorManifestKey = (rootId: string): string => `knowledge:${rootId}:extractor`;
 /** Manifest entry holding `{ id: sectionRef, hash: textHash }` for every judged section. */
 export const judgedManifestKey = (rootId: string): string => `knowledge:${rootId}:judged`;
-/** Manifest entry holding `{ id: claimRef, hash: fileHash }` for every claim still awaiting comparison. */
+/** Manifest entry holding `{ id: claimRef, hash: '<age>:<fileHash>' }` for every claim still awaiting comparison (age 0 = oldest). */
 export const compareManifestKey = (rootId: string): string => `knowledge:${rootId}:compare`;
 
 export async function manifestMap(manifest: IngestManifest, key: string): Promise<Map<string, string>> {
     const prior: ChunkFingerprint[] = (await manifest.get(key)) ?? [];
     return new Map(prior.map((f) => [f.id, f.hash] as const));
-}
-
-/** The extractor version a root was last fully reviewed with; undefined when never recorded (a pre-versioning manifest). */
-export async function storedExtractorVersion(manifest: IngestManifest, rootId: string): Promise<number | undefined> {
-    const v = Number((await manifestMap(manifest, extractorManifestKey(rootId))).get('version'));
-    return Number.isFinite(v) ? v : undefined;
-}
-
-export async function saveExtractorVersion(manifest: IngestManifest, rootId: string): Promise<void> {
-    await manifest.set(extractorManifestKey(rootId), [{ id: 'version', hash: String(EXTRACTOR_VERSION) }]);
 }
 
 export async function saveManifestMap(manifest: IngestManifest, key: string, map: ReadonlyMap<string, string>): Promise<void> {

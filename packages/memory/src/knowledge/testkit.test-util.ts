@@ -4,10 +4,12 @@
  */
 
 import { hashText } from '../ingest/hash.js';
+import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
 import { buildGraph } from './build.js';
 import type {
-    DirectorySource, Extracted, JudgementPort, JudgementRequest, JudgementResult, KEdge, KNode, KnowledgeStore, NodeRef,
+    DirectorySource, Extracted, JudgementPort, JudgementRequest, JudgementResult, KEdge, KNode, KnowledgePack, KnowledgeStore, NodeRef, ReviewArgs,
 } from './model.js';
+import { loadExtractorState } from './owedFiles.js';
 import { DOCS_PACK } from './packs/docs.js';
 import { LocalSnapshotStore, type SnapshotPersistence } from './stores/localSnapshotStore.js';
 import { srcRef } from './refs.js';
@@ -47,6 +49,27 @@ export function memPersistence(): SnapshotPersistence & { value?: string } {
 export function memStore(): LocalSnapshotStore {
     return new LocalSnapshotStore(memPersistence(), { now: () => '2026-10-28T00:00:00.000Z' });
 }
+
+/** Three one-section docs, the common fixture of the review tests. */
+export const FILES = { 'a.md': '# A\nalpha\n', 'b.md': '# B\nbeta\n', 'c.md': '# C\ngamma\n' };
+export const ALL = ['a.md', 'b.md', 'c.md'];
+
+/** `ReviewArgs` over the docs pack with a generous budget; `extra` overrides anything. */
+export const args = (
+    source: SpySource, store: KnowledgeStore = memStore(), manifest = new InMemoryIngestManifest(), extra: Partial<ReviewArgs> = {},
+): ReviewArgs => ({ source, store, manifest, packs: [DOCS_PACK], budget: { modelCalls: 200, ms: 60_000 }, ...extra });
+
+/** A root's extractor entry as `{ version, owed: sorted paths }`. */
+export async function stateOf(manifest: InMemoryIngestManifest) {
+    const { version, owed } = await loadExtractorState(manifest, ROOT);
+    return { version, owed: [...owed.keys()].sort() };
+}
+
+/** A `similar` port that pairs the first two ids it is given (nothing to pair with fewer). */
+export const similar = async (ids: string[]) => (ids.length >= 2 ? [{ a: ids[0]!, b: ids[1]!, similarity: 0.95 }] : []);
+
+/** The docs pack with contradictions off: no compare phase, so no awaiting set. */
+export const quietPack: KnowledgePack = { ...DOCS_PACK, judgement: { ...DOCS_PACK.judgement!, contradictions: false } };
 
 /** Answers every extract with one claim + one entity, every compare with `contradicts`. */
 export function fakeJudge(

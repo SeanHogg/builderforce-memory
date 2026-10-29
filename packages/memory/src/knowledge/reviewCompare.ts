@@ -8,7 +8,7 @@
 import type { IngestManifest } from '../ingest/types.js';
 import { claimTextOf, compareClaims, type CompareOutcome, type JudgeBudget, type JudgedBatch } from './judge.js';
 import type { NodeRef, ReviewArgs, StoredFact } from './model.js';
-import { compareManifestKey, manifestMap, saveManifestMap } from './sources.js';
+import { compareManifestKey } from './sources.js';
 import { compareStr, factKeyOf } from './refs.js';
 
 /** At most this many claims wait for *Continue*; beyond it the oldest are dropped (the set stays bounded). */
@@ -17,10 +17,23 @@ export const MAX_AWAITING_CLAIMS = 2000;
 /** A claim awaiting comparison: its text and the content hash it was judged from. */
 export type PendingClaims = Map<string, { text: string; hash: string }>;
 
-/** Claims a previous run left awaiting comparison, read back from their stored facts (a gone fact drops out). */
+/**
+ * The compare manifest persists age with each entry — `hash` is `<age>:<fileHash>`, age 0 the
+ * oldest — because a host manifest may hand entries back in id order. An entry without an age
+ * (written before ages were kept) reads as the oldest.
+ */
+const ageOf = (hash: string): number => {
+    const sep = hash.indexOf(':');
+    const age = sep < 0 ? NaN : Number(hash.slice(0, sep));
+    return Number.isFinite(age) ? age : -1;
+};
+
+/** Claims a previous run left awaiting comparison, oldest first, read back from their stored facts (a gone fact drops out). */
 export async function pendingClaims(manifest: IngestManifest, rootId: string, facts: ReadonlyMap<string, StoredFact>): Promise<PendingClaims> {
     const out: PendingClaims = new Map();
-    for (const ref of (await manifestMap(manifest, compareManifestKey(rootId))).keys()) {
+    const stored = (await manifest.get(compareManifestKey(rootId))) ?? [];
+    const oldestFirst = [...stored].sort((a, b) => ageOf(a.hash) - ageOf(b.hash) || compareStr(a.id, b.id));
+    for (const { id: ref } of oldestFirst) {
         const fact = facts.get(factKeyOf(ref as NodeRef) ?? '');
         if (fact?.key.startsWith('claim:')) out.set(ref, { text: claimTextOf(fact.content), hash: fact.fileAnchors[0]?.contentHash ?? '' });
     }
@@ -37,7 +50,7 @@ export async function compareNew(a: {
 }): Promise<CompareOutcome | undefined> {
     const { args, pending } = a;
     if (!args.judgement || !args.similar || pending.size === 0) return undefined;
-    const pairs = await args.similar([...pending.keys()].sort(compareStr));
+    const pairs = await args.similar([...pending.keys()].sort(compareStr), new Map([...pending].map(([ref, c]) => [ref, c.text] as const)));
     const claims: PendingClaims = new Map(pending);
     for (const p of pairs) {
         for (const id of [p.a, p.b]) {
@@ -52,17 +65,16 @@ export async function compareNew(a: {
 
 /**
  * Persists the claims still awaiting comparison, capped at {@link MAX_AWAITING_CLAIMS} (the
- * most recent: a previous run's first, this run's last). With `canCompare` false — no
- * judgement port, no `similar` port, or no pack asking for contradictions — the phase cannot
- * run at all, so nothing waits: it is not the same as an abort, which keeps every claim.
+ * most recent: a previous run's first, this run's last — and the order survives the reload,
+ * see {@link pendingClaims}). Call it only when a pack asks for contradictions; an `outcome`
+ * undefined means the compare did not run (no ports, an abort before it), so every pending
+ * claim is kept, whereas after a compare only the pairs it skipped still wait.
  */
 export async function saveAwaiting(
-    manifest: IngestManifest, rootId: string, pending: PendingClaims, outcome: CompareOutcome | undefined, canCompare: boolean,
+    manifest: IngestManifest, rootId: string, pending: PendingClaims, outcome: CompareOutcome | undefined,
 ): Promise<void> {
-    const awaiting = new Map<string, string>();
-    if (canCompare) {
-        for (const [ref, c] of pending) if (!outcome || outcome.skipped.has(ref)) awaiting.set(ref, c.hash);
-    }
-    const kept = awaiting.size > MAX_AWAITING_CLAIMS ? new Map([...awaiting].slice(-MAX_AWAITING_CLAIMS)) : awaiting;
-    await saveManifestMap(manifest, compareManifestKey(rootId), kept);
+    const awaiting: Array<[string, string]> = [];
+    for (const [ref, c] of pending) if (!outcome || outcome.skipped.has(ref)) awaiting.push([ref, c.hash]);
+    const kept = awaiting.slice(-MAX_AWAITING_CLAIMS);
+    await manifest.set(compareManifestKey(rootId), kept.map(([id, hash], age) => ({ id, hash: `${age}:${hash}` })));
 }

@@ -10,9 +10,10 @@
 
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
+import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls } from './owedFiles.js';
 import {
-    composePacks, DEFAULT_MAX_FILE_BYTES, EXTRACTOR_VERSION, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
-    isDocumentPath, manifestMap, resolveDocument, storedExtractorVersion, stubSource,
+    compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
+    isDocumentPath, manifestMap, resolveDocument, stubSource,
 } from './sources.js';
 import { compareStr, sortBy } from './refs.js';
 
@@ -27,11 +28,20 @@ export interface PlanOptions {
     /**
      * *Re-review all*: every file is `changed`, whatever its hash — but `removed` still comes
      * from the real prior manifest, and the estimate still counts only files whose content
-     * changed (sections whose text was judged before are re-anchored, not judged again).
+     * changed (sections whose text was judged before are re-anchored, not judged again), plus
+     * one call per file owed a re-extraction.
      * A forced run cut short is forced again, not continued: *Continue* re-derives what is
      * left from content hashes.
      */
     force?: boolean;
+    /**
+     * Whether the run will compare near-duplicate claims, which needs a `similar` port (and a
+     * judgement port). Default true. A host that will not pass `similar` MUST pass `false`:
+     * otherwise the estimate counts compare calls — including the awaiting backlog a run
+     * without ports keeps, up to 2000 claims — that it will never spend. (*Continue* keeps the
+     * estimate of the plan it continues; it is not recomputed.)
+     */
+    compare?: boolean;
 }
 
 export interface PlannedFile {
@@ -40,6 +50,11 @@ export interface PlannedFile {
     size: number;
     pack: string;
     changed: boolean;
+    /**
+     * Owed a re-extraction (another extractor version, or left unfinished by an earlier run),
+     * whether or not its content moved. See owedFiles.ts.
+     */
+    owed: boolean;
 }
 
 export interface PlanDetail {
@@ -48,6 +63,17 @@ export interface PlanDetail {
     files: PlannedFile[];
     /** The manifest's prior `path → hash`. */
     prior: Map<string, string>;
+    /** The extractor entry the plan was made against. */
+    extractor: ExtractorState;
+    /** Owed paths the manifest holds that `files` does not list (ignored, no pack, an older plan, removed). */
+    carried: string[];
+}
+
+/** The ONE classification of a listed file: did its content move, is it owed, is it re-processed. */
+function classify(extractor: ExtractorState, prior: ReadonlyMap<string, string>, path: string, hash: string, force = false) {
+    const contentChanged = prior.get(path) !== hash;
+    const owed = isOwed(extractor, path);
+    return { contentChanged, owed, changed: force || contentChanged || owed };
 }
 
 export async function planReview(
@@ -78,9 +104,9 @@ export async function planDetail(
     const ignored = ignoreMatcher(ignoreTexts);
     const composed = composePacks(packs);
     const prior = await manifestMap(manifest, filesManifestKey(source.rootId));
-    // Another extractor version than the one that reviewed these files: all are re-extracted
-    // once, but `prior` stays the real manifest (removals) and the estimate counts content changes only.
-    const everything = opts.force === true || (await storedExtractorVersion(manifest, source.rootId)) !== EXTRACTOR_VERSION;
+    // Another extractor version than the one that reviewed these files, or files an earlier run
+    // left unfinished: those are owed a re-extraction. `prior` stays the real manifest (removals).
+    const extractor = await loadExtractorState(manifest, source.rootId);
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
@@ -95,21 +121,31 @@ export async function planDetail(
         if (e.size > maxBytes) { skipped.push({ path: e.path, reason: 'too-large' }); continue; }
         const hit = document ?? composed.resolve(stubSource(e.path));
         if (!hit) { skipped.push({ path: e.path, reason: 'no-pack' }); continue; }
-        const contentChanged = prior.get(e.path) !== e.hash;
-        const changed = everything || contentChanged;
-        files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed });
+        const { contentChanged, owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
+        files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed, owed });
         byPack[hit.pack.id] = (byPack[hit.pack.id] ?? 0) + 1;
         const spec = packById.get(hit.pack.id)?.judgement;
-        if (contentChanged && spec && (spec.claims || spec.entities)) {
-            const sections = Math.max(1, Math.ceil(e.size / AVG_SECTION_BYTES));
-            estimatedSections += sections;
-            if (spec.contradictions) compareSections += sections;
+        if (spec && (spec.claims || spec.entities)) {
+            if (contentChanged) {
+                const sections = Math.max(1, Math.ceil(e.size / AVG_SECTION_BYTES));
+                estimatedSections += sections;
+                if (spec.contradictions) compareSections += sections;
+            } else if (owed) {
+                // An unchanged file costs what it is owed — and the claims of those sections reach the compare phase too.
+                const calls = owedCalls(extractor, e.path);
+                estimatedSections += calls;
+                if (spec.contradictions) compareSections += calls;
+            }
         }
     }
 
     const present = new Set(entries.map((e) => e.path));
     const removed = [...prior.keys()].filter((p) => !present.has(p)).sort(compareStr);
     const changed = files.filter((f) => f.changed).map((f) => f.path);
+    // The compare phase: this run's claims, plus those a run without ports left awaiting for the first run that has them.
+    const compares = opts.compare !== false && packs.some((p) => p.judgement?.contradictions);
+    const awaiting = compares ? (await manifestMap(manifest, compareManifestKey(source.rootId))).size : 0;
+    const compareCalls = compares ? Math.ceil((compareSections + awaiting) / SECTIONS_PER_COMPARE) : 0;
     const sortedByPack = Object.fromEntries(Object.keys(byPack).sort(compareStr).map((k) => [k, byPack[k]!]));
     return {
         plan: {
@@ -120,28 +156,34 @@ export async function planDetail(
             changed,
             removed,
             skipped,
-            estimatedModelCalls: estimatedSections + Math.ceil(compareSections / SECTIONS_PER_COMPARE),
+            estimatedModelCalls: estimatedSections + compareCalls,
         },
         files,
         prior,
+        extractor,
+        carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
     };
 }
 
 /**
  * *Continue*: the confirmed plan without a re-walk. Only `changed` is re-read — against the
- * manifest as the last run left it — so files finished since are not reviewed again. (While
- * the stored extractor version is not today's, every file still counts as changed.)
+ * manifest and owed list as the last run left them — so files finished since are not reviewed
+ * again, and files it left owed (an upgrade cut short, a failed read) are picked up.
  */
 export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
     const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
-    // The version entry is written only by a run that finished, so an upgrade cut short stays "everything".
-    const everything = (await storedExtractorVersion(manifest, detail.plan.rootId)) !== EXTRACTOR_VERSION;
-    const files = detail.files.map((f) => ({ ...f, changed: everything || prior.get(f.path) !== f.hash }));
+    const extractor = await loadExtractorState(manifest, detail.plan.rootId);
+    const files = detail.files.map((f) => {
+        const { owed, changed } = classify(extractor, prior, f.path, f.hash);
+        return { ...f, changed, owed };
+    });
     const changed = files.filter((f) => f.changed).map((f) => f.path);
     const removed = detail.plan.removed.filter((p) => prior.has(p));
     return {
         plan: { ...detail.plan, unchanged: files.length - changed.length, changed, removed },
         files,
         prior,
+        extractor,
+        carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
     };
 }
