@@ -1,5 +1,13 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.36
+
+### A review of a large folder no longer rewrites its snapshot per file (`/knowledge`)
+
+- **`KnowledgeStore.batched(work)`** runs many mutations as one unit: inside it a store may hold persistence back, `flush` makes everything so far durable, and the store is durable when `work` settles. `LocalSnapshotStore` implements it with a checkpoint at most every `checkpointMs` (default 30 s). `reviewDirectory` runs as one batch, so a review writes its snapshot a bounded number of times. Before this, each file rewrote the whole snapshot: 16.4 GB written over 2,340 files for a 5.8 MB snapshot. Outside a batch, each mutation still persists before it resolves.
+- **`KnowledgeStore.preloadExtracted(hashes)`** is a hint that lets a remote store fetch the extracted cache in bulk. `reviewDirectory` calls it once, with the distinct changed hashes, before the per-file loop.
+- **A review stores everything it produced, durably, before it saves any manifest.** The contradiction relations from the compare phase used to reach the store only after the manifests, so a crash there lost them while the manifests said the files were done. This also applies to a store without `batched`.
+
 ## 2026.10.35
 
 ### Index membership and partition severity (`/knowledge`)
