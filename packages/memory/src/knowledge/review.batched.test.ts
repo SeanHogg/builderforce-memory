@@ -95,11 +95,7 @@ describe('reviewDirectory over a batched store', () => {
     it('stores the relations the compare phase produced before the files manifest is saved', async () => {
         const events: string[] = [];
         const p = logging(events);
-        const text = { 'a.md': '# A
-alpha one
-', 'b.md': '# B
-beta two
-' };
+        const text = { 'a.md': '# A\nalpha one\n', 'b.md': '# B\nbeta two\n' };
         await reviewDirectory(args(memSource(text), storeOver(p), loggingManifest(events), { judgement: fakeJudge(), similar }));
         const manifestAt = events.indexOf('files-manifest');
         const writesBefore = events.slice(0, manifestAt).filter((e) => e === 'snapshot').length;
