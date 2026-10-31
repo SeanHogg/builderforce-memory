@@ -222,7 +222,7 @@ export interface KnowledgeStore {
      * Runs `work` as one unit of many mutations. Inside it the store may hold persistence back
      * (a whole-snapshot store would otherwise rewrite everything per mutation); `flush` makes
      * everything so far durable; when `work` settles, resolved or rejected, the store is durable.
-     * Optional: a store without it (the platform client, a test store) persists per mutation.
+     * Optional: a store without it persists per mutation.
      */
     batched?<T>(work: (flush: () => Promise<void>) => Promise<T>): Promise<T>;
 }

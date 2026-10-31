@@ -222,11 +222,13 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         // Aborted only if the abort landed before the last pair was compared.
         if (outcome?.aborted) report.aborted = true;
     }
-    // DURABILITY ORDER: the store is durable BEFORE the manifest says its files are done. A manifest ahead of
-    // the snapshot loses knowledge for good (the next review sees those files unchanged and skips them); a
-    // snapshot ahead of the manifest only re-reviews files. One flush covers the awaiting set (it names stored
-    // claims) and the files manifest: nothing mutates the store between them. The trailing lastDigest write
-    // is persisted by the end of the batch.
+    // DURABILITY ORDER: everything the run produced is stored and durable BEFORE a manifest says its files are
+    // done. A manifest ahead of the store loses knowledge for good (the next review sees those files unchanged
+    // and skips them); a store ahead of the manifest only re-reviews files. `write()` first stores what the compare
+    // phase left in the batch, then one flush covers the awaiting set (it names stored claims) and the files
+    // manifest: nothing mutates the store between them. The trailing write only stamps lastDigest; the end of
+    // the batch persists it.
+    await write();
     await flush();
     // No pack asks for contradictions: nothing waits, and an earlier run's awaiting set is left as it was.
     if (wantsCompare) await saveAwaiting(manifest, rootId, newClaims, outcome);

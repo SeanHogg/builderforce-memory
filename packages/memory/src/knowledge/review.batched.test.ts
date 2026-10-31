@@ -13,7 +13,7 @@ import type { KnowledgeStore } from './model.js';
 import { reviewDirectory } from './review.js';
 import { filesManifestKey } from './sources.js';
 import { LocalSnapshotStore, type SnapshotPersistence } from './stores/localSnapshotStore.js';
-import { args, fakeJudge, memSource, memStore, ROOT } from './testkit.test-util.js';
+import { args, fakeJudge, memSource, memStore, ROOT, similar } from './testkit.test-util.js';
 
 interface Log extends SnapshotPersistence { events: string[]; snapshots: string[]; value?: string }
 
@@ -86,9 +86,27 @@ describe('reviewDirectory over a batched store', () => {
         expect(report.aborted).toBe(true);
         expect(report.extracted).toBeLessThan(10);
         const persisted = content(p.value!);
-        expect(persisted.facts[ROOT]).toEqual(await store.facts({ rootId: ROOT }));
+        const byKey = (a: { key: string }, b: { key: string }) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
         expect(persisted.facts[ROOT].length).toBeGreaterThan(0);
+        expect([...persisted.facts[ROOT]].sort(byKey)).toEqual([...(await store.facts({ rootId: ROOT }))].sort(byKey));
         expect(Object.keys(persisted.extracted)).toHaveLength(report.extracted);
+    });
+
+    it('stores the relations the compare phase produced before the files manifest is saved', async () => {
+        const events: string[] = [];
+        const p = logging(events);
+        const text = { 'a.md': '# A
+alpha one
+', 'b.md': '# B
+beta two
+' };
+        await reviewDirectory(args(memSource(text), storeOver(p), loggingManifest(events), { judgement: fakeJudge(), similar }));
+        const manifestAt = events.indexOf('files-manifest');
+        const writesBefore = events.slice(0, manifestAt).filter((e) => e === 'snapshot').length;
+        const relations = (JSON.parse(p.snapshots[writesBefore - 1]!).relations[ROOT] ?? []) as Array<{ kind: string }>;
+        expect(relations.some((r) => r.kind === 'contradicts')).toBe(true);
+        // Per-file writes are held; the compare relations are stored, then flushed once, then the digest is stamped.
+        expect(events).toEqual(['snapshot', 'files-manifest', 'snapshot']);
     });
 
     it('a store without batched still works', async () => {
