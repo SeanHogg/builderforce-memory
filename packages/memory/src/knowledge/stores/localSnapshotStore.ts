@@ -8,6 +8,10 @@
  * `key`, a relation by `(from, to, kind)`, a scope by `rootId` — so linking a folder later
  * uploads the same rows idempotently. The snapshot is written canonically (sorted), so
  * equal content is equal bytes.
+ *
+ * Every write serializes the WHOLE snapshot, so a many-mutation run (a directory review)
+ * would cost quadratic bytes. {@link LocalSnapshotStore.batched} holds persistence back
+ * inside a run; outside one, each awaited mutation has persisted when it resolves.
  */
 
 import type {
@@ -31,6 +35,10 @@ export interface KnowledgeSnapshot {
 export interface LocalSnapshotStoreOptions {
     /** ISO clock for `staleAt`. Default `new Date().toISOString()`. */
     now?(): string;
+    /** Inside `batched`, a mutation persists when this many ms passed since the last write (a crash loses at most this much). Default 30_000. */
+    checkpointMs?: number;
+    /** Millisecond clock for the checkpoint. Default `Date.now`. */
+    nowMs?(): number;
 }
 
 const relKey = (r: Pick<StoredRelation, 'from' | 'to' | 'kind'>) => `${r.from}\u0000${r.to}\u0000${r.kind}`;
@@ -61,9 +69,18 @@ export class LocalSnapshotStore implements KnowledgeStore {
     /** Serializes mutations so two writers never interleave a read-modify-write. */
     private queue: Promise<unknown> = Promise.resolve();
     private readonly now: () => string;
+    private readonly nowMs: () => number;
+    private readonly checkpointMs: number;
+    /** Open `batched` calls; persistence is held while it is above zero. */
+    private depth = 0;
+    /** Memory is ahead of the persisted snapshot. */
+    private dirty = false;
+    private persistedAt = 0;
 
     constructor(private readonly persistence: SnapshotPersistence, opts: LocalSnapshotStoreOptions = {}) {
         this.now = opts.now ?? (() => new Date().toISOString());
+        this.nowMs = opts.nowMs ?? Date.now;
+        this.checkpointMs = opts.checkpointMs ?? 30_000;
     }
 
     private async load(): Promise<KnowledgeSnapshot> {
@@ -71,14 +88,58 @@ export class LocalSnapshotStore implements KnowledgeStore {
         return this.snapshot;
     }
 
-    private mutate(fn: (s: KnowledgeSnapshot) => void): Promise<void> {
-        const run = this.queue.then(async () => {
-            const s = await this.load();
-            fn(s);
-            await this.persistence.write(serialize(s));
-        });
+    private enqueue<T>(task: () => Promise<T>): Promise<T> {
+        const run = this.queue.then(task);
         this.queue = run.catch(() => undefined);
         return run;
+    }
+
+    private async persist(s: KnowledgeSnapshot): Promise<void> {
+        await this.persistence.write(serialize(s));
+        this.dirty = false;
+        this.persistedAt = this.nowMs();
+    }
+
+    private async persistIfDirty(): Promise<void> {
+        if (this.dirty && this.snapshot) await this.persist(this.snapshot);
+    }
+
+    /**
+     * Applies in memory, then persists: at once outside a batch, else only at a checkpoint. A plain
+     * mutation from another caller during a batch (the live file watcher shares this store) is held
+     * like the batch's own and made durable by the next checkpoint, flush or batch end.
+     */
+    private mutate(fn: (s: KnowledgeSnapshot) => void): Promise<void> {
+        return this.enqueue(async () => {
+            const s = await this.load();
+            fn(s);
+            this.dirty = true;
+            if (this.depth === 0 || this.nowMs() - this.persistedAt >= this.checkpointMs) await this.persist(s);
+        });
+    }
+
+    /**
+     * Holds persistence while `work` runs. `flush` persists once if anything is unwritten. When `work`
+     * settles the outermost batch persists what is left: `work`'s own error wins over a failed final
+     * write, a failed final write fails a successful `work`. Batches may nest or overlap.
+     */
+    async batched<T>(work: (flush: () => Promise<void>) => Promise<T>): Promise<T> {
+        if (this.depth === 0) this.persistedAt = this.nowMs();
+        this.depth += 1;
+        // The end goes through the queue so every mutation made during the batch is held, then written once.
+        const end = () => this.enqueue(async () => {
+            this.depth -= 1;
+            if (this.depth === 0) await this.persistIfDirty();
+        });
+        let result: T;
+        try {
+            result = await work(() => this.enqueue(() => this.persistIfDirty()));
+        } catch (err) {
+            await end().catch(() => undefined);
+            throw err;
+        }
+        await end();
+        return result;
     }
 
     async scopes(): Promise<ScopeRecord[]> {

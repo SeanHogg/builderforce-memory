@@ -212,6 +212,19 @@ export interface KnowledgeStore {
     /** Extracted output cache, by content hash (never knowledge — perception). */
     getExtracted?(hash: string): Promise<Extracted[] | undefined>;
     putExtracted?(hash: string, extracted: Extracted[]): Promise<void>;
+    /**
+     * A hint that `getExtracted` is about to be asked for these hashes, so a remote store can fetch
+     * them in bulk; afterwards `getExtracted` for a preloaded hash is answered without a round trip.
+     * Only a hint: `getExtracted` stays correct without it, and a failure propagates like any store failure.
+     */
+    preloadExtracted?(hashes: readonly string[]): Promise<void>;
+    /**
+     * Runs `work` as one unit of many mutations. Inside it the store may hold persistence back
+     * (a whole-snapshot store would otherwise rewrite everything per mutation); `flush` makes
+     * everything so far durable; when `work` settles, resolved or rejected, the store is durable.
+     * Optional: a store without it (the platform client, a test store) persists per mutation.
+     */
+    batched?<T>(work: (flush: () => Promise<void>) => Promise<T>): Promise<T>;
 }
 
 export interface LiveOverlay {

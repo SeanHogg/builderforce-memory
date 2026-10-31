@@ -40,7 +40,15 @@ export function assertStoredBatch(batch: { facts: readonly StoredFact[]; relatio
     if (bad) throw new Error('knowledge: extracted output is never written to a KnowledgeStore');
 }
 
+/**
+ * A store that can hold persistence (`batched`) gets the whole review as one batch, so a snapshot
+ * store writes a bounded number of times instead of once per file; any other store is unaffected.
+ */
 export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
+    return args.store.batched ? args.store.batched((flush) => reviewRun(args, flush)) : reviewRun(args, async () => {});
+}
+
+async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<ReviewReport> {
     const now = () => Date.now();
     const started = now();
     const { source, store, packs, manifest, signal } = args;
@@ -111,6 +119,9 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
     // at the model calls it still costs where this run could measure that (see owedFiles.ts).
     const finished = new Set<string>();
     const measured = new Map<string, number>();
+    // One bulk fetch of the extract cache for the whole run instead of a round trip per file.
+    const hashes = [...new Set(changed.map((f) => f.hash))];
+    if (hashes.length > 0) await store.preloadExtracted?.(hashes);
     for (const [i, f] of changed.entries()) {
         if (signal?.aborted) { report.aborted = true; break; }
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
@@ -211,6 +222,12 @@ export async function reviewDirectory(args: ReviewArgs): Promise<ReviewReport> {
         // Aborted only if the abort landed before the last pair was compared.
         if (outcome?.aborted) report.aborted = true;
     }
+    // DURABILITY ORDER: the store is durable BEFORE the manifest says its files are done. A manifest ahead of
+    // the snapshot loses knowledge for good (the next review sees those files unchanged and skips them); a
+    // snapshot ahead of the manifest only re-reviews files. One flush covers the awaiting set (it names stored
+    // claims) and the files manifest: nothing mutates the store between them. The trailing lastDigest write
+    // is persisted by the end of the batch.
+    await flush();
     // No pack asks for contradictions: nothing waits, and an earlier run's awaiting set is left as it was.
     if (wantsCompare) await saveAwaiting(manifest, rootId, newClaims, outcome);
 

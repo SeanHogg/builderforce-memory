@@ -122,7 +122,7 @@ plan → per changed file: read · parse · extract (cached) · judge · write �
 | `ReviewArgs` field | Meaning |
 |---|---|
 | `source: DirectorySource` | `{ rootId, title, list(), read(path), watch?() }`. One adapter per host. |
-| `store: KnowledgeStore` | Where judgement is persisted. `LocalSnapshotStore` persists to a single JSON snapshot for a folder not linked to a project. |
+| `store: KnowledgeStore` | Where judgement is persisted. `LocalSnapshotStore` persists to a single JSON snapshot for a folder not linked to a project. A store may implement the optional `batched(work)`: the review runs inside it, so the snapshot is written a bounded number of times (a checkpoint every `checkpointMs`, default 30 s, plus once before the manifest is saved and once at the end) instead of once per file. A store may also implement `preloadExtracted(hashes)` to fetch the extract cache in bulk before the per-file loop. |
 | `packs: KnowledgePack[]` | Parsers, partitions, findings and a `JudgementSpec`. `DOCS_PACK` is built in. A host registers its own (for example a code pack). |
 | `manifest: IngestManifest` | `get` / `set` / `delete` of `ChunkFingerprint[]` (`{ id, hash }`) per key. |
 | `judgement?: JudgementPort` | `judge({ kind: 'extract' \| 'compare', items })`. Without it the review extracts and writes no model facts. |
