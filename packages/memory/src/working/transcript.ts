@@ -14,6 +14,7 @@
 
 import { defaultEstimateTokens, messageTokens as handoffMessageTokens, tokensOf as handoffTokensOf } from '../handoff/budget.js';
 import type { HandoffMessage } from '../handoff/types.js';
+import { CONSOLIDATION_MARKER_PREFIX } from './consolidationMarker.js';
 
 /** A transcript message — the hand-off packer's shape, so both count a message alike. */
 export type TranscriptMessage = HandoffMessage;
@@ -138,13 +139,26 @@ function tokenWindowStart(convo: readonly TranscriptMessage[]): number {
  * tool loop crossed the window boundary). The most recent user turn is never dropped:
  * correctness over the size cap, when a tool loop outgrows the window or a single turn
  * is itself oversized.
+ *
+ * A consolidation marker that LEADS the transcript (a reloaded chat's seed begins with its saved
+ * fold note) is never dropped: it is the note that stands for everything before the rest, and
+ * walking forward to the first user turn would hand the model the verbatim tail with no
+ * memory of what came before it. It sits in front of the window the way a compaction note
+ * does (`assembleCompacted`).
  */
 export function windowed<M extends TranscriptMessage>(convo: M[]): M[] {
   const lastUser = convo.map((m) => m.role).lastIndexOf('user');
   if (lastUser < 0) return transcriptTokens(convo) <= HISTORY_TOKEN_BUDGET ? convo.slice() : convo.slice(-1);
   let start = Math.min(Math.max(messageWindowStart(convo.length), tokenWindowStart(convo)), lastUser);
   while (convo[start]!.role !== 'user') start += 1;
+  const lead = convo[0]!;
+  if (start > 0 && isLeadingMarker(lead)) return [lead, ...convo.slice(start)];
   return convo.slice(start);
+}
+
+/** Is this row a saved consolidation note (the visible marker the next seed starts from)? */
+function isLeadingMarker(m: TranscriptMessage): boolean {
+  return m.role === 'assistant' && typeof m.content === 'string' && m.content.startsWith(CONSOLIDATION_MARKER_PREFIX);
 }
 
 /**

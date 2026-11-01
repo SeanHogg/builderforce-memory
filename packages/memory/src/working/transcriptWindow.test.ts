@@ -12,6 +12,7 @@ import {
   transcriptTokens,
 } from './transcript.js';
 import type { TranscriptMessage } from './transcript.js';
+import { CONSOLIDATION_MARKER_PREFIX } from './consolidationMarker.js';
 
 const msg = (role: TranscriptMessage['role'], content = 'x'): TranscriptMessage => ({ role, content });
 
@@ -80,5 +81,27 @@ describe('windowed — chunked token drops', () => {
     const convo: TranscriptMessage[] = [];
     for (let i = 0; i < 40; i++) convo.push(msg('user', `u${i}`), msg('assistant', big(i)), msg('tool', big(i)));
     expect(windowed(convo)[0]!.role).toBe('user');
+  });
+});
+
+describe('windowed — a leading consolidation marker', () => {
+  const marker = msg('assistant', `${CONSOLIDATION_MARKER_PREFIX}the earlier part, summarised`);
+
+  it('stays in front of the verbatim rest: a reloaded chat\'s model reads its note', () => {
+    const convo = [marker, msg('user', 'u1'), msg('assistant', 'a1'), msg('user', 'u2')];
+    expect(windowed(convo)).toEqual(convo);
+  });
+
+  it('stays in front of a window that dropped the oldest turns', () => {
+    const convo = [marker, ...convoOf(HISTORY_WINDOW + 10)];
+    const w = windowed(convo);
+    expect(w[0]).toBe(marker);
+    expect(w[1]!.role).toBe('user');
+    expect(w.length).toBeLessThanOrEqual(HISTORY_WINDOW);
+  });
+
+  it('is only a marker when it carries the visible header', () => {
+    const plain = [msg('assistant', 'a plain reply'), msg('user', 'u1')];
+    expect(windowed(plain)).toEqual([plain[1]]);
   });
 });
