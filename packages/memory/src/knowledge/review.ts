@@ -200,9 +200,16 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
 
     if (!report.aborted) {
         await retire(detail.plan.removed);
-        for (const pack of packs) {
-            if (!pack.analyzers) continue;
-            for (const ex of await pack.analyzers.analyse(rootId, signal)) {
+        // Analyzers run in parallel and a failing one never aborts the review — its extracted
+        // output is simply not stored (the file-level facts above are already durable), so a
+        // single bad pack cannot sink the whole run.
+        const analysed = await Promise.all(
+            packs.filter((p) => p.analyzers).map(async (p) => {
+                try { return await p.analyzers!.analyse(rootId, signal); } catch { return []; }
+            }),
+        );
+        for (const packResults of analysed) {
+            for (const ex of packResults) {
                 await store.putExtracted?.(ex.sourceHash, [ex]);
                 report.extracted += 1;
             }
