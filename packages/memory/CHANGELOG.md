@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.37
+
+### A reloaded chat's model reads its fold note (`/working`)
+
+- **`windowed` keeps a leading consolidation marker.** A reloaded seed starts with the saved fold marker, an assistant row, and the window used to walk forward to the first user row and drop it. The model then never read the fold note after a reload: the durable marker only saved a re-summary. The marker now stays in front of the window.
+
 ## 2026.10.36
 
 ### A review of a large folder no longer rewrites its snapshot per file (`/knowledge`)
