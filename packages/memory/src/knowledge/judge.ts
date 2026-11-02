@@ -86,6 +86,30 @@ export interface JudgeBudget {
 
 export const budgetLeft = (b: JudgeBudget): boolean => b.used < b.modelCalls && b.now() < b.deadline;
 
+/**
+ * How many model calls the judgement pass makes at once. Model calls are the slow phase of a
+ * review; sections and claim pairs are judged by a bounded pool of this many workers instead of
+ * one at a time.
+ */
+export const JUDGE_CONCURRENCY = 6;
+
+/**
+ * Runs `worker` over `items` with at most `concurrency` in flight: `concurrency` workers each
+ * pull the next index until the list is exhausted. The first worker error (e.g. an abort) rejects
+ * the pool immediately — in-flight calls keep running but no new work is scheduled, matching the
+ * serial loops' "stop at the first throw" behaviour.
+ */
+async function runPool<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+    let next = 0;
+    const lanes = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+        while (next < items.length) {
+            const item = items[next++];
+            await worker(item);
+        }
+    });
+    await Promise.all(lanes);
+}
+
 /** Facts and relations a review will write, keyed for upsert. */
 export class JudgedBatch {
     readonly facts = new Map<string, StoredFact>();
@@ -194,16 +218,23 @@ export interface ExtractArgs {
 export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRef; text: string }>> {
     const claims: Array<{ ref: NodeRef; text: string }> = [];
     const anchor = { path: a.path, contentHash: a.fileHash };
-    for (const section of a.sections) {
+    // Judged in a bounded pool: the budget check and `call`'s synchronous `used` increment happen
+    // on the same tick (no await between), so concurrency cannot overshoot `modelCalls`; the
+    // batch/entities/onJudged mutations below are synchronous, hence race-free across workers.
+    // The claims array's order may differ from serial execution — its consumer is order-insensitive.
+    await runPool(a.sections, JUDGE_CONCURRENCY, async (section) => {
         // Honoured per section, not only when the port throws: the caller drops this file whole.
         if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
-        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; continue; }
+        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; return; }
         const answer = await call(a.port, {
             kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
             ...(a.signal ? { signal: a.signal } : {}),
         }, a.budget);
         // A failed call judged nothing: not counted judged, so the file stays changed and is retried.
-        if (!answer) { a.batch.unjudged += 1; continue; }
+        if (!answer) { a.batch.unjudged += 1; return; }
+        // The abort can land while a call is in flight (the port sees the signal): a section that
+        // finished after the abort must not count as judged, or the caller would not re-judge it.
+        if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
         const v = validateExtract(answer.result, section.ref);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
@@ -241,7 +272,7 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
             }
             claims.push({ ref, text });
         }
-    }
+    });
     return claims;
 }
 
@@ -270,14 +301,17 @@ export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
         .map((p) => (compareStr(p.a, p.b) <= 0 ? p : { a: p.b, b: p.a, similarity: p.similarity }))
         .sort((x, y) => y.similarity - x.similarity || compareStr(x.a, y.a) || compareStr(x.b, y.b));
     const skip = (p: { a: string; b: string }) => { out.skipped.add(p.a); out.skipped.add(p.b); };
-    const abort = (from: number) => { out.aborted = true; for (const p of pairs.slice(from)) skip(p); return out; };
+    const markRestSkipped = (from: number) => { for (const p of pairs.slice(from)) skip(p); };
     const seen = new Set<string>();
-    for (const [i, p] of pairs.entries()) {
+    // Compared in a bounded pool. The seen-set dedup and the budget check stay synchronous (no
+    // await between them and `call`'s synchronous `used` increment), so workers cannot
+    // double-schedule a pair or overshoot `modelCalls`.
+    await runPool(pairs, JUDGE_CONCURRENCY, async (p) => {
         const id = `${p.a}\u0000${p.b}`;
-        if (seen.has(id)) continue;
+        if (seen.has(id)) return;
         seen.add(id);
-        if (a.signal?.aborted) return abort(i);
-        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; skip(p); continue; }
+        if (a.signal?.aborted) { out.aborted = true; markRestSkipped(seen.size); return; }
+        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; skip(p); return; }
         const ca = a.claims.get(p.a)!, cb = a.claims.get(p.b)!;
         const A = p.a as NodeRef, B = p.b as NodeRef;
         let answer;
@@ -288,11 +322,14 @@ export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
                 ...(a.signal ? { signal: a.signal } : {}),
             }, a.budget);
         } catch (err) {
+            // Only an abort reaches here with the signal set (call re-throws aborts); stop scheduling.
             if (!a.signal?.aborted) throw err;
-            return abort(i);
+            out.aborted = true;
+            markRestSkipped(seen.size);
+            return;
         }
         // A failed call compared nothing: counted unjudged, and the claims stay awaiting.
-        if (!answer) { a.batch.unjudged += 1; skip(p); continue; }
+        if (!answer) { a.batch.unjudged += 1; skip(p); return; }
         const v = validateCompare(answer.result, A, B);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
@@ -301,6 +338,6 @@ export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
                 from: A, to: B, kind: v.relation, weight: 1, origin: 'model', confidence: v.confidence, sourceHash: ca.hash,
             });
         }
-    }
+    });
     return out;
 }

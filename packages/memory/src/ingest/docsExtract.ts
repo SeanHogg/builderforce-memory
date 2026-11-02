@@ -30,6 +30,13 @@ import { CONTENT_HASH_FIELD, type ParsedSection, type SourceDocument } from './t
 export const DOCS_PACK_ID = 'docs';
 /** Badge: index of the section in the parser's output. */
 export const SECTION_INDEX_BADGE = 'section';
+/**
+ * Cap on a whole section ref (`fileRef#slug`): the API validates refs at 512 characters
+ * (`zRef.max(512)`), so leave headroom for a long `fileRef` prefix (`src:${rootId}::${path}`).
+ * When a breadcrumb's slug path would exceed it, the slug is truncated and a stable
+ * hash discriminator keeps distinct breadcrumbs' refs distinct.
+ */
+export const MAX_SECTION_REF_LEN = 480;
 /** The ref slug of text before a markdown file's first heading. */
 const PREAMBLE_SLUG = '~preamble';
 const EXCERPT_CHARS = 400;
@@ -174,6 +181,21 @@ function excerpt(text: string): string {
     return text.replace(/\s+/g, ' ').trim().slice(0, EXCERPT_CHARS);
 }
 
+/**
+ * Bound a section slug path so `${fileRef}#${slug}` stays within `MAX_SECTION_REF_LEN`.
+ * Headroom is reserved for the occurrence suffix (`-N`); over that, the slug is truncated
+ * and a stable hash discriminator of the FULL slug path is appended, so distinct long
+ * breadcrumbs still get distinct refs (extractors feed content-hash digests — deterministic,
+ * no randomness). A slug that fits is returned unchanged.
+ */
+function capSectionSlug(slugPath: string, fileRef: NodeRef): string {
+    const headroom = fileRef.length + 1 + 4; // `#` + worst-case `-N` occurrence suffix
+    const budget = MAX_SECTION_REF_LEN - headroom;
+    if (slugPath.length <= budget) return slugPath;
+    const discriminator = hashText(slugPath);
+    return `${slugPath.slice(0, Math.max(1, budget - discriminator.length - 1))}~${discriminator}`;
+}
+
 const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 /** `[id]: target` definitions (reference-style links); the use is `[text][id]` or `[id][]`. */
 const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?[ \t\r]*$/gm;
@@ -202,7 +224,7 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
     const refByCrumb = new Map<string, NodeRef>();
     const occurrences = new Map<string, number>();
     const sectionNode = (crumbs: string[], index?: number, text?: string): NodeRef => {
-        const slugPath = crumbs.map(slugOf).join('/');
+        const slugPath = capSectionSlug(crumbs.map(slugOf).join('/'), b.fileRef);
         const n = (occurrences.get(slugPath) ?? 0) + 1;
         occurrences.set(slugPath, n);
         const ref: NodeRef = `${b.fileRef}#${n > 1 ? `${slugPath}-${n}` : slugPath}`;
