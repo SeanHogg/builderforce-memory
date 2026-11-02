@@ -32,9 +32,10 @@ describe('reviewDirectory — audit follow-ups', () => {
         const judge = fakeJudge();
         const inner = judge.judge.bind(judge);
         judge.judge = async (req) => {
-            calls += 1;
+            // Judged in a pool, so the call number is taken at start, not read after the await.
+            const me = (calls += 1);
             const out = await inner(req);
-            if (calls === 1) controller.abort();
+            if (me === 1) controller.abort();
             return out;
         };
         const first = await reviewDirectory(args(source, store, manifest, { judgement: judge, signal: controller.signal }));

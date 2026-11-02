@@ -101,13 +101,19 @@ export const JUDGE_CONCURRENCY = 6;
  */
 async function runPool<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
     let next = 0;
+    let error: Error | null = null;
     const lanes = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
-        while (next < items.length) {
+        while (next < items.length && !error) {
             const item = items[next++];
-            await worker(item);
+            try {
+                await worker(item);
+            } catch (err) {
+                if (!error) error = err as Error;
+            }
         }
     });
     await Promise.all(lanes);
+    if (error) throw error;
 }
 
 /** Facts and relations a review will write, keyed for upsert. */
@@ -222,9 +228,10 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
     // on the same tick (no await between), so concurrency cannot overshoot `modelCalls`; the
     // batch/entities/onJudged mutations below are synchronous, hence race-free across workers.
     // The claims array's order may differ from serial execution — its consumer is order-insensitive.
+    const abortError = () => a.signal?.reason ?? new Error('aborted');
     await runPool(a.sections, JUDGE_CONCURRENCY, async (section) => {
         // Honoured per section, not only when the port throws: the caller drops this file whole.
-        if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
+        if (a.signal?.aborted) throw abortError();
         if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; return; }
         const answer = await call(a.port, {
             kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
@@ -234,7 +241,7 @@ export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRe
         if (!answer) { a.batch.unjudged += 1; return; }
         // The abort can land while a call is in flight (the port sees the signal): a section that
         // finished after the abort must not count as judged, or the caller would not re-judge it.
-        if (a.signal?.aborted) throw a.signal.reason ?? new Error('aborted');
+        if (a.signal?.aborted) throw abortError();
         const v = validateExtract(answer.result, section.ref);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
@@ -303,6 +310,8 @@ export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
     const skip = (p: { a: string; b: string }) => { out.skipped.add(p.a); out.skipped.add(p.b); };
     const markRestSkipped = (from: number) => { for (const p of pairs.slice(from)) skip(p); };
     const seen = new Set<string>();
+    let completed = 0;
+    const doneIds = new Set<string>();
     // Compared in a bounded pool. The seen-set dedup and the budget check stay synchronous (no
     // await between them and `call`'s synchronous `used` increment), so workers cannot
     // double-schedule a pair or overshoot `modelCalls`.
@@ -330,6 +339,17 @@ export async function compareClaims(a: CompareArgs): Promise<CompareOutcome> {
         }
         // A failed call compared nothing: counted unjudged, and the claims stay awaiting.
         if (!answer) { a.batch.unjudged += 1; skip(p); return; }
+        // An abort that landed while this call was in flight: the serial loop stopped before the
+        // next pair, leaving it (and every later one) skipped and the outcome aborted.
+        // The abort counts only if some pair has still to finish (in flight or unscheduled): when
+        // this was the last pair to complete, the compare finished before the abort mattered.
+        completed += 1;
+        if (a.signal?.aborted && completed < pairs.length) {
+            out.aborted = true;
+            // Pairs not yet finished (in flight on other lanes, or unscheduled) were cut short by the abort: they stay awaiting.
+            for (const q of pairs) if (!doneIds.has(`${q.a}\u0000${q.b}`) && `${q.a}\u0000${q.b}` !== id) skip(q);
+        }
+        doneIds.add(id);
         const v = validateCompare(answer.result, A, B);
         a.batch.invalid += v.invalid;
         a.batch.judged += 1;
