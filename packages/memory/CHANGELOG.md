@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.38
+
+### Parallel judging that honours an abort (`/knowledge`, `/ingest`)
+
+- **`judgeSections` and `compareClaims` run on a bounded pool**, and knowledge analyzers run in parallel with per-pack failure tolerance: one pack failing no longer fails the others.
+- **`docsExtract` caps the section ref slug length**, so a long heading no longer yields a ref over the 512-character bound.
+- **`runPool` surfaces the first error and stops scheduling.** A failed or aborted worker no longer leaves the pool starting new items; the first error is rethrown once in-flight work settles.
+- **`compareClaims` marks unfinished pairs skipped.** Pairs still in flight or not yet started when an abort lands are marked skipped, and `aborted` is set when the abort arrives before the last pair completes.
+
 ## 2026.10.37
 
 ### A reloaded chat's model reads its fold note (`/working`)
