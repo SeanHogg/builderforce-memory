@@ -187,7 +187,7 @@ describe('what an upgrade run leaves owed', () => {
             if (p === 'b.md') controller.abort(); // b.md is still handled; the loop stops before c.md
             return doc;
         };
-        const report = await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), signal: controller.signal }));
+        const report = await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), signal: controller.signal, concurrency: 1 })); // sequential: abort fires inside a read
         expect(report.aborted).toBe(true);
         expect(await stateOf(manifest)).toEqual({ version: CURRENT, owed: ['c.md'] });
 
@@ -226,7 +226,7 @@ describe('what an upgrade run leaves owed', () => {
         delete source.files['b.md'];
         const controller = new AbortController();
         controller.abort();
-        await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), signal: controller.signal }));
+        await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), signal: controller.signal, concurrency: 1 })); // sequential: pinned like the other abort tests
         expect(await stateOf(manifest)).toEqual({ version: CURRENT, owed: ALL });
 
         await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge() }));

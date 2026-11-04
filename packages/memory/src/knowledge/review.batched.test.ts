@@ -82,7 +82,7 @@ describe('reviewDirectory over a batched store', () => {
         };
         const p = logging();
         const store = storeOver(p);
-        const report = await reviewDirectory(args(source, store, new InMemoryIngestManifest(), { judgement: fakeJudge(), signal: controller.signal }));
+        const report = await reviewDirectory(args(source, store, new InMemoryIngestManifest(), { judgement: fakeJudge(), signal: controller.signal, concurrency: 1 })); // sequential: abort fires inside a read
         expect(report.aborted).toBe(true);
         expect(report.extracted).toBeLessThan(10);
         const persisted = content(p.value!);

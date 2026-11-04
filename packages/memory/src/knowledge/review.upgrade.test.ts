@@ -65,7 +65,7 @@ describe('the extractor version has its own manifest entry', () => {
 
         const controller = new AbortController();
         controller.abort();
-        const report = await reviewDirectory(args(source, store, manifest, { signal: controller.signal }));
+        const report = await reviewDirectory(args(source, store, manifest, { signal: controller.signal, concurrency: 1 }));
         expect(report.aborted).toBe(true);
         expect(await stateOf(manifest)).toEqual({ version: EXTRACTOR_VERSION, owed: ['a.md', 'b.md', 'c.md'] });
         expect((await planReview(source, manifest, [DOCS_PACK])).changed).toEqual(['a.md', 'b.md', 'c.md']);

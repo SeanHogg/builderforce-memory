@@ -156,6 +156,7 @@ describe('reviewDirectory', () => {
         const report = await reviewDirectory(args(source, store, new InMemoryIngestManifest(), {
             judgement: fakeJudge(),
             signal: controller.signal,
+            concurrency: 1, // sequential: the abort is triggered from a progress callback, pin read order
             onProgress: (p) => { if (p.phase === 'write') controller.abort(); },
         }));
         expect(report.aborted).toBe(true);

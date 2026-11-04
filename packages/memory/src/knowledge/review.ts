@@ -7,6 +7,8 @@
  *   of judged kinds, within budget) · write · markStale → analyzers → compare near-duplicate
  *   claims → manifest + scope digest. Claims whose compare pairs were skipped wait in the
  *   compare manifest for *Continue*.
+ *   Read + extract are prefetched with bounded concurrency (`args.concurrency`); judge · write ·
+ *   markStale stay in file order, so the shared model-call budget is spent deterministically.
  *
  * Store judgement, compute perception: only `model` facts and relations are written —
  * `extracted` output goes to the extracted cache, never to memory ({@link assertStoredBatch}).
@@ -28,11 +30,20 @@ import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
 import { owedAfterRun, owedCalls, saveExtractorState } from './owedFiles.js';
 import { planDetail, refreshPlan } from './plan.js';
 import { composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
-import { extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
-import { DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type CompareOutcome, type JudgeBudget } from './judge.js';
+import { extractFileDetailed, knownKeysOfEntities, type FileExtraction } from './extractFile.js';
+import { prefetchOrdered } from './orderedPool.js';
+import { DEFAULT_REVIEW_CONCURRENCY, DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type CompareOutcome, type JudgeBudget } from './judge.js';
 import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
 import { factsWithoutAnchor, StoredIndex } from './reviewStored.js';
 import { canonicalJson, compareStr, srcRef } from './refs.js';
+
+/** What the prefetch stage learned about one file; `failed` carries an extraction throw to be rethrown in file order. */
+type Prefetch =
+    | { kind: 'read-error' }
+    | { kind: 'binary' }
+    | { kind: 'none' }
+    | { kind: 'extracted'; doc: SourceDocument; extraction: FileExtraction }
+    | { kind: 'failed'; error: unknown };
 
 /** Throws if a batch carries `extracted` items — perception is never memory. */
 export function assertStoredBatch(batch: { facts: readonly StoredFact[]; relations: readonly StoredRelation[] }): void {
@@ -122,30 +133,59 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // One bulk fetch of the extract cache for the whole run instead of a round trip per file.
     const hashes = [...new Set(changed.map((f) => f.hash))];
     if (hashes.length > 0) await store.preloadExtracted?.(hashes);
-    for (const [i, f] of changed.entries()) {
-        if (signal?.aborted) { report.aborted = true; break; }
+    // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
+    // fixed above, and the content-hash extract cache); everything after stays sequential, in file order.
+    const concurrency = Math.min(32, Math.max(1, Math.floor(args.concurrency ?? DEFAULT_REVIEW_CONCURRENCY) || 1));
+    // extractFileDetailed read-modify-writes the extract cache entry of a content hash, so files sharing a hash
+    // extract one after another, in file order (jobs start in file order). Reads still overlap. A job always
+    // releases its turn, so a failed predecessor never blocks or poisons the next one.
+    const hashTail = new Map<string, Promise<void>>();
+    const prefetch = async (f: (typeof changed)[number]): Promise<Prefetch> => {
+        const before = hashTail.get(f.hash) ?? Promise.resolve();
+        let release!: () => void;
+        const mine = new Promise<void>((r) => { release = r; });
+        const tail = before.then(() => mine);
+        hashTail.set(f.hash, tail);
+        try {
+            let doc: SourceDocument;
+            try { doc = await source.read(f.path); } catch { return { kind: 'read-error' }; }
+            try {
+                if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
+                await before;
+                const extraction = await extractFileDetailed({
+                    rootId, path: f.path, hash: f.hash, doc, packs, store, composed, knownKeys,
+                });
+                return extraction ? { kind: 'extracted', doc, extraction } : { kind: 'none' };
+            } catch (error) { return { kind: 'failed', error }; }
+        } finally {
+            release();
+            void tail.then(() => { if (hashTail.get(f.hash) === tail) hashTail.delete(f.hash); });
+        }
+    };
+    let consumed = 0;
+    for await (const { item: f, i, result } of prefetchOrdered(changed, concurrency, prefetch, signal)) {
+        consumed += 1; // the pool ends the stream at a file boundary once aborted, discarding read-ahead
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
         // A read that throws (permissions, a lock, a race with a delete) says nothing about the file:
         // skipped with its knowledge and manifest hash intact, tried again next review.
-        let doc: SourceDocument;
-        try { doc = await source.read(f.path); } catch {
+        if (result.status === 'rejected') throw result.reason; // unreachable: a prefetch job settles to a Prefetch
+        const job = result.value;
+        if (job.kind === 'read-error') {
             report.readErrors += 1;
             measured.set(f.path, owedCalls(detail.extractor, f.path)); // a read error learns nothing: keep what it was owed
             continue;
         }
         // Recorded, so a file found binary on read is not re-read by every later review.
-        if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) {
+        if (job.kind === 'binary') {
             filesNow.set(f.path, f.hash);
             finished.add(f.path);
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
             continue;
         }
-        const extraction = await extractFileDetailed({
-            rootId, path: f.path, hash: f.hash, doc, packs, store, composed, knownKeys,
-        });
-        if (!extraction) { finished.add(f.path); continue; }
-        const { extracted: ex, sections, pack } = extraction;
+        if (job.kind === 'failed') throw job.error;
+        if (job.kind === 'none') { finished.add(f.path); continue; }
+        const { extracted: ex, sections, pack } = job.extraction;
         report.extracted += 1;
 
         const spec = pack.judgement;
@@ -197,6 +237,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         report.staleMarked += 1;
         if (complete) { filesNow.set(f.path, f.hash); finished.add(f.path); }
     }
+    if (consumed < changed.length) report.aborted = true;
 
     if (!report.aborted) {
         await retire(detail.plan.removed);

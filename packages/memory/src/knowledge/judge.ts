@@ -20,6 +20,8 @@ import { entityKey, normalizeKey } from './resolve.js';
 import { compareStr, factRef } from './refs.js';
 
 export const DEFAULT_REVIEW_MODEL_CALLS = 200;
+/** How many changed files a review reads + extracts ahead of its (sequential) judge/write stage. */
+export const DEFAULT_REVIEW_CONCURRENCY = 8;
 export const REVIEW_FACT_SOURCE = 'knowledge-review';
 const MAX_TERM = 200;
 const MAX_NAME = 120;

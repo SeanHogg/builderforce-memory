@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.39
+
+### A knowledge review reads and extracts files in parallel (`/knowledge`)
+
+- **`reviewDirectory` prefetches each changed file's read and extraction with bounded, order-preserving concurrency** (`ReviewArgs.concurrency`, default 8, clamped 1–32). Judging, store writes, stale marks and the manifest stay in file order, so the stored result is identical at any concurrency.
+- **Files with identical content extract in file order**, so the content-hash extract cache keeps every file's entry.
+- **An abort ends the run at a file boundary.** Read-ahead is discarded, and started work settles before the review returns. `concurrency: 1` reads strictly one file at a time.
+- **Only a failed read counts as a read error.** A throw while checking or extracting a file surfaces from the review, as before.
+
 ## 2026.10.38
 
 ### Parallel judging that honours an abort (`/knowledge`, `/ingest`)

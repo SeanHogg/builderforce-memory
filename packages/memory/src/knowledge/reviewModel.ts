@@ -77,5 +77,7 @@ export interface ReviewArgs {
     /** *Re-review all*: every file is reviewed whatever its hash (see `PlanOptions.force`). Ignored with `plan`. */
     force?: boolean;
     signal?: AbortSignal;
+    /** Files read + extracted ahead of judging (1..32, default 8). Judge/write stay in file order. */
+    concurrency?: number;
     onProgress?(p: ReviewProgress): void;
 }
