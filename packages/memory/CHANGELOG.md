@@ -1,5 +1,16 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.40
+
+### Shell scripts and code samples are no longer read as wiki links (`/knowledge`)
+
+- **Script files (`.sh`, `.bash`, `.zsh`, `.ps1`, `.bat`, `.cmd`) are never documents** in a knowledge review, so `[[ -f x ]]` tests produce no bogus missing-link nodes.
+- **`[[Name]]` inside fenced blocks, indented code blocks and inline code is ignored** in markdown.
+- **One fence scanner** (`ingest/fences.ts`) serves the markdown parser and the link scanners: `~~~` and longer fences, fences in list items and blockquotes, and unclosed fences are handled the same in both. Markdown and reference links inside code are no longer edges either.
+- **Indented code** counts only in markdown, not after a list item, and not in plain text.
+- **`EXTRACTOR_VERSION` is 2**: stored reviews re-extract unchanged files once (no model calls) and drop the bogus link nodes; only sections whose text changed are re-judged.
+- **The markdown parser keeps a section's first-line indentation** (leading blank lines and trailing whitespace are still trimmed). This also affects the non-knowledge ingest pipeline: a chunk that opens with an indented line re-embeds once.
+
 ## 2026.10.39
 
 ### A knowledge review reads and extracts files in parallel (`/knowledge`)

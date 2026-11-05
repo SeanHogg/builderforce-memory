@@ -20,7 +20,7 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
  * re-extraction (judged sections with unchanged text are re-anchored, not judged again; see
  * owedFiles.ts for how an unfinished one is carried to the next review).
  */
-export const EXTRACTOR_VERSION = 1;
+export const EXTRACTOR_VERSION = 2;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
 const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore'];
 
@@ -51,6 +51,9 @@ const BINARY_EXT = new Set([
     'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
     'ttf', 'otf', 'woff', 'woff2', 'eot', 'sqlite', 'db', 'vsix', 'lock',
 ]);
+
+/** Shell and batch scripts are code, never documents (their `[[ … ]]` tests are not links). */
+const SCRIPT_EXT = new Set(['sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd']);
 
 const extOf = (path: string): string => {
     const m = /\.([A-Za-z0-9]+)$/.exec(path);
@@ -113,7 +116,9 @@ const BUILTIN_TEXT_PARSERS: ReadonlySet<KnowledgeParser> = new Set<KnowledgePars
  * keeps the builtins as they are.
  */
 const guardBuiltin = (p: KnowledgeParser): KnowledgeParser =>
-    BUILTIN_TEXT_PARSERS.has(p) ? { ...p, accepts: (s) => !isBinaryDocumentType(mediaTypeOf(s)) && p.accepts(s) } : p;
+    BUILTIN_TEXT_PARSERS.has(p)
+        ? { ...p, accepts: (s) => !SCRIPT_EXT.has(extOf(s.id)) && !isBinaryDocumentType(mediaTypeOf(s)) && p.accepts(s) }
+        : p;
 
 export function composePacks(packs: readonly KnowledgePack[]): ComposedPacks {
     const owner = new Map<KnowledgeParser, KnowledgePack>();

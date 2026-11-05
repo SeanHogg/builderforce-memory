@@ -4,6 +4,7 @@
  */
 
 import type { MetadataRecord } from '../vectorstore/types.js';
+import { fenceMask } from './fences.js';
 import { extractHtml, extractMarkdown, extractPlainText } from './docsExtract.js';
 import { mediaTypeOf, textOf } from './parserSupport.js';
 import type { DocumentParser, ParsedSection } from './types.js';
@@ -25,9 +26,11 @@ export const markdownParser: DocumentParser = {
         let buffer: string[] = [];
 
         const flush = () => {
-            const text = buffer.join('\n').trim();
+            // Leading blank lines go, but the first line keeps its indentation: an indented
+            // code block opening a section must still be recognisable as code.
+            const text = buffer.join('\n').replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
             buffer = [];
-            if (!text) return;
+            if (!text.trim()) return;
             const metadata: MetadataRecord = {};
             if (path.length) {
                 metadata['headingPath'] = path.join(' › ');
@@ -37,10 +40,9 @@ export const markdownParser: DocumentParser = {
             sections.push({ text, metadata });
         };
 
-        let inFence = false;
-        for (const line of lines) {
-            if (/^\s*```/.test(line)) inFence = !inFence;
-            const heading = inFence ? null : /^(#{1,6})\s+(.*)$/.exec(line);
+        const fenced = fenceMask(lines);
+        for (const [i, line] of lines.entries()) {
+            const heading = fenced[i] ? null : /^(#{1,6})\s+(.*)$/.exec(line);
             if (heading) {
                 flush();
                 const depth = (heading[1] as string).length;

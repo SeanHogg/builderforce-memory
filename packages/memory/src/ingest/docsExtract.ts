@@ -24,6 +24,7 @@
 
 import type { ExtractContext, Extracted, KEdge, KNode, NodeRef } from '../knowledge/model.js';
 import { basenameOf, compareStr, normalizeKey, slugOf, srcRef, walkRelative } from '../knowledge/refs.js';
+import { fenceMask, isListItemLine } from './fences.js';
 import { hashText } from './hash.js';
 import { CONTENT_HASH_FIELD, type ParsedSection, type SourceDocument } from './types.js';
 
@@ -106,7 +107,7 @@ class ExtractBuilder {
         if (dest !== this.path) this.edge(from, srcRef(this.ctx.rootId, dest), 'links', byName);
     }
 
-    /** `[[Name]]`: beside the linking file here; `buildGraph` re-points a bare name to the unique file of that name. */
+    /** `[[Name]]` (in text already stripped of code by the caller): beside the linking file here; `buildGraph` re-points a bare name to the unique file of that name. */
     wikiLinks(from: NodeRef, text: string): void {
         for (const m of text.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
             const name = m[1]!.trim();
@@ -196,6 +197,43 @@ function capSectionSlug(slugPath: string, fileRef: NodeRef): string {
     return `${slugPath.slice(0, Math.max(1, budget - discriminator.length - 1))}~${discriminator}`;
 }
 
+/** An inline code span: an exact-length backtick run to the same run, never across a blank line. */
+const INLINE_CODE = /(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\r?\n)[\s\S])*?(?<!`)\1(?!`)/g;
+
+/**
+ * Markdown text with fenced blocks, indented code blocks and inline code blanked, so shell
+ * `[[ -f x ]]` tests and links inside code are never read as links. Fences come from the
+ * ONE scanner the parser also uses. An indented line is code only after a blank line, a
+ * heading or a fence, and never while continuing a list item; `indented: false` (plain text)
+ * skips that rule.
+ */
+export function withoutCode(text: string, opts: { indented?: boolean } = {}): string {
+    const indented = opts.indented !== false;
+    const lines = text.split('\n');
+    const fenced = fenceMask(lines);
+    const out: string[] = [];
+    let prevBlank = true;
+    let inCode = false;
+    let inList = false;
+    lines.forEach((line, i) => {
+        if (fenced[i]) { out.push(''); prevBlank = true; inCode = false; return; }
+        const blank = line.trim() === '';
+        const indent = /^(?: {4}|\t)/.test(line);
+        if (indented && indent && !blank && !inList && (prevBlank || inCode)) {
+            inCode = true;
+            out.push('');
+            prevBlank = false;
+            return;
+        }
+        inCode = false;
+        if (isListItemLine(line)) inList = true;
+        else if (!blank && !/^[ \t]/.test(line)) inList = false;
+        prevBlank = blank;
+        out.push(line);
+    });
+    return out.join('\n').replace(INLINE_CODE, ' ');
+}
+
 const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 /** `[id]: target` definitions (reference-style links); the use is `[text][id]` or `[id][]`. */
 const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?[ \t\r]*$/gm;
@@ -256,14 +294,15 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
             const body = section.text.replace(FRONT_MATTER, '').trim();
             from = body ? b.bodySection(index, body, true) : b.fileRef;
         }
-        for (const m of section.text.matchAll(MD_LINK)) {
+        const prose = withoutCode(section.text);
+        for (const m of prose.matchAll(MD_LINK)) {
             if (!m[1]!.startsWith('#')) b.link(from, m[1]!);
         }
-        for (const m of section.text.matchAll(MD_REF_USE)) {
+        for (const m of prose.matchAll(MD_REF_USE)) {
             const target = refs.get((m[2] || m[1] || '').trim().toLowerCase());
             if (target && !target.startsWith('#')) b.link(from, target);
         }
-        b.wikiLinks(from, section.text);
+        b.wikiLinks(from, prose);
         b.mentions(from, section.text);
     });
     return b.build();
