@@ -27,6 +27,7 @@ import { entityName } from './resolve.js';
 import {
     basenameOf, canonicalJson, compareStr, factRef, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
 } from './refs.js';
+import { buildOutline } from './outline.js';
 import { truncateGraph } from './truncate.js';
 
 export const DEFAULT_MAX_NODES = 400;
@@ -202,6 +203,8 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         nodes: cut.nodes,
         edges: cut.edges,
         stats: { ...full.stats, nodes: cut.nodes.length, edges: cut.edges.length, truncated: cut.truncated },
+        // An untruncated graph already holds everything; only a cut one needs the whole-graph outline.
+        ...(cut.truncated ? { outline: buildOutline(full) } : {}),
     };
 }
 

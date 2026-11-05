@@ -239,6 +239,49 @@ export interface KnowledgeGraph {
     edges: KEdge[];
     findings: Finding[];
     stats: { sources: number; nodes: number; edges: number; stale: number; truncated: boolean };
+    /**
+     * Attached only when the graph was truncated (`stats.truncated`): the whole graph's files,
+     * so an overview never depends on the cut. Consumers read it through `outlineOf`, never directly.
+     */
+    outline?: GraphOutline;
+}
+
+/**
+ * The whole graph's files and file-to-file references, in a compact form. Read it with
+ * `outlineOf(graph)` (the one entry point: the attached outline, or one built from an untruncated
+ * graph) and resolve a file's ref with `outlineRef`.
+ */
+export interface GraphOutline {
+    /** Common ref prefix of every file (e.g. `src:<root>::`); a file's ref = prefix + path. '' when files share none. */
+    prefix: string;
+    /** Distinct area refs, sorted; `OutlineFile.area` indexes into it. */
+    areas: NodeRef[];
+    /** Distinct partitions, sorted; `OutlineFile.partition` indexes into it. */
+    partitions: string[];
+    /** File nodes of the full graph, sorted by ref. */
+    files: OutlineFile[];
+    /**
+     * File-to-file `references` of the full graph, as [from, to, verdict, flags]: from/to index `files`;
+     * verdict is a code into OUTLINE_VERDICTS (the worst verdict of the merged edges); flags bit 1 = cycle.
+     * Section/symbol endpoints are rolled up to their file. Sorted by [from, to].
+     */
+    links: Array<[number, number, number, number]>;
+    /** True when files or links were capped (see OUTLINE_MAX_*). */
+    capped: boolean;
+}
+
+export interface OutlineFile {
+    /** The ref without the outline's prefix. */
+    path: string;
+    /** Index into `GraphOutline.areas`, when the file has an area. */
+    area?: number;
+    /** Index into `GraphOutline.partitions`, when the file has a partition. */
+    partition?: number;
+    importance: number;
+    /** The first 12 characters of the node's sourceHash. */
+    hash?: string;
+    /** Only the overview's badge keys (see OUTLINE_BADGE_KEYS), when present. */
+    badges?: Record<string, number | string>;
 }
 
 export interface BuildGraphInput {

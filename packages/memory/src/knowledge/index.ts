@@ -11,8 +11,11 @@ export type {
     PartitionRule, PartitionRegistry, JudgementSpec, JudgementRequest, JudgedClaim, JudgedEntity, JudgementResult,
     JudgementPort, AnalyzerPort, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
-    ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace,
+    ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile,
 } from './model.js';
+export {
+    buildOutline, outlineOf, outlineRef, OUTLINE_MAX_FILES, OUTLINE_MAX_LINKS, OUTLINE_BADGE_KEYS, OUTLINE_VERDICTS, OUTLINE_FLAG_CYCLE,
+} from './outline.js';
 
 export { buildGraph, graphDigest, oneLineLabel, DEFAULT_MAX_NODES, MAX_NODES_CAP } from './build.js';
 export { truncateGraph, TRUNCATION_HARD_CAP, UNANCHORED_AREA } from './truncate.js';
