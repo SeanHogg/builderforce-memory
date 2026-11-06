@@ -82,6 +82,11 @@ describe('buildGraph outline', () => {
         for (const f of g.outline!.files) expect(f.badges).toEqual({ complexity: 7, entry: 'main', added: 3, status: 'M' });
     });
 
+    it('keeps the externals string badge and still drops unlisted ones', () => {
+        const g = buildGraph(chain({ badges: { externals: 'react,zod', notListed: 'x' } }), { maxNodes: 6 });
+        for (const f of g.outline!.files) expect(f.badges).toEqual({ externals: 'react,zod' });
+    });
+
     it('omits badges when none of the whitelisted keys are present', () => {
         const g = buildGraph(chain({ badges: { other: 3 } }), { maxNodes: 6 });
         for (const f of g.outline!.files) expect(f.badges).toBeUndefined();

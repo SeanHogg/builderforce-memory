@@ -20,7 +20,7 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
  * re-extraction (judged sections with unchanged text are re-anchored, not judged again; see
  * owedFiles.ts for how an unfinished one is carried to the next review).
  */
-export const EXTRACTOR_VERSION = 2;
+export const EXTRACTOR_VERSION = 3;
 /** Always ignored: VCS internals, installed dependencies, builderforce config. */
 const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore'];
 

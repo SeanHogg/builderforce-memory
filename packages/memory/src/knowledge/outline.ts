@@ -16,7 +16,7 @@ export const OUTLINE_MAX_LINKS = 60000;
  */
 export const OUTLINE_BADGE_KEYS: readonly string[] = [
     'complexity', 'maxComplexity', 'coverage', 'churn', 'owner', 'patterns', 'cloneGroup', 'unused', 'unusedExports',
-    'entry', 'layerRule', 'unusedDependencies', 'added', 'removed', 'changed', 'status',
+    'entry', 'layerRule', 'unusedDependencies', 'externals', 'added', 'removed', 'changed', 'status',
 ];
 /** Verdict codes of a link, least to worst; code 0 is "no verdict". */
 export const OUTLINE_VERDICTS: readonly ('none' | EdgeVerdict)[] = ['none', 'same', 'allowed', 'skips', 'upward'];

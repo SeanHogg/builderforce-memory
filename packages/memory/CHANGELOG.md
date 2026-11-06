@@ -1,5 +1,12 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.42
+
+### Outlines carry the externals badge; extractor version 3 re-extracts stored reviews (`/knowledge`)
+
+- **A truncated graph's outline keeps the `externals` badge** (`OUTLINE_BADGE_KEYS`), so consumers of the outline see a file's external dependencies. Unlisted badges are still dropped.
+- **`EXTRACTOR_VERSION` is 3**: stored reviews re-extract unchanged files once (no model calls); only sections whose text changed are re-judged.
+
 ## 2026.10.40
 
 ### Shell scripts and code samples are no longer read as wiki links (`/knowledge`)
