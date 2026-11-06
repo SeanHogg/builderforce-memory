@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.43
+
+### One list of external service ids (`/knowledge`)
+
+- **`EXTERNAL_SERVICE_IDS` and `ExternalServiceId`** name the outside services a file can import: postgres, kv, llm, github, stripe, mail, slack and oauth. Extractors and viewers type against this one list, so the `externals` badge and the names a viewer shows for it cannot drift apart.
+
 ## 2026.10.42
 
 ### Outlines carry the externals badge; extractor version 3 re-extracts stored reviews (`/knowledge`)
