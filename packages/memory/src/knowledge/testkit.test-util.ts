@@ -23,7 +23,7 @@ export interface SpySource extends DirectorySource {
 
 export function memSource(files: Record<string, string>, rootId = ROOT): SpySource {
     const src: SpySource = {
-        rootId, title: 'Fixture', files, reads: [],
+        rootId, title: 'Fixture', files, reads: [], hashOf: hashText,
         async *list() {
             for (const path of Object.keys(src.files)) {
                 const text = src.files[path]!;

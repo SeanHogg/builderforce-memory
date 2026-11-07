@@ -107,6 +107,8 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
         // Exact match only: a result for another file, or none although the packs accept this one, is a failure.
         const mine = out.extracted.find((e) => e.sourceRef === ref);
         if (!mine) throw new Error(`extract pool returned no extract for ${a.path}`);
+        // The pool read other bytes than the plan hashed: nothing is stored under the planned hash.
+        if (mine.sourceHash !== a.hash) throw new Error('changed since plan');
         if (wants) {
             if (!out.sections) throw new Error(`extract pool returned no sections for ${a.path}`);
             sections = out.sections;

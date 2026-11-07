@@ -18,6 +18,12 @@ export interface DirectorySource {
     /** `signal` aborts the read when the review gives up on it (a per-job timeout, a stop); a source that cannot cancel may ignore it. */
     read(path: string, signal?: AbortSignal): Promise<SourceDocument>;
     watch?(cb: (paths: string[]) => void): () => void;
+    /**
+     * The function that produced the `hash` of `list()` entries, over a text file's content. When given, the review hashes the
+     * text it read (once) and a file whose bytes no longer match the planned hash fails with "changed since plan" and stays owed.
+     * Optional: a source whose hash is not a pure function of the text (or that cannot say) is not checked in-thread.
+     */
+    hashOf?(text: string): string;
 }
 
 export interface ReviewPlan {

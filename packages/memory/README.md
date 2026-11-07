@@ -248,6 +248,27 @@ if (await confirm(detail.plan.estimatedModelCalls)) {
 
 When `plan` is omitted, `reviewDirectory` plans with `compare` set to whether it was given both `similar` and `judgement`, so a host that does not pass `similar` is estimated correctly. When a host passes a `plan` it built itself, the `compare` option it planned with must match the ports it passes.
 
+## Contract tests
+
+`src/contract/` pins what consumers (agent-tools, the VS Code host, the API) depend on, so a breaking change
+fails memory's own CI before a release rather than in the consumers.
+
+| Test | Pins |
+|---|---|
+| `exports.contract.test.ts` | the exact runtime names of every `package.json` `exports` subpath (`exports.snapshot.json`) |
+| `types.contract.test.ts` | the shapes consumers read (`KnowledgeSnapshot`, `ReviewReport`, `ReviewRun`, `ExtractJob`, `KnowledgeStore`, `LocalSnapshotStore`, `GraphSystem`, …); type-checked by `npm run check:contract-types` |
+| `dist.contract.test.ts` | every `exports` entry has its `import` and `types` file in `dist/` (runs after the build) |
+| `pack.contract.test.ts` | `./knowledge/pack` encodes the same pack to the same bytes and round trips |
+| `regression.*.test.ts` | bugs fixed earlier, one `regression: <what broke>` test each |
+
+**A failing contract test means a consumer-visible change.** Do not just make it green:
+
+1. Decide if the change is intended. If not, fix the code.
+2. If it is, update the contract deliberately: `UPDATE_EXPORTS_SNAPSHOT=1 npm test -- src/contract/exports` rewrites the
+   export snapshot; edit `types.contract.test.ts` for a changed shape.
+3. Note it in the CHANGELOG (under "Breaking" when a name was removed or renamed, or a shape narrowed).
+4. Bump the consumers in the same release.
+
 ## Installation
 
 ```bash

@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.47
+
+### Fixed
+
+- The in-thread read now checks the planned hash. A source that gives `DirectorySource.hashOf` (the function behind its `list()` hashes) has the text it read hashed once; a mismatch fails the file with "changed since plan", stores nothing under the planned hash and leaves the file owed. A pool result whose own hash differs from the plan fails the same way. 2026.10.46 claimed this check, but only the host worker made it.
+
 ## 2026.10.46
 
 ### The map is complete in minutes; judging follows (`/knowledge`, PRD 41 A10)

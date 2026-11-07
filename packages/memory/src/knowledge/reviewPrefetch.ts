@@ -58,6 +58,9 @@ export function extractStepOf(path: string, job: Prefetch): ReviewStep {
     }
 }
 
+/** The failure reason of a file whose bytes no longer match the planned hash. */
+export const CHANGED_SINCE_PLAN = 'changed since plan';
+
 /** Per-job ceilings of the extract path (PRD 41 A10 rule 2). */
 export const DEFAULT_READ_TIMEOUT_MS = 5_000;
 export const DEFAULT_EXTRACT_TIMEOUT_MS = 10_000;
@@ -94,7 +97,13 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
                 ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true } : {}) } : {}),
             })); } finally { lanes.free(held.lane); }
             });
-            return extraction ? { kind: 'extracted', ...(doc ? { doc } : {}), extraction } : { kind: 'none' };
+            if (!extraction) return { kind: 'none' };
+            // Binary and no-pack files are decided above and never hash-checked (as in the host worker). For a file that WILL be
+            // stored, the bytes read must be the bytes planned: hashed once, from the text already in hand. The review writes the
+            // extract cache only for an 'extracted' job, so nothing is stored under the stale hash.
+            const hashOf = c.args.source.hashOf;
+            if (hashOf && doc && doc.content.kind === 'text' && hashOf(doc.content.text) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN };
+            return { kind: 'extracted', ...(doc ? { doc } : {}), extraction };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };
             return { kind: 'failed', reason: reasonOf(error) };
