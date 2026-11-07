@@ -37,6 +37,21 @@ export interface ManifestTree {
 
 const cmp = (a: ManifestLeaf, b: ManifestLeaf): number => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
+/**
+ * The digest of ONE bucket: the hash of its leaves sorted by key (an empty bucket has a fixed digest). The server keeps
+ * these per bucket, so a pack recomputes only the buckets it touched.
+ */
+export function bucketDigest(leaves: readonly ManifestLeaf[]): string {
+    if (leaves.length === 0) return EMPTY_BUCKET;
+    return sha256Hex([...leaves].sort(cmp).map((l) => `${l.key}\u0000${l.digest}\n`).join(''));
+}
+
+/** The root digest from the `MANIFEST_BUCKETS` bucket digests (hex), in bucket order. */
+export function rootDigestOfBuckets(digests: readonly string[]): string {
+    if (digests.length !== MANIFEST_BUCKETS) throw new Error(`a root digest takes ${MANIFEST_BUCKETS} bucket digests, got ${digests.length}`);
+    return sha256Hex(digests.join(''));
+}
+
 export function manifestTree(leaves: readonly ManifestLeaf[]): ManifestTree {
     const grouped = new Map<number, ManifestLeaf[]>();
     for (const l of leaves) {
@@ -47,11 +62,10 @@ export function manifestTree(leaves: readonly ManifestLeaf[]): ManifestTree {
     const buckets: string[] = new Array(MANIFEST_BUCKETS);
     for (let b = 0; b < MANIFEST_BUCKETS; b++) {
         const list = grouped.get(b);
-        if (!list) { buckets[b] = EMPTY_BUCKET; continue; }
-        list.sort(cmp);
-        buckets[b] = sha256Hex(list.map((l) => `${l.key}\u0000${l.digest}\n`).join(''));
+        if (list) list.sort(cmp);
+        buckets[b] = bucketDigest(list ?? []);
     }
-    return { root: sha256Hex(buckets.join('')), buckets, leaves: grouped };
+    return { root: rootDigestOfBuckets(buckets), buckets, leaves: grouped };
 }
 
 /** The bucket ids whose digests differ (or are missing on one side). */
@@ -69,7 +83,23 @@ export function fileLeafKey(path: string, hash: string): string {
 }
 
 export const factLeafKey = (key: string): string => `a:${key}`;
-export const relationLeafKey = (r: { from: string; to: string; kind: string }): string => `r:${r.from}\u0000${r.to}\u0000${r.kind}`;
+/**
+ * A relation's leaf key: `r:` + the JSON array `[from, to, kind]`. Printable and unambiguous: Postgres `text` and
+ * `jsonb` reject NUL, which the earlier `from␀to␀kind` form contained.
+ */
+export const relationLeafKey = (r: { from: string; to: string; kind: string }): string => `r:${JSON.stringify([r.from, r.to, r.kind])}`;
+
+/** The inverse of {@link relationLeafKey}; null when `key` is not a relation leaf key. The ONE parser. */
+export function parseRelationLeafKey(key: string): { from: string; to: string; kind: string } | null {
+    if (!key.startsWith('r:')) return null;
+    try {
+        const v: unknown = JSON.parse(key.slice(2));
+        if (Array.isArray(v) && v.length === 3 && v.every((s) => typeof s === 'string')) {
+            return { from: v[0] as string, to: v[1] as string, kind: v[2] as string };
+        }
+    } catch { /* not JSON: not a relation key */ }
+    return null;
+}
 
 /** The digest of what a fact says: its key, text and provenance kind. Importance and timestamps are the server's to score. */
 export const factDigest = (f: Pick<StoredFact, 'key' | 'content' | 'origin'>): string => sha256Hex(JSON.stringify([f.key, f.content, f.origin]));

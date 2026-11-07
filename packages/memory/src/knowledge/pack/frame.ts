@@ -42,12 +42,10 @@ export function writeFrame(h: FrameHeader, body: Uint8Array, storedBody: Uint8Ar
     return out.finish();
 }
 
-/**
- * Splits a frame into header fields, the stored (possibly deflated) body, the header's bytes, and the CRC the
- * trailer claims. The caller checks `crc32(decodedBody, crc32(headerBytes)) === crc` once it has inflated.
- */
-export function readFrame(bytes: Uint8Array): { header: FrameHeader; headerBytes: Uint8Array; stored: Uint8Array; crc: number } {
-    if (bytes.length < 4 + 2 + 1 + 1 + 32 + 4) throw new PackFormatError('truncated frame');
+const MIN_FRAME = 4 + 2 + 1 + 1 + 32 + 4;
+
+/** The header alone: magic through digest. `bytes` may be just the first part of a split pack. */
+export function readHeader(bytes: Uint8Array): { header: FrameHeader; headerBytes: Uint8Array } {
     const r = new ByteReader(bytes);
     for (const m of MAGIC) if (r.u8() !== m) throw new PackFormatError('not a BFKP pack (bad magic)');
     const version = r.u8();
@@ -56,10 +54,42 @@ export function readFrame(bytes: Uint8Array): { header: FrameHeader; headerBytes
     const rootId = r.str();
     const baseGeneration = r.varint();
     const targetDigest = toHex(r.bytes(32));
-    const headerBytes = bytes.subarray(0, r.offset);
+    return { header: { flags, rootId, baseGeneration, targetDigest }, headerBytes: bytes.subarray(0, r.offset) };
+}
+
+/**
+ * Splits a frame into header fields, the stored (possibly deflated) body, the header's bytes, and the CRC the
+ * trailer claims. The caller checks `crc32(decodedBody, crc32(headerBytes)) === crc` once it has inflated.
+ */
+export function readFrame(bytes: Uint8Array): { header: FrameHeader; headerBytes: Uint8Array; stored: Uint8Array; crc: number } {
+    if (bytes.length < MIN_FRAME) throw new PackFormatError('truncated frame');
+    const { header, headerBytes } = readHeader(bytes);
+    const r = new ByteReader(bytes);
+    r.bytes(headerBytes.length);
     if (r.remaining < 4) throw new PackFormatError('truncated frame');
     const stored = r.bytes(r.remaining - 4);
-    return { header: { flags, rootId, baseGeneration, targetDigest }, headerBytes, stored, crc: r.u32le() };
+    return { header, headerBytes, stored, crc: r.u32le() };
+}
+
+/** Parts that can be read as a frame without joining: a first part that holds the whole header and a last part that holds the trailer. */
+const HEADER_ROOM = 4096;
+export function readFrameParts(parts: readonly Uint8Array[]): { header: FrameHeader; headerBytes: Uint8Array; stored: Uint8Array[]; crc: number } {
+    const first = parts[0], last = parts[parts.length - 1];
+    if (parts.length < 2 || !first || !last || first.length < HEADER_ROOM || last.length < 4) return singleFrame(parts);
+    const { header, headerBytes } = readHeader(first);
+    const trailer = last.subarray(last.length - 4);
+    const stored = parts.map((p, i) => {
+        const from = i === 0 ? headerBytes.length : 0;
+        const to = i === parts.length - 1 ? p.length - 4 : p.length;
+        return p.subarray(from, to);
+    });
+    const crc = (trailer[0]! | (trailer[1]! << 8) | (trailer[2]! << 16) | (trailer[3]! << 24)) >>> 0;
+    return { header, headerBytes, stored, crc };
+}
+
+function singleFrame(parts: readonly Uint8Array[]): { header: FrameHeader; headerBytes: Uint8Array; stored: Uint8Array[]; crc: number } {
+    const f = readFrame(joinParts(parts));
+    return { ...f, stored: [f.stored] };
 }
 
 export function writeSection(w: ByteWriter, tag: number, bytes: Uint8Array): void {

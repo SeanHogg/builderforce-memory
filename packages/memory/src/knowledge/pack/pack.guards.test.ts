@@ -50,8 +50,8 @@ describe('BFKP guards', () => {
         await expect(decodePack(bomb, { maxDecodedBytes: 1024 * 1024 })).rejects.toThrow(PackTooLargeError);
     });
 
-    it('applies the 64 MB default cap', async () => {
-        const body = new Uint8Array(65 * 1024 * 1024);
+    it('applies the 24 MB default cap (sized for a 128 MB Worker)', async () => {
+        const body = new Uint8Array(25 * 1024 * 1024);
         const bomb = writeFrame({ flags: FLAG_DEFLATED, rootId: 'r', baseGeneration: 0, targetDigest: ZERO_DIGEST }, body, await deflateRaw(body));
         await expect(decodePack(bomb)).rejects.toThrow(PackTooLargeError);
     }, 60_000);

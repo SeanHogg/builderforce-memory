@@ -72,11 +72,11 @@ export const ZERO_DIGEST = '0'.repeat(64);
 
 /** A pack's decoded counts, for guards before any work. */
 export interface PackLimits {
-    /** Bytes the body may inflate to (default 64 MB). */
+    /** Bytes the body may inflate to (default 24 MB). */
     maxDecodedBytes: number;
-    /** Strings in the table (default 2,000,000). */
+    /** Strings in the table (default 400,000). */
     maxStrings: number;
-    /** Rows in any one section (default 1,000,000). */
+    /** Rows in the whole pack (default 200,000). */
     maxRows: number;
 }
 
@@ -87,7 +87,8 @@ export interface PackLimits {
  */
 export interface ReadLimits extends PackLimits { budget: Budget }
 
-export const DEFAULT_PACK_LIMITS: PackLimits = { maxDecodedBytes: 64 * 1024 * 1024, maxStrings: 2_000_000, maxRows: 1_000_000 };
+/** Sized for a 128 MB Worker: the decoded pack, its string table and its rows all live in memory at once. A client cuts a pack below these. */
+export const DEFAULT_PACK_LIMITS: PackLimits = { maxDecodedBytes: 24 * 1024 * 1024, maxStrings: 400_000, maxRows: 200_000 };
 
 /** The decoded body inflated past `maxDecodedBytes`: the server answers 413 `pack_too_large`. */
 export class PackTooLargeError extends Error {

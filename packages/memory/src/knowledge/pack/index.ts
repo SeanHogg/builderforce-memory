@@ -20,7 +20,7 @@ export type {
 export { diffEntries, applyEntryDiffs, diffEntry, applyEntryDiff, deepEqual } from './extrDiff.js';
 export {
     MANIFEST_BUCKETS, manifestTree, bucketOf, keyHash, differingBuckets, leafDelta, rootLeaves, rootDigestOf,
-    fileLeafKey, factLeafKey, relationLeafKey, factDigest, relationDigest,
+    fileLeafKey, factLeafKey, relationLeafKey, parseRelationLeafKey, factDigest, relationDigest, bucketDigest, rootDigestOfBuckets,
 } from './manifest.js';
 export type { ManifestTree, LeafDelta, RootRows } from './manifest.js';
 export { jsonBytesOf } from './jsonSize.js';
