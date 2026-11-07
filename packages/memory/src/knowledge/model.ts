@@ -34,6 +34,12 @@ export interface KNode {
     stale?: boolean;
     /** Pack data, e.g. { added, removed }, { unused: 'file' }, { line: 12 }. */
     badges?: Record<string, number | string>;
+    /** The system (a repository or project folder of the root) a file belongs to; '' when the root is one system. File nodes only. */
+    system?: string;
+    /** The workspace package (app) of the system the file belongs to, as a root-relative folder. */
+    app?: string;
+    /** On a file of a duplicated copy: the path of the system it is a copy of, so a view can fold it. */
+    copyOf?: string;
 }
 
 export type EdgeVerdict = 'allowed' | 'same' | 'skips' | 'upward';
@@ -233,11 +239,40 @@ export interface LiveOverlay {
     runFiles?: string[];
 }
 
+/** A workspace package of a system. */
+export interface GraphApp { path: string; name: string }
+
+/** Why a file the repo graph could have read was not read. */
+export interface GraphReadSkip { reason: string; count: number }
+
+/**
+ * One system of a review root (a repository, or a folder whose manifest names a project): the unit
+ * the reference graph, layer verdicts and partition violations are computed within (PRD 41 A9).
+ * `path` is root-relative, '' when the root itself is the system.
+ */
+export interface GraphSystem {
+    path: string;
+    name: string;
+    /** File nodes the graph holds under it. */
+    files: number;
+    apps: GraphApp[];
+    /** The repo graph did not read every file of it (see `graphRead.skipped`). */
+    truncated?: boolean;
+    /** Set on a duplicated copy: the path of the system it copies. */
+    copyOf?: string;
+    copySimilarity?: number;
+    copyReason?: 'no-git' | 'name-mismatch' | 'later-name';
+    /** The reference graph's reading of this system: files read, and files left out by reason. */
+    graphRead?: { read: number; skipped: GraphReadSkip[] };
+}
+
 export interface KnowledgeGraph {
     scope: { rootId: string; packs: string[]; digest: string };
     nodes: KNode[];
     edges: KEdge[];
     findings: Finding[];
+    /** Present only when the root held systems to report (see {@link GraphSystem}). */
+    meta?: { systems?: GraphSystem[] };
     stats: { sources: number; nodes: number; edges: number; stale: number; truncated: boolean };
     /**
      * Attached only when the graph was truncated (`stats.truncated`): the whole graph's files,
@@ -258,6 +293,12 @@ export interface GraphOutline {
     areas: NodeRef[];
     /** Distinct partitions, sorted; `OutlineFile.partition` indexes into it. */
     partitions: string[];
+    /** Distinct system paths of the files (and the systems they copy), sorted; `OutlineFile.system` / `copyOf` index into it. Absent when no file has a system. */
+    systems?: string[];
+    /** Distinct app paths, sorted; `OutlineFile.app` indexes into it. Absent when no file has an app. */
+    apps?: string[];
+    /** The root's systems with their file counts, copies and graph reads — `KnowledgeGraph.meta.systems`, carried so the outline stands alone. */
+    systemInfo?: GraphSystem[];
     /** File nodes of the full graph, sorted by ref. */
     files: OutlineFile[];
     /**
@@ -277,6 +318,12 @@ export interface OutlineFile {
     area?: number;
     /** Index into `GraphOutline.partitions`, when the file has a partition. */
     partition?: number;
+    /** Index into `GraphOutline.systems`, when the file has a system ('' is a system too). */
+    system?: number;
+    /** Index into `GraphOutline.apps`, when the file has an app. */
+    app?: number;
+    /** Index into `GraphOutline.systems` of the system this file's system copies. */
+    copyOf?: number;
     importance: number;
     /** The first 12 characters of the node's sourceHash. */
     hash?: string;
@@ -292,6 +339,8 @@ export interface BuildGraphInput {
     packs: KnowledgePack[];
     live?: LiveOverlay;
     nearDuplicates?: SimilarPair[];
+    /** The root's systems (file counts are computed by the build): each file node is stamped with its system, app and copyOf. */
+    systems?: GraphSystem[];
 }
 
 export interface BuildGraphOptions {

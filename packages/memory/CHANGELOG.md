@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.45
+
+### A folder of many systems reads as many systems (`/knowledge`, PRD 41 A9)
+
+- **Systems on file nodes.** `BuildGraphInput.systems` (`GraphSystem[]`) places each file in its deepest system and app: `KNode.system`, `KNode.app`, and `KNode.copyOf` for a stray copy of another system. The graph carries `meta.systems` with per-system file counts and repo-graph read/skip tallies; the outline carries the same per file, so a truncated graph keeps them.
+- **No layer verdict across systems.** An edge between files of two different systems gets no partition verdict, so `partition-violation` is computed within a system only.
+- **`duplicate-copy` finding.** A system recorded as a copy of another yields a `warn` finding `{ copy, original, similarity, reason }`.
+- New exports: `GraphSystem`, `GraphApp`, `GraphReadSkip`, `placeInSystem`, `crossesSystems`.
+
 ## 2026.10.44
 
 ### A review is a run you can watch, and it runs in parallel (`/knowledge`)

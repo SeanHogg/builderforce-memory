@@ -166,3 +166,53 @@ describe('buildOutline caps', () => {
         expect(buildOutline(synthetic(10, [refEdge(0, 1)])).capped).toBe(false);
     });
 });
+
+describe('buildOutline — systems', () => {
+    const files = ['a/x.ts', 'a/packages/web/y.ts', 'b/z.ts'];
+    const withSystems = (): KnowledgeGraph => {
+        const g = buildGraph({
+            rootId: ROOT, packs: [PACK], facts: [], relations: [],
+            extracted: files.map((p) => extractedOf(fileNode(p))),
+            systems: [
+                { path: 'a', name: 'a', files: 0, apps: [{ path: 'a/packages/web', name: 'web' }] },
+                { path: 'b', name: 'b', files: 0, apps: [], copyOf: 'a', copySimilarity: 1, copyReason: 'no-git' },
+            ],
+        });
+        return g;
+    };
+
+    it('files carry system, app and copyOf as indexes into the outline pools, and the outline carries the systems', () => {
+        const o = buildOutline(withSystems());
+        expect(o.systems).toEqual(['a', 'b']);
+        expect(o.apps).toEqual(['a/packages/web']);
+        const byPath = (p: string) => o.files.find((f) => f.path.endsWith(p))!;
+        expect(byPath('a/x.ts')).toMatchObject({ system: 0 });
+        expect(byPath('a/x.ts').app).toBeUndefined();
+        expect(byPath('y.ts')).toMatchObject({ system: 0, app: 0 });
+        expect(byPath('b/z.ts')).toMatchObject({ system: 1, copyOf: 0 });
+        expect(o.systemInfo?.map((s) => [s.path, s.files, s.copyOf])).toEqual([['a', 2, undefined], ['b', 1, 'a']]);
+    });
+
+    it('a root without systems has none of these fields', () => {
+        const o = buildOutline(buildGraph({ rootId: ROOT, packs: [PACK], facts: [], relations: [], extracted: files.map((p) => extractedOf(fileNode(p))) }));
+        expect(o.systems).toBeUndefined();
+        expect(o.apps).toBeUndefined();
+        expect(o.systemInfo).toBeUndefined();
+        expect(o.files.every((f) => f.system === undefined)).toBe(true);
+    });
+
+    it('a one-system root keeps the empty system as index 0', () => {
+        const g = buildGraph({
+            rootId: ROOT, packs: [PACK], facts: [], relations: [], extracted: files.map((p) => extractedOf(fileNode(p))),
+            systems: [{ path: '', name: 'r', files: 0, apps: [] }],
+        });
+        const o = buildOutline(g);
+        expect(o.systems).toEqual(['']);
+        expect(o.files.every((f) => f.system === 0)).toBe(true);
+    });
+
+    it('survives a JSON round trip (the wire form)', () => {
+        const o = buildOutline(withSystems());
+        expect(JSON.parse(JSON.stringify(o))).toEqual(o);
+    });
+});

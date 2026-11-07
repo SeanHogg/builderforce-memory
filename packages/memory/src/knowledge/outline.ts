@@ -60,6 +60,11 @@ export function buildOutline(full: KnowledgeGraph): GraphOutline {
     const areaIndex = new Map<NodeRef, number>(areas.map((a, i) => [a, i] as const));
     const partitionIndex = new Map<string, number>(partitions.map((p, i) => [p, i] as const));
 
+    const systems = [...new Set(fileNodes.flatMap((n) => [...(n.system !== undefined ? [n.system] : []), ...(n.copyOf !== undefined ? [n.copyOf] : [])]))].sort(compareStr);
+    const apps = [...new Set(fileNodes.flatMap((n) => (n.app !== undefined ? [n.app] : [])))].sort(compareStr);
+    const systemIndex = new Map<string, number>(systems.map((s, i) => [s, i] as const));
+    const appIndex = new Map<string, number>(apps.map((a, i) => [a, i] as const));
+
     const files: OutlineFile[] = fileNodes.map((n) => {
         const badges: Record<string, number | string> = {};
         for (const k of OUTLINE_BADGE_KEYS) {
@@ -70,6 +75,9 @@ export function buildOutline(full: KnowledgeGraph): GraphOutline {
             path: n.ref.slice(prefix.length),
             ...(n.area !== undefined ? { area: areaIndex.get(n.area)! } : {}),
             ...(n.partition !== undefined ? { partition: partitionIndex.get(n.partition)! } : {}),
+            ...(n.system !== undefined ? { system: systemIndex.get(n.system)! } : {}),
+            ...(n.app !== undefined ? { app: appIndex.get(n.app)! } : {}),
+            ...(n.copyOf !== undefined ? { copyOf: systemIndex.get(n.copyOf)! } : {}),
             importance: n.importance,
             ...(n.sourceHash !== undefined ? { hash: n.sourceHash.slice(0, HASH_CHARS) } : {}),
             ...(Object.keys(badges).length > 0 ? { badges } : {}),
@@ -104,5 +112,11 @@ export function buildOutline(full: KnowledgeGraph): GraphOutline {
     }
     list.sort((a, b) => a.from - b.from || a.to - b.to);
     const links = list.map((m) => [m.from, m.to, m.verdict, m.cycle ? OUTLINE_FLAG_CYCLE : 0] as [number, number, number, number]);
-    return { prefix, areas, partitions, files, links, capped };
+    return {
+        prefix, areas, partitions,
+        ...(systems.length > 0 ? { systems } : {}),
+        ...(apps.length > 0 ? { apps } : {}),
+        ...(full.meta?.systems ? { systemInfo: full.meta.systems } : {}),
+        files, links, capped,
+    };
 }

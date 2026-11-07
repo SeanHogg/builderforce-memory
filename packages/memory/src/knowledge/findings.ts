@@ -12,7 +12,7 @@ import { hashText } from '../ingest/hash.js';
 import type { EdgeVerdict, Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { possibleSameFindings } from './resolve.js';
-import { aboutTargets, compareStr, round6 } from './refs.js';
+import { aboutTargets, compareStr, round6, srcRef } from './refs.js';
 
 /** Node badge naming the clone group (e.g. a jscpd issue id) its `duplicate` edges belong to. */
 export const CLONE_GROUP_BADGE = 'cloneGroup';
@@ -114,6 +114,14 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
                 verdict: e.verdict, from: from?.partition ?? '', to: to?.partition ?? '', kind: e.kind,
             }));
         }
+    }
+
+    // A copy of another system in the same root (PRD 41 A9): its refs name the two systems' folders.
+    for (const s of g.meta?.systems ?? []) {
+        if (s.copyOf === undefined) continue;
+        out.push(finding('duplicate-copy', 'memory', [srcRef(g.scope.rootId, s.path), srcRef(g.scope.rootId, s.copyOf)], 'warn', {
+            copy: s.path, original: s.copyOf, similarity: s.copySimilarity ?? 1, reason: s.copyReason ?? 'later-name',
+        }, [s.path, s.copyOf]));
     }
 
     for (const [pack, reg] of [...registries].sort((a, b) => compareStr(a[0], b[0]))) {

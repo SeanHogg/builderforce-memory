@@ -17,9 +17,10 @@
 import { areaOfPath } from '../working/codemapAreas.js';
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
 import type {
-    BuildGraphInput, BuildGraphOptions, Extracted, KEdge, KNode, KnowledgeGraph, NodeRef,
+    BuildGraphInput, BuildGraphOptions, Extracted, GraphSystem, KEdge, KNode, KnowledgeGraph, NodeRef,
     PartitionRegistry, StoredFact,
 } from './model.js';
+import { crossesSystems, placeInSystem } from './systems.js';
 import { computeFindings } from './findings.js';
 import { pageRank } from './importance.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
@@ -52,7 +53,15 @@ export function graphDigest(input: BuildGraphInput): string {
             runFiles: nonEmpty(input.live.runFiles) && [...input.live.runFiles!].sort(compareStr),
         },
         nearDuplicates: nonEmpty(input.nearDuplicates) && sortBy(input.nearDuplicates!, (p) => p.a, (p) => p.b),
+        systems: nonEmpty(input.systems) && sortBy(input.systems!, (s) => s.path),
     }));
+}
+
+/** The systems with the file nodes each holds (the graph's own count, before any cut). */
+function systemsMeta(systems: readonly GraphSystem[], nodes: readonly KNode[]): GraphSystem[] {
+    const files = new Map<string, number>();
+    for (const n of nodes) if (n.kind === 'file' && n.system !== undefined) files.set(n.system, (files.get(n.system) ?? 0) + 1);
+    return systems.map((s) => ({ ...s, files: files.get(s.path) ?? 0 }));
 }
 
 /** An absent list and an empty list mean the same input, so they hash the same. */
@@ -180,7 +189,8 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     const changed = applyLive(input, g);
     closeEndpoints(g);
     const registries = new Map(input.packs.map((p) => [p.id, loadPartitions(p)] as const));
-    placeNodes(rootId, g, registries);
+    const systems = [...(input.systems ?? [])].sort((a, b) => compareStr(a.path, b.path));
+    placeNodes(rootId, g, registries, systems);
 
     const rank = pageRank([...g.nodes.keys()], [...g.edges.values()]);
     for (const n of g.nodes.values()) n.importance = rank.get(n.ref) ?? 0;
@@ -191,6 +201,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     const full: KnowledgeGraph = {
         scope: { rootId, packs, digest: graphDigest(input) },
         nodes: allNodes, edges: allEdges, findings: [],
+        ...(systems.length > 0 ? { meta: { systems: systemsMeta(systems, allNodes) } } : {}),
         stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false },
     };
     full.findings = computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
@@ -255,7 +266,7 @@ function closeEndpoints(g: GraphBuilder): void {
     }
 }
 
-function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, PartitionRegistry>): void {
+function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, PartitionRegistry>, systems: readonly GraphSystem[]): void {
     for (const n of g.nodes.values()) {
         const path = pathOfRef(n.ref);
         if (path === undefined) continue;
@@ -265,11 +276,19 @@ function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, Par
         if (partition !== undefined) n.partition = partition;
         const area = areaOfPath(path);
         if (area) n.area = srcRef(rootId, area);
+        const placed = n.kind === 'file' && systems.length > 0 ? placeInSystem(systems, path) : undefined;
+        if (placed) {
+            n.system = placed.system;
+            if (placed.app !== undefined) n.app = placed.app;
+            if (placed.copyOf !== undefined) n.copyOf = placed.copyOf;
+        }
     }
     for (const e of g.edges.values()) {
         const from = g.nodes.get(e.from), to = g.nodes.get(e.to);
         const reg = from && registries.get(from.pack);
         if (!from || !to || !reg || from.pack !== to.pack) continue;
+        // Layers are a system's own: a reference into another system is neither upward nor skipping.
+        if (crossesSystems(from, to)) continue;
         const verdict = verdictOf(from.partition, to.partition, reg);
         if (verdict) e.verdict = verdict;
     }
@@ -283,6 +302,9 @@ function finalNode(n: KNode): KNode {
         ref: n.ref, kind: n.kind, label: n.label, pack: n.pack,
         ...(n.partition !== undefined ? { partition: n.partition } : {}),
         ...(n.area !== undefined ? { area: n.area } : {}),
+        ...(n.system !== undefined ? { system: n.system } : {}),
+        ...(n.app !== undefined ? { app: n.app } : {}),
+        ...(n.copyOf !== undefined ? { copyOf: n.copyOf } : {}),
         importance: n.importance, origin: n.origin,
         ...(n.sourceHash !== undefined ? { sourceHash: n.sourceHash } : {}),
         ...(n.stale ? { stale: true } : {}),

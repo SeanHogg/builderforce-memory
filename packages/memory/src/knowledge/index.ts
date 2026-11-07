@@ -12,6 +12,7 @@ export type {
     JudgementPort, AnalyzerPort, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
     ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile,
+    GraphSystem, GraphApp, GraphReadSkip,
 } from './model.js';
 export {
     buildOutline, outlineOf, outlineRef, OUTLINE_MAX_FILES, OUTLINE_MAX_LINKS, OUTLINE_BADGE_KEYS, OUTLINE_VERDICTS, OUTLINE_FLAG_CYCLE,
@@ -19,6 +20,7 @@ export {
 export { EXTERNAL_SERVICE_IDS, type ExternalServiceId } from './externals.js';
 
 export { buildGraph, graphDigest, oneLineLabel, DEFAULT_MAX_NODES, MAX_NODES_CAP } from './build.js';
+export { placeInSystem, crossesSystems, type SystemPlacement } from './systems.js';
 export { truncateGraph, TRUNCATION_HARD_CAP, UNANCHORED_AREA } from './truncate.js';
 export type { TruncateOptions } from './truncate.js';
 export { pageRank, byImportance, areaImportance, PAGERANK_DAMPING, PAGERANK_ITERATIONS } from './importance.js';
