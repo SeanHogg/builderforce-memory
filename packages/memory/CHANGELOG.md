@@ -1,5 +1,18 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.44
+
+### A review is a run you can watch, and it runs in parallel (`/knowledge`)
+
+- **No single file ends a review.** An extraction that throws is counted in `ReviewReport.extractErrors` and listed in `ReviewReport.failures` (`{ path, phase, reason }`, read errors and judge errors too); the file keeps its prior knowledge and manifest hash, so the next review retries it. A judge that throws leaves that file's sections unjudged. Only an abort or a local store write error ends a run.
+- **`ReviewArgs.onStep`** emits one `ReviewStep` (`{ path, phase, ms, outcome: ok | cached | skipped | failed, reason?, lane? }`) per file per phase.
+- **A file whose judging fails as a whole is left exactly as it was.** When every model call for a file fails (401, 429, network) or judging throws, nothing of it is written or marked stale: prior facts, manifest hash and owed state stay, and the next review retries it. The failure carries the error (`judge: 429 rate limited`). A budget cut, or some calls failing, keeps the older *Continue* behaviour.
+- **`ReviewArgs.extractPool(job, signal)`** hands extraction to a host pool (e.g. `worker_threads`). The `ExtractJob` is plain data; `extractJob(job, packs)` is the pure worker-side entry (returns `{ extracted, sections? }`) and runs the same extractor as the in-thread default. With a pool the main thread never parses: the worker returns the sections when the file will be judged. A result without the file's exact `sourceRef` fails that file's extraction. With a pool, `concurrency` is the pool width.
+- **`ReviewArgs.judgeConcurrency`** (default 4, never wider than `concurrency`) judges that many files at once. Each file's model calls are reserved from the budget in plan order and ONE writer applies results in plan order (and writes the extract cache), so the stored bytes equal those of a one-file-at-a-time review.
+- **`ReviewArgs.maxModelCalls`** (default 6) caps model calls in flight across ALL files with one shared AIMD limiter (`createModelLimiter`): a rate limit halves it, 20 successes grow it by 1.
+- **Abort.** Files whose work completed are still applied; an abort that lands while the writer is mid-file ends the run at that file. A thrown error stops every queued and in-flight call before it propagates.
+- **`startRun` / `applyRunEvent` / `runRate` / `runEta`** (`reviewRun.ts`): a pure recorder that folds progress, step and end events into a `ReviewRun` (phases, lanes, the last 200 steps, every failure) for a host to persist and draw.
+
 ## 2026.10.43
 
 ### One list of external service ids (`/knowledge`)

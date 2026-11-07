@@ -43,9 +43,18 @@ export type { ExtractorState } from './owedFiles.js';
 export { reviewDirectory, assertStoredBatch } from './review.js';
 export { extractFile, extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
 export type { ExtractFileArgs, FileExtraction } from './extractFile.js';
+export { extractJob, jobOf } from './extractJob.js';
+export type { ExtractJob, ExtractJobResult, ExtractPool } from './extractJob.js';
+export { putExtract } from './extractFile.js';
+export { createModelLimiter, isRateLimit } from './modelLimiter.js';
+export type { ModelLimiter } from './modelLimiter.js';
+export { reasonOf } from './reviewRunModel.js';
+export type { ReviewFailure, ReviewPhase, ReviewStep, ReviewStepOutcome } from './reviewRunModel.js';
+export { startRun, applyRunEvent, runRate, runEta, REVIEW_RUN_STEP_RING } from './reviewRun.js';
+export type { ReviewRun, ReviewRunEvent, ReviewRunKind, ReviewRunLane, ReviewRunOutcome, ReviewRunPhase } from './reviewRun.js';
 export {
     validateExtract, validateCompare, clampQuote, clampClaim, MAX_QUOTE_LINES, MAX_QUOTE_CHARS, MAX_CLAIM_TEXT_CHARS,
-    DEFAULT_REVIEW_MODEL_CALLS, REVIEW_FACT_SOURCE,
+    DEFAULT_REVIEW_MODEL_CALLS, DEFAULT_REVIEW_JUDGE_CONCURRENCY, REVIEW_FACT_SOURCE,
 } from './judge.js';
 export {
     composePacks, ignoreMatcher, ignoreSourcesOf, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,

@@ -11,17 +11,19 @@
  * (calls and a deadline) is shared across the whole review.
  */
 
-import { hashText } from '../ingest/hash.js';
 import type {
     JudgedClaim, JudgedEntity, JudgementPort, JudgementResult, NodeRef, StoredFact, StoredRelation,
 } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
-import { entityKey, normalizeKey } from './resolve.js';
-import { compareStr, factRef } from './refs.js';
+import type { ModelLimiter } from './modelLimiter.js';
+import { normalizeKey } from './resolve.js';
+import { compareStr } from './refs.js';
 
 export const DEFAULT_REVIEW_MODEL_CALLS = 200;
 /** How many changed files a review reads + extracts ahead of its (sequential) judge/write stage. */
 export const DEFAULT_REVIEW_CONCURRENCY = 8;
+/** How many files a review judges at once (writes stay in plan order; PRD 41 A8). */
+export const DEFAULT_REVIEW_JUDGE_CONCURRENCY = 4;
 export const REVIEW_FACT_SOURCE = 'knowledge-review';
 const MAX_TERM = 200;
 const MAX_NAME = 120;
@@ -101,7 +103,7 @@ export const JUDGE_CONCURRENCY = 6;
  * the pool immediately — in-flight calls keep running but no new work is scheduled, matching the
  * serial loops' "stop at the first throw" behaviour.
  */
-async function runPool<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+export async function runPool<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
     let next = 0;
     let error: Error | null = null;
     const lanes = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
@@ -194,16 +196,31 @@ export function validateCompare(result: unknown, a: NodeRef, b: NodeRef): { rela
     return { confidence: 0, invalid: Math.max(invalid, 1) };
 }
 
-/** One model call; `undefined` when the port throws (an abort is re-thrown) — the item was NOT judged. */
-async function call(port: JudgementPort, req: Parameters<JudgementPort['judge']>[0], b: JudgeBudget): Promise<{ result: unknown } | undefined> {
+/** What a host of many concurrent calls adds to {@link call}: a shared in-flight cap and a look at each failure. */
+export interface CallHooks {
+    limiter?: ModelLimiter;
+    onError?(err: unknown): void;
+}
+
+/**
+ * One model call; `undefined` when the port throws (an abort is re-thrown) — the item was NOT judged.
+ * `used` is counted before any wait for the limiter, so the budget cannot be overshot by queued calls.
+ */
+export async function call(
+    port: JudgementPort, req: Parameters<JudgementPort['judge']>[0], b: JudgeBudget, hooks: CallHooks = {},
+): Promise<{ result: unknown } | undefined> {
     b.used += 1;
     try {
-        return { result: await port.judge(req) };
+        const run = () => port.judge(req);
+        return { result: await (hooks.limiter ? hooks.limiter.run(run, req.signal) : run()) };
     } catch (err) {
         if (req.signal?.aborted) throw err;
+        hooks.onError?.(err);
         return undefined;
     }
 }
+
+export { judgeSections } from './judgeCalls.js';
 
 export interface SectionToJudge { ref: NodeRef; text: string }
 
@@ -220,69 +237,6 @@ export interface ExtractArgs {
     signal?: AbortSignal;
     /** Called for each section actually judged (for the judged-sections manifest). */
     onJudged(ref: NodeRef): void;
-}
-
-/** Judges each section within the budget; the rest — and any whose call failed — are counted `unjudged`. */
-export async function judgeSections(a: ExtractArgs): Promise<Array<{ ref: NodeRef; text: string }>> {
-    const claims: Array<{ ref: NodeRef; text: string }> = [];
-    const anchor = { path: a.path, contentHash: a.fileHash };
-    // Judged in a bounded pool: the budget check and `call`'s synchronous `used` increment happen
-    // on the same tick (no await between), so concurrency cannot overshoot `modelCalls`; the
-    // batch/entities/onJudged mutations below are synchronous, hence race-free across workers.
-    // The claims array's order may differ from serial execution — its consumer is order-insensitive.
-    const abortError = () => a.signal?.reason ?? new Error('aborted');
-    await runPool(a.sections, JUDGE_CONCURRENCY, async (section) => {
-        // Honoured per section, not only when the port throws: the caller drops this file whole.
-        if (a.signal?.aborted) throw abortError();
-        if (!budgetLeft(a.budget)) { a.batch.unjudged += 1; return; }
-        const answer = await call(a.port, {
-            kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
-            ...(a.signal ? { signal: a.signal } : {}),
-        }, a.budget);
-        // A failed call judged nothing: not counted judged, so the file stays changed and is retried.
-        if (!answer) { a.batch.unjudged += 1; return; }
-        // The abort can land while a call is in flight (the port sees the signal): a section that
-        // finished after the abort must not count as judged, or the caller would not re-judge it.
-        if (a.signal?.aborted) throw abortError();
-        const v = validateExtract(answer.result, section.ref);
-        a.batch.invalid += v.invalid;
-        a.batch.judged += 1;
-        a.onJudged(section.ref);
-        const rel = (from: NodeRef, to: NodeRef, kind: string) =>
-            a.batch.relation({ from, to, kind, weight: 1, origin: 'model', sourceHash: a.fileHash });
-
-        const entityRefs = new Map<string, NodeRef>();
-        for (const e of v.entities) {
-            const key = entityKey(a.pack, e.name);
-            const prior = a.entities.get(key);
-            const anchors = [...(prior?.fileAnchors ?? []).filter((x) => x.path !== a.path), anchor]
-                .sort((x, y) => compareStr(x.path, y.path));
-            const fact: StoredFact = {
-                key, content: prior?.content ?? `${e.name} (${e.type})`, source: REVIEW_FACT_SOURCE,
-                importance: prior?.importance ?? 0.5, origin: prior?.origin ?? 'model', fileAnchors: anchors,
-            };
-            a.entities.set(key, fact);
-            a.batch.fact(fact);
-            entityRefs.set(normalizeKey(e.name), key);
-            rel(section.ref, key, 'mentions');
-        }
-        for (const c of v.claims) {
-            const key = `claim:${hashText([section.ref, c.subject, c.predicate, c.object].join('\u0000'))}`;
-            const text = `${c.subject} ${c.predicate} ${c.object}`;
-            a.batch.fact({
-                key, content: claimContent(text, c.quote), source: REVIEW_FACT_SOURCE,
-                importance: 0.5, origin: 'model', fileAnchors: [anchor],
-            });
-            const ref = factRef(key);
-            rel(ref, section.ref, 'about');
-            for (const term of [c.subject, c.object]) {
-                const ent = entityRefs.get(normalizeKey(term));
-                if (ent) rel(ref, ent, 'mentions');
-            }
-            claims.push({ ref, text });
-        }
-    });
-    return claims;
 }
 
 export interface CompareArgs {

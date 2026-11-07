@@ -7,6 +7,8 @@ import type { IngestManifest, SourceDocument } from '../ingest/types.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import type { JudgementPort, KnowledgePack, KnowledgeStore } from './model.js';
 import type { PlanDetail } from './plan.js';
+import type { ExtractPool } from './extractJob.js';
+import type { ReviewFailure, ReviewPhase, ReviewStep } from './reviewRunModel.js';
 
 /** Where files come from: one adapter per host. */
 export interface DirectorySource {
@@ -30,7 +32,7 @@ export interface ReviewPlan {
 }
 
 export interface ReviewProgress {
-    phase: 'plan' | 'extract' | 'resolve' | 'judge' | 'write' | 'index' | 'done';
+    phase: ReviewPhase;
     done: number;
     total: number;
     path?: string;
@@ -53,6 +55,10 @@ export interface ReviewReport {
      * the next fresh plan's `removed`.
      */
     readErrors: number;
+    /** Files whose extraction threw: handled like a read error (knowledge and manifest hash kept, retried next review). */
+    extractErrors: number;
+    /** Every file this run could not finish (read, extract, judge), with why. */
+    failures: ReviewFailure[];
     aborted: boolean;
     durationMs: number;
 }
@@ -77,7 +83,29 @@ export interface ReviewArgs {
     /** *Re-review all*: every file is reviewed whatever its hash (see `PlanOptions.force`). Ignored with `plan`. */
     force?: boolean;
     signal?: AbortSignal;
-    /** Files read + extracted ahead of judging (1..32, default 8). Judge/write stay in file order. */
+    /**
+     * Files read + extracted ahead of judging (1..32, default 8). With an `extractPool` this is the pool's width.
+     * Writes always stay in file order.
+     */
     concurrency?: number;
+    /**
+     * Files judged at once (1..16, default 4, never wider than the read-ahead). One ordered writer applies the
+     * results in plan order, so the stored bytes equal those of `concurrency: 1, judgeConcurrency: 1`.
+     */
+    judgeConcurrency?: number;
+    /**
+     * The most model calls in flight across ALL files of the review (default 6): `judgeConcurrency` parallelizes
+     * files without multiplying the provider's load. A rate-limit answer halves it (minimum 1); it grows back by 1
+     * per 20 successful calls.
+     */
+    maxModelCalls?: number;
+    /**
+     * Extracts a changed file whose extract is not cached — e.g. a `worker_threads` pool. Default: in-thread.
+     * With a pool the main thread never parses; the pool returns a file's sections when it will be judged.
+     * A result without the file's exact `sourceRef` fails that file's extraction (prior knowledge kept).
+     */
+    extractPool?: ExtractPool;
+    /** One event per file per phase, as it happens (PRD 41 A8). */
+    onStep?(step: ReviewStep): void;
     onProgress?(p: ReviewProgress): void;
 }

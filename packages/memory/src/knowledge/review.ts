@@ -7,8 +7,12 @@
  *   of judged kinds, within budget) · write · markStale → analyzers → compare near-duplicate
  *   claims → manifest + scope digest. Claims whose compare pairs were skipped wait in the
  *   compare manifest for *Continue*.
- *   Read + extract are prefetched with bounded concurrency (`args.concurrency`); judge · write ·
- *   markStale stay in file order, so the shared model-call budget is spent deterministically.
+ *   Read + extract are prefetched with bounded concurrency (`args.concurrency`; through `args.extractPool`
+ *   when a host supplies one) and up to `args.judgeConcurrency` files are judged at once, but ONE writer
+ *   applies judge · write · markStale strictly in file order, and each file's model calls are reserved from
+ *   the shared budget in file order — so the stored bytes and the budget spend do not depend on the widths
+ *   (PRD 41 A8). A file whose read, extraction or judging fails is recorded in `report.failures` and skipped;
+ *   only an abort or a local store write error ends the run.
  *
  * Store judgement, compute perception: only `model` facts and relations are written —
  * `extracted` output goes to the extracted cache, never to memory ({@link assertStoredBatch}).
@@ -22,28 +26,32 @@
  * next review or *Continue* picks up exactly those files, whatever their content does.
  */
 
-import { hashText } from '../ingest/hash.js';
-import type { SourceDocument } from '../ingest/types.js';
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
-import type { NodeRef, ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
-import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
+import type { ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
 import { owedAfterRun, owedCalls, saveExtractorState } from './owedFiles.js';
 import { planDetail, refreshPlan } from './plan.js';
-import { composePacks, filesManifestKey, isBinaryText, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
-import { extractFileDetailed, knownKeysOfEntities, type FileExtraction } from './extractFile.js';
+import { composePacks, filesManifestKey, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
+import { knownKeysOfEntities, putExtract } from './extractFile.js';
 import { prefetchOrdered } from './orderedPool.js';
-import { DEFAULT_REVIEW_CONCURRENCY, DEFAULT_REVIEW_MODEL_CALLS, JudgedBatch, judgeSections, type CompareOutcome, type JudgeBudget } from './judge.js';
+import {
+    DEFAULT_REVIEW_CONCURRENCY, DEFAULT_REVIEW_JUDGE_CONCURRENCY, DEFAULT_REVIEW_MODEL_CALLS, JUDGE_CONCURRENCY, JudgedBatch,
+    type CompareOutcome, type JudgeBudget,
+} from './judge.js';
+import { createModelLimiter } from './modelLimiter.js';
+import { applyJudge, startJudge, type JudgeJob } from './reviewJudge.js';
+import { createPrefetch, type Prefetch } from './reviewPrefetch.js';
+import { Lanes } from './reviewRunModel.js';
 import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
 import { factsWithoutAnchor, StoredIndex } from './reviewStored.js';
 import { canonicalJson, compareStr, srcRef } from './refs.js';
 
-/** What the prefetch stage learned about one file; `failed` carries an extraction throw to be rethrown in file order. */
-type Prefetch =
-    | { kind: 'read-error' }
-    | { kind: 'binary' }
-    | { kind: 'none' }
-    | { kind: 'extracted'; doc: SourceDocument; extraction: FileExtraction }
-    | { kind: 'failed'; error: unknown };
+/** One changed file between dispatch and the ordered writer: what its prefetch found and its judging in flight. */
+interface Slot {
+    f: { path: string; hash: string };
+    i: number;
+    job: Prefetch;
+    judge: JudgeJob | undefined;
+}
 
 /** Throws if a batch carries `extracted` items — perception is never memory. */
 export function assertStoredBatch(batch: { facts: readonly StoredFact[]; relations: readonly StoredRelation[] }): void {
@@ -68,7 +76,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const progress = (p: Parameters<NonNullable<ReviewArgs['onProgress']>>[0]) => args.onProgress?.(p);
     const report: ReviewReport = {
         rootId, digest: '', extracted: 0, judged: 0, unjudged: 0, invalidJudgements: 0,
-        factsWritten: 0, relationsWritten: 0, staleMarked: 0, readErrors: 0, aborted: false, durationMs: 0,
+        factsWritten: 0, relationsWritten: 0, staleMarked: 0, readErrors: 0, extractErrors: 0, failures: [], aborted: false, durationMs: 0,
     };
 
     const detail = args.plan
@@ -134,46 +142,42 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const hashes = [...new Set(changed.map((f) => f.hash))];
     if (hashes.length > 0) await store.preloadExtracted?.(hashes);
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
-    // fixed above, and the content-hash extract cache); everything after stays sequential, in file order.
+    // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
+    // Judging runs `judgeWidth` files at once; ONE writer (`applyFile`) consumes them strictly in plan order.
     const concurrency = Math.min(32, Math.max(1, Math.floor(args.concurrency ?? DEFAULT_REVIEW_CONCURRENCY) || 1));
-    // extractFileDetailed read-modify-writes the extract cache entry of a content hash, so files sharing a hash
-    // extract one after another, in file order (jobs start in file order). Reads still overlap. A job always
-    // releases its turn, so a failed predecessor never blocks or poisons the next one.
-    const hashTail = new Map<string, Promise<void>>();
-    const prefetch = async (f: (typeof changed)[number]): Promise<Prefetch> => {
-        const before = hashTail.get(f.hash) ?? Promise.resolve();
-        let release!: () => void;
-        const mine = new Promise<void>((r) => { release = r; });
-        const tail = before.then(() => mine);
-        hashTail.set(f.hash, tail);
-        try {
-            let doc: SourceDocument;
-            try { doc = await source.read(f.path); } catch { return { kind: 'read-error' }; }
-            try {
-                if (doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
-                await before;
-                const extraction = await extractFileDetailed({
-                    rootId, path: f.path, hash: f.hash, doc, packs, store, composed, knownKeys,
-                });
-                return extraction ? { kind: 'extracted', doc, extraction } : { kind: 'none' };
-            } catch (error) { return { kind: 'failed', error }; }
-        } finally {
-            release();
-            void tail.then(() => { if (hashTail.get(f.hash) === tail) hashTail.delete(f.hash); });
-        }
+    const judgeWidth = Math.min(concurrency, Math.min(16, Math.max(1, Math.floor(args.judgeConcurrency ?? DEFAULT_REVIEW_JUDGE_CONCURRENCY) || 1)));
+    // The run's own stop: the caller's abort relays into it, and a thrown error (a local store failure) aborts it,
+    // so queued and in-flight judge calls and pool jobs stop and nothing outlives the run.
+    const stopper = new AbortController();
+    // An abort that lands while the writer is mid-file ends the run at that file's boundary, as a sequential run
+    // does (`cut`); one that lands anywhere else (a read, a model call) keeps every file whose work completed.
+    let inWriter = false;
+    let cut = false;
+    const relay = () => { if (inWriter) cut = true; stopper.abort(signal?.reason); };
+    if (signal?.aborted) relay(); else signal?.addEventListener('abort', relay, { once: true });
+    const runSignal = stopper.signal;
+    const prefetch = createPrefetch({ args, signal: runSignal, rootId, packs, store, composed, knownKeys, width: concurrency });
+    const dispatch = {
+        port: args.judgement, signal: runSignal, budget, judgedPrior, lanes: new Lanes(judgeWidth),
+        limiter: createModelLimiter(args.maxModelCalls ?? JUDGE_CONCURRENCY),
     };
-    let consumed = 0;
-    for await (const { item: f, i, result } of prefetchOrdered(changed, concurrency, prefetch, signal)) {
-        consumed += 1; // the pool ends the stream at a file boundary once aborted, discarding read-ahead
+    const judgeCtx = { batch, entities, stored, judgedNow, newClaims, measured, detail, report, ...(args.onStep ? { onStep: args.onStep } : {}) };
+    const fail = (path: string, phase: 'extract' | 'judge', reason: string) => report.failures.push({ path, phase, reason });
+
+    /**
+     * Applies one file, in plan order. False when its work was cut short by an abort (extracted, judging
+     * unfinished): nothing of it is applied and it stays as it was, owed. A file whose work is complete is
+     * applied even after an abort — the work is done, so it is kept.
+     */
+    const applyInner = async ({ f, i, job, judge }: Slot): Promise<boolean> => {
         progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
-        // A read that throws (permissions, a lock, a race with a delete) says nothing about the file:
-        // skipped with its knowledge and manifest hash intact, tried again next review.
-        if (result.status === 'rejected') throw result.reason; // unreachable: a prefetch job settles to a Prefetch
-        const job = result.value;
-        if (job.kind === 'read-error') {
-            report.readErrors += 1;
-            measured.set(f.path, owedCalls(detail.extractor, f.path)); // a read error learns nothing: keep what it was owed
-            continue;
+        // A read that throws (permissions, a lock, a race with a delete) or an extraction that throws says nothing
+        // about the file: skipped with its knowledge and manifest hash intact, tried again next review.
+        if (job.kind === 'read-error' || job.kind === 'failed') {
+            if (job.kind === 'read-error') report.readErrors += 1; else report.extractErrors += 1;
+            fail(f.path, 'extract', job.kind === 'read-error' ? `read: ${job.reason}` : job.reason);
+            measured.set(f.path, owedCalls(detail.extractor, f.path)); // learns nothing: keep what it was owed
+            return true;
         }
         // Recorded, so a file found binary on read is not re-read by every later review.
         if (job.kind === 'binary') {
@@ -181,63 +185,61 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             finished.add(f.path);
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
-            continue;
+            return true;
         }
-        if (job.kind === 'failed') throw job.error;
-        if (job.kind === 'none') { finished.add(f.path); continue; }
-        const { extracted: ex, sections, pack } = job.extraction;
+        if (job.kind === 'none') { finished.add(f.path); return true; }
         report.extracted += 1;
-
-        const spec = pack.judgement;
+        // The extract cache is written HERE, in plan order, so the cache, the counts and the order match a sequential run.
+        if (!job.extraction.cached) await putExtract(store, f.hash, job.extraction.extracted);
         let complete = true;
-        if (spec && args.judgement && (spec.claims || spec.entities)) {
-            const kinds = new Set(spec.nodeKinds);
-            const toJudge: Array<{ ref: NodeRef; text: string }> = [];
-            for (const node of ex.nodes) {
-                const index = node.badges?.[SECTION_INDEX_BADGE];
-                const text = typeof index === 'number' ? sections[index]?.text : undefined;
-                if (!kinds.has(node.kind) || !text) continue;
-                if (judgedPrior.get(node.ref) === hashText(text)) stored.refresh(node.ref, f.path, f.hash, batch, entities);
-                else toJudge.push({ ref: node.ref, text });
-            }
-            const unjudgedBefore = batch.unjudged;
-            // Staged per file: a section counts as judged only once its facts are written,
-            // so an abort mid-file leaves it to be judged again (written whole or not at all).
-            const judgedHere = new Map<NodeRef, string>();
+        if (judge) {
             progress({ phase: 'judge', done: i, total: changed.length, path: f.path });
-            try {
-                const claims = await judgeSections({
-                    port: args.judgement, pack: pack.id, path: f.path, fileHash: f.hash, sections: toJudge,
-                    budget, batch, entities, ...(signal ? { signal } : {}),
-                    onJudged: (ref) => judgedHere.set(ref, hashText(toJudge.find((s) => s.ref === ref)!.text)),
-                });
-                // Only a pack that asks for contradictions has claims to compare (the estimate counts the same).
-                // Deleted first so a re-judged claim moves to the newest position (the awaiting cap drops the oldest).
-                if (spec.contradictions) {
-                    for (const c of claims) { newClaims.delete(c.ref); newClaims.set(c.ref, { text: c.text, hash: f.hash }); }
-                }
-            } catch (err) {
-                if (!signal?.aborted) throw err;
-                batch.take();
-                report.aborted = true;
-                break;
+            inWriter = false; // waiting for the model calls is not the writer working
+            const outcome = await applyJudge(judgeCtx, f, judge);
+            inWriter = true;
+            if (outcome === 'aborted') return false;
+            if (outcome === 'failed') {
+                // Judging failed as a whole: leave the file exactly as it was (facts, manifest hash, owed) so the next review retries it.
+                measured.set(f.path, owedCalls(detail.extractor, f.path));
+                return true;
             }
-            for (const [ref, h] of judgedHere) judgedNow.set(ref, h);
-            complete = batch.unjudged === unjudgedBefore;
-            // A content-changed file may revert to the manifest bytes: then all it had to judge — and what it was
-            // already owed from earlier cuts — is still owed.
-            if (!complete) {
-                const contentChanged = detail.prior.get(f.path) !== f.hash;
-                measured.set(f.path, contentChanged ? toJudge.length + (detail.extractor.owed.get(f.path) ?? 0) : batch.unjudged - unjudgedBefore);
-            }
+            complete = outcome.complete;
         }
         progress({ phase: 'write', done: i, total: changed.length, path: f.path });
+        const t0 = now();
         await write();
         await store.markStale(scope, srcRef(rootId, f.path), f.hash);
         report.staleMarked += 1;
+        args.onStep?.({ path: f.path, phase: 'write', ms: now() - t0, outcome: 'ok' });
         if (complete) { filesNow.set(f.path, f.hash); finished.add(f.path); }
+        return true;
+    };
+
+    const applyFile = async (slot: Slot): Promise<boolean> => {
+        inWriter = true;
+        try { return await applyInner(slot); } finally { inWriter = false; }
+    };
+    const queue: Slot[] = [];
+    let applied = 0;
+    const drain = async (keep: number) => {
+        while (!cut && queue.length > keep) if (await applyFile(queue.shift()!)) applied += 1;
+    };
+    let completed = false;
+    try {
+        for await (const { item: f, i, result } of prefetchOrdered(changed, concurrency, prefetch, runSignal)) {
+            if (result.status === 'rejected') throw result.reason; // a prefetch job settles to a Prefetch; this is a broken invariant
+            const job = result.value;
+            queue.push({ f, i, job, judge: job.kind === 'extracted' ? startJudge(dispatch, f, job.extraction) : undefined });
+            await drain(judgeWidth - 1);
+        }
+        await drain(0);
+        completed = true;
+    } finally {
+        if (!completed) stopper.abort(); // a thrown error stops every queued and in-flight call
+        signal?.removeEventListener('abort', relay);
+        await Promise.allSettled(queue.map((s) => s.judge?.result)); // nothing outlives the run
     }
-    if (consumed < changed.length) report.aborted = true;
+    if (applied < changed.length) report.aborted = true;
 
     if (!report.aborted) {
         await retire(detail.plan.removed);
@@ -265,7 +267,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     if (!report.aborted && canCompare) {
         outcome = await compareNew({
             args, pending: newClaims, known: stored.facts, budget, batch,
-            onPairs: (total) => progress({ phase: 'judge', done: 0, total }),
+            onPairs: (total) => progress({ phase: 'compare', done: 0, total }),
         });
         // Aborted only if the abort landed before the last pair was compared.
         if (outcome?.aborted) report.aborted = true;
