@@ -11,7 +11,7 @@ import type {
 } from './model.js';
 import { loadExtractorState } from './owedFiles.js';
 import { DOCS_PACK } from './packs/docs.js';
-import { LocalSnapshotStore, type SnapshotPersistence } from './stores/localSnapshotStore.js';
+import { LocalSnapshotStore, type ExtractedLogPersistence, type SnapshotPersistence } from './stores/localSnapshotStore.js';
 import { srcRef } from './refs.js';
 
 export const ROOT = 'r';
@@ -44,6 +44,17 @@ export function memPersistence(): SnapshotPersistence & { value?: string } {
         async write(s: string) { p.value = s; },
     };
     return p;
+}
+
+/** An in-memory extract log: records every `append` and `replace` so a test can prove the log is only ever appended to. */
+export function memLog(): ExtractedLogPersistence & { text?: string; appends: string[]; replaces: number } {
+    const log: ExtractedLogPersistence & { text?: string; appends: string[]; replaces: number } = {
+        appends: [], replaces: 0,
+        async read() { return log.text; },
+        async append(t: string) { log.appends.push(t); log.text = (log.text ?? '') + t; },
+        async replace(t: string) { log.replaces += 1; log.text = t; },
+    };
+    return log;
 }
 
 export function memStore(): LocalSnapshotStore {

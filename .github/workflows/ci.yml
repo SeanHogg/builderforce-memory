@@ -23,6 +23,11 @@ jobs:
           # packages/memory/package.json#jest.coverageThreshold and only goes up.
           - name: Test + coverage (memory)
             run: pnpm test:coverage
+          # The type contract of the shapes consumers depend on (src/contract/types.contract.test.ts). The package
+          # build excludes test files, so this is where a changed shape fails with a named alias. The exports and
+          # dist contracts (src/contract/*.contract.test.ts) run in the memory jest suite above, after the build.
+          - name: Contract types (memory)
+            run: pnpm --filter @seanhogg/builderforce-memory check:contract-types
           # The Claude Code plugin under plugins/ is GENERATED from the same source
           # as the installer, so an edit to the hook script or a version bump can't
           # ship a plugin that disagrees with it. And the MCP Registry rejects a

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["@webgpu/types", "jest"]
+  },
+  "include": ["src/contract/types.contract.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}

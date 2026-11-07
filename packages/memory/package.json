@@ -78,6 +78,7 @@
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "check:contract-types": "tsc -p tsconfig.contract.json",
     "lint": "eslint src/ tests/",
     "prepublishOnly": "npm run build"
   },
