@@ -2,6 +2,17 @@
 
 ## 2026.10.47
 
+### Added
+
+- **Contract tests** (`src/contract/`):
+  - an export snapshot per subpath (removing or renaming an export fails as a breaking change);
+  - compile-time type contracts for the shapes consumers read (`check:contract-types`, in CI);
+  - a check that every `exports` path exists in `dist/`;
+  - pack determinism.
+- **One `regression:` test per bug fixed in 2026.10.46.**
+- **`encodePack({ stats })`** reports encoded size and its share of the equivalent JSON.
+- **`DirectorySource.hashOf`** (optional).
+
 ### Fixed
 
 - The in-thread read now checks the planned hash. A source that gives `DirectorySource.hashOf` (the function behind its `list()` hashes) has the text it read hashed once; a mismatch fails the file with "changed since plan", stores nothing under the planned hash and leaves the file owed. A pool result whose own hash differs from the plan fails the same way. 2026.10.46 claimed this check, but only the host worker made it.

@@ -13,7 +13,7 @@ describe('BFKP round trip', () => {
             const decoded = await decodePack(await encodePack(pack));
             expect(decoded).toEqual(normalizePack(pack));
         }
-    });
+    }, 60_000); // 40 generated graphs, each deflated and inflated: about 11 s under a parallel run
 
     it('round-trips an uncompressed frame the same as a deflated one', async () => {
         const pack = genPack(3, { files: 20 });
