@@ -1,5 +1,18 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.48
+
+### Fixed (`./knowledge/pack`)
+
+- **A relation leaf key no longer contains NUL.** `relationLeafKey` built `r:from␀to␀kind`, and Postgres rejects NUL in `text` and `jsonb`, so every pack with a relation failed. The key is now `r:` + `JSON.stringify([from, to, kind])`: printable and unambiguous. **The old key form is gone**; a leaf digest tree built from it differs, so both sides must run 2026.10.48.
+- **The default decode caps fit a 128 MB Worker:** 24 MB decoded, 400,000 strings, 200,000 rows (were 64 MB, 2,000,000, 1,000,000). A client cuts its packs below them.
+
+### Added (`./knowledge/pack`)
+
+- **`parseRelationLeafKey(key)`**: the one inverse of `relationLeafKey` (null for anything else). The hand-written `split('\0')` parsers are removed.
+- **`bucketDigest(leaves)` and `rootDigestOfBuckets(digests)`**: the two halves of `manifestTree`, exported so a server can keep bucket digests and recompute only the buckets a pack touched. `manifestTree` is now built from them (same digests as before for equal keys).
+- **`decodePack` and `peekPack` accept the ordered parts of a split pack.** The parts are inflated as ONE stream instead of being joined first, so the compressed pack is never copied.
+
 ## 2026.10.47
 
 ### Added
