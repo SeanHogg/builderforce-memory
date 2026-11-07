@@ -4,6 +4,7 @@
  * nothing starts once the signal has aborted.
  */
 
+import { jest } from '@jest/globals';
 import { createModelLimiter, isRateLimit } from './modelLimiter.js';
 
 const rateLimited = () => Object.assign(new Error('429 rate limited'), { status: 429 });
@@ -64,5 +65,39 @@ describe('isRateLimit', () => {
         expect(isRateLimit(new Error('HTTP 429'))).toBe(true);
         expect(isRateLimit(new Error('401 unauthorized'))).toBe(false);
         expect(isRateLimit(null)).toBe(false);
+    });
+});
+
+describe('createModelLimiter: abort of queued calls', () => {
+    it('regression: a queued call rejects at the abort while slot holders still run, and holders finish normally', async () => {
+        const limiter = createModelLimiter(2);
+        const ctl = new AbortController();
+        const release: Array<() => void> = [];
+        const holders = [0, 1].map((i) => limiter.run(() => new Promise<string>((r) => { release.push(() => r(`held${i}`)); }), ctl.signal));
+        const queued = limiter.run(ok, ctl.signal);
+        const rejected = expect(queued).rejects.toThrow('stop');
+        ctl.abort(new Error('stop'));
+        await rejected;
+        release.forEach((r) => r());
+        await expect(Promise.all(holders)).resolves.toEqual(['held0', 'held1']);
+        // Slots were released exactly once: a new call still runs.
+        await expect(limiter.run(ok)).resolves.toBe('ok');
+    });
+
+    it('regression: 500 queued calls on one signal add exactly one abort listener', async () => {
+        const limiter = createModelLimiter(1);
+        const ctl = new AbortController();
+        const add = jest.spyOn(ctl.signal, 'addEventListener');
+        const remove = jest.spyOn(ctl.signal, 'removeEventListener');
+        let free!: () => void;
+        const holder = limiter.run(() => new Promise<string>((r) => { free = () => r('done'); }), ctl.signal);
+        const queued = Array.from({ length: 500 }, () => limiter.run(ok, ctl.signal));
+        const settled = queued.map((q) => q.then(() => 'ran', () => 'rejected'));
+        // The slot holder's listener is dropped when it starts; the 500 waiters share ONE live listener.
+        expect(add.mock.calls.length - remove.mock.calls.length).toBe(1);
+        ctl.abort(new Error('stop'));
+        expect((await Promise.all(settled)).every((s) => s === 'rejected')).toBe(true);
+        free();
+        await expect(holder).resolves.toBe('done');
     });
 });

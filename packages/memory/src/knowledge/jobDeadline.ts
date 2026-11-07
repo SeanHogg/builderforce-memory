@@ -29,6 +29,10 @@ export function createDeadlines(parent?: AbortSignal): WithDeadline {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const deadline = new Promise<never>((_, reject) => {
             timer = setTimeout(() => { const e = new JobTimeout(); own.abort(e); reject(e); }, ms);
+            // A stop settles the job AT ONCE, even when the work (a pool that ignores its signal) never answers.
+            // Already aborted (the parent stopped before this job began): no event will fire, so settle now.
+            if (own.signal.aborted) reject(own.signal.reason ?? new Error('aborted'));
+            else own.signal.addEventListener('abort', () => reject(own.signal.reason ?? new Error('aborted')), { once: true });
         });
         const running = (async () => work(own.signal))();
         // The deadline can win the race: a late rejection of the work (an abort it was told about) is not an unhandled one.

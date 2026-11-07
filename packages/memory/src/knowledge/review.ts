@@ -46,6 +46,22 @@ import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
 import { factsWithoutAnchor, StoredIndex } from './reviewStored.js';
 import { canonicalJson, compareStr, srcRef } from './refs.js';
 
+/** Read-ahead window for a MECHANICAL review with a pool that reads files itself: wide enough to buffer finished results behind one slow head file. Real extraction width is bounded separately (the extract-slot limiter in reviewPrefetch). */
+const POOL_READ_AHEAD_DEFAULT = 256;
+const POOL_READ_AHEAD_MAX = 512;
+
+/** Files read and extracted ahead of the ordered writer. */
+function readAheadOf(args: ReviewArgs, concurrency: number): number {
+    if (!args.extractPool) return concurrency;
+    // Wide only for a mechanical pool-reads run: each settled prefetch then holds just the small extracted output.
+    // A judging review keeps each settled file's parsed sections in memory, so it keeps the narrow window.
+    if (args.deferRead && args.mechanical) {
+        const want = Math.floor(args.readAhead ?? Math.max(POOL_READ_AHEAD_DEFAULT, concurrency * 32)) || concurrency;
+        return Math.min(POOL_READ_AHEAD_MAX, Math.max(concurrency, want));
+    }
+    return Math.min(64, Math.max(concurrency, Math.floor(args.readAhead ?? Math.max(32, concurrency * 4)) || concurrency));
+}
+
 /** One changed file between dispatch and the ordered writer: what its prefetch found and its judging in flight. */
 interface Slot {
     f: { path: string; hash: string };
@@ -153,9 +169,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // Judging runs `judgeWidth` files at once; ONE writer (`applyFile`) consumes them strictly in plan order.
     const concurrency = Math.min(32, Math.max(1, Math.floor(args.concurrency ?? DEFAULT_REVIEW_CONCURRENCY) || 1));
     // Read-ahead is wider than the pool (PRD 41 A10 rule 8) so workers never wait for the ordered writer.
-    const readAhead = args.extractPool
-        ? Math.min(64, Math.max(concurrency, Math.floor(args.readAhead ?? Math.max(32, concurrency * 4)) || concurrency))
-        : concurrency;
+    const readAhead = readAheadOf(args, concurrency);
     const judgeWidth = Math.min(concurrency, Math.min(16, Math.max(1, Math.floor(args.judgeConcurrency ?? DEFAULT_REVIEW_JUDGE_CONCURRENCY) || 1)));
     // The run's own stop: the caller's abort relays into it, and a thrown error (a local store failure) aborts it,
     // so queued and in-flight judge calls and pool jobs stop and nothing outlives the run.
