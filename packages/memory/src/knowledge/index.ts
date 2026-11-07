@@ -54,8 +54,8 @@ export { createModelLimiter, isRateLimit } from './modelLimiter.js';
 export type { ModelLimiter } from './modelLimiter.js';
 export { reasonOf } from './reviewRunModel.js';
 export type { ReviewFailure, ReviewPhase, ReviewStep, ReviewStepOutcome } from './reviewRunModel.js';
-export { startRun, applyRunEvent, runRate, runEta, slowestSteps, REVIEW_RUN_STEP_RING } from './reviewRun.js';
-export type { ReviewRun, ReviewRunEvent, ReviewRunKind, ReviewRunLane, ReviewRunOutcome, ReviewRunPhase } from './reviewRun.js';
+export { startRun, applyRunEvent, runRate, runEta, slowestSteps, failuresOf, failureTotal, REVIEW_RUN_STEP_RING, REVIEW_RUN_FAILURE_CHUNK } from './reviewRun.js';
+export type { ReviewFailureChunks, ReviewRun, ReviewRunEvent, ReviewRunKind, ReviewRunLane, ReviewRunOutcome, ReviewRunPhase } from './reviewRun.js';
 export {
     validateExtract, validateCompare, clampQuote, clampClaim, MAX_QUOTE_LINES, MAX_QUOTE_CHARS, MAX_CLAIM_TEXT_CHARS,
     DEFAULT_REVIEW_MODEL_CALLS, DEFAULT_REVIEW_JUDGE_CONCURRENCY, REVIEW_FACT_SOURCE,

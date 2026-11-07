@@ -1,5 +1,44 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.46
+
+### The map is complete in minutes; judging follows (`/knowledge`, PRD 41 A10)
+
+- **Two passes.**
+  - `ReviewArgs.mechanical` reads, extracts and writes every owed file with no model call.
+  - `ReviewArgs.only` judges a given list of files in the order given.
+  - `ReviewReport.awaitingJudge`, `awaitingJudgeCount` and `judgedFiles` say what is still owed.
+  - `orderForJudging` ranks entry points and manifests, then inbound references, then recently changed files.
+- **Per-job deadlines.**
+  - A read times out after 5 s and an extraction after 10 s (`timeouts`); a timed-out file is a `failed` step and the run goes on.
+  - A file whose bytes no longer match the planned hash fails with "changed since plan" and stays owed.
+  - `deferRead` and `readAhead` let a pool read its own files, 32–64 ahead.
+- **A judge failure is not a judgement.** A timeout or network error leaves the section owed. Five failures in a row stop judging for the run (`judgeStopped`).
+- **The extract cache leaves the snapshot.**
+  - `LocalSnapshotStore` takes an `extractedLog` port: an append-only, content-addressed log, compacted on load.
+  - An old snapshot's cache migrates into the log on load, and old snapshots still read.
+  - Reads no longer wait behind a checkpoint.
+  - `write` and `markStale` are incremental.
+  - New `extractedEntries()`.
+- **Run model.**
+  - `ReviewPhase` gains `mapped`.
+  - `ReviewStep.parts` splits read, cache lookup and pool time.
+  - `slowestSteps` lists the slowest steps.
+  - Run failures are kept in chunks (`failuresOf`, `failureTotal`).
+
+### Sync is one compact pack (`/knowledge/pack`, PRD 41 A11)
+
+- **The BFKP v1 codec**, `encodePack` and `decodePack`. It uses a front-coded string table, raw 32-byte hashes, columnar sections, varints, deflate-raw and a CRC-32 trailer. The bytes are deterministic and lossless. Pack size is at most 10% of the same rows as JSON.
+- **Large packs.** `splitParts` and `joinParts` split a pack into 8 MB parts. `decodePack` limits stop a decompression bomb.
+- **Delta helpers.**
+  - `manifestTree`, `differingBuckets` and `leafDelta` reconcile through 4,096 buckets.
+  - `diffEntry` and `applyEntryDiff` send only the nodes and edges that changed in a re-extracted file.
+
+### Systems
+
+- An edge from a file to a missing node in another system gets no partition verdict.
+- Ignore globs honour backslash escapes.
+
 ## 2026.10.45
 
 ### A folder of many systems reads as many systems (`/knowledge`, PRD 41 A9)

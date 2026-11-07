@@ -3,7 +3,7 @@
  * The pure run recorder (PRD 41 A8): phases, lanes, the step ring, failures, rate and ETA.
  */
 
-import { applyRunEvent, REVIEW_RUN_STEP_RING, runEta, runRate, startRun, type ReviewRunEvent } from './reviewRun.js';
+import { applyRunEvent, failuresOf, failureTotal, REVIEW_RUN_FAILURE_CHUNK, REVIEW_RUN_STEP_RING, runEta, runRate, startRun, type ReviewRunEvent } from './reviewRun.js';
 import type { ReviewStep } from './reviewRunModel.js';
 
 const step = (i: number, extra: Partial<ReviewStep> = {}): ReviewStep => ({ path: `f${i}.md`, phase: 'extract', ms: 10, outcome: 'ok', lane: i % 2, ...extra });
@@ -40,8 +40,25 @@ describe('reviewRun reducer', () => {
         expect(run.steps).toHaveLength(REVIEW_RUN_STEP_RING);
         expect(run.steps[0]!.path).toBe('f50.md');
         expect(run.steps.at(-1)!.path).toBe('f249.md');
-        expect(run.failures.map((f) => f.reason)).toEqual(['boom 0', 'boom 50', 'boom 100', 'boom 150', 'boom 200']);
-        expect(run.failures[0]).toEqual({ path: 'f0.md', phase: 'extract', reason: 'boom 0' });
+        expect(failuresOf(run).map((f) => f.reason)).toEqual(['boom 0', 'boom 50', 'boom 100', 'boom 150', 'boom 200']);
+        expect(failuresOf(run)[0]).toEqual({ path: 'f0.md', phase: 'extract', reason: 'boom 0' });
+    });
+
+    it('keeps failures in chunks: an append copies the last chunk and the chunk list, never every failure, and the input run is untouched', () => {
+        let run = run0();
+        const N = 20_000;
+        const t0 = Date.now();
+        for (let i = 0; i < N; i++) {
+            const before = run.failures;
+            const sizes = before.map((c) => c.length);
+            run = applyRunEvent(run, { type: 'step', step: step(i, { outcome: 'failed', reason: 'timeout' }) }, 2000 + i);
+            if (i % 5000 === 0) expect(before.map((c) => c.length)).toEqual(sizes); // the previous run's chunks did not grow
+        }
+        expect(failureTotal(run)).toBe(N);
+        expect(run.failures.every((c) => c.length <= REVIEW_RUN_FAILURE_CHUNK)).toBe(true);
+        expect(run.failures).toHaveLength(Math.ceil(N / REVIEW_RUN_FAILURE_CHUNK));
+        expect(failuresOf(run).map((f) => f.path)[N - 1]).toBe(`f${N - 1}.md`);
+        expect(Date.now() - t0).toBeLessThan(5_000); // linear: 20,000 whole-array copies would take far longer
     });
 
     it('keeps an ended phase ended on a stale event, and reopens it only when the total grows', () => {

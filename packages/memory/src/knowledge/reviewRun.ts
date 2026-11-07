@@ -16,6 +16,11 @@ export type ReviewRunOutcome = 'done' | 'stopped' | 'failed';
 /** How many of the latest steps a run keeps (failures are kept whole). */
 export const REVIEW_RUN_STEP_RING = 200;
 
+/** Failures are kept in chunks of at most this many, so appending copies one chunk and the outer list, never every failure. */
+export const REVIEW_RUN_FAILURE_CHUNK = 256;
+
+export type ReviewFailureChunks = readonly (readonly ReviewFailure[])[];
+
 export interface ReviewRunPhase {
     phase: ReviewPhase;
     startedAt: number;
@@ -46,7 +51,8 @@ export interface ReviewRun {
     lanes: ReviewRunLane[];
     /** The last {@link REVIEW_RUN_STEP_RING} steps, oldest first. */
     steps: ReviewStep[];
-    failures: ReviewFailure[];
+    /** Every failure, in chunks (see {@link REVIEW_RUN_FAILURE_CHUNK}); read it through {@link failuresOf}. */
+    failures: ReviewFailureChunks;
     outcome?: ReviewRunOutcome;
     report?: ReviewReport;
 }
@@ -90,6 +96,19 @@ function withLane(lanes: ReviewRunLane[], step: ReviewStep): ReviewRunLane[] {
         .sort((a, b) => PHASE_ORDER.indexOf(a.phase) - PHASE_ORDER.indexOf(b.phase) || a.id - b.id);
 }
 
+/** The chunks with `f` appended: copies the last chunk and the outer list only (linear over a run of thousands of failures). */
+function withFailure(chunks: ReviewFailureChunks, f: ReviewFailure): ReviewFailureChunks {
+    const last = chunks[chunks.length - 1];
+    if (last && last.length < REVIEW_RUN_FAILURE_CHUNK) return [...chunks.slice(0, -1), [...last, f]];
+    return [...chunks, [f]];
+}
+
+/** Every failure of the run, oldest first (for readers; the run keeps them in chunks). */
+export const failuresOf = (run: Pick<ReviewRun, 'failures'>): ReviewFailure[] => run.failures.flat();
+
+/** How many failures the run holds. */
+export const failureTotal = (run: Pick<ReviewRun, 'failures'>): number => run.failures.reduce((n, c) => n + c.length, 0);
+
 /** Folds one event into the run; the input run is never mutated. */
 export function applyRunEvent(run: ReviewRun, event: ReviewRunEvent, at: number): ReviewRun {
     const base = { ...run, updatedAt: at };
@@ -105,7 +124,7 @@ export function applyRunEvent(run: ReviewRun, event: ReviewRunEvent, at: number)
                 ...base,
                 lanes: withLane(run.lanes, s),
                 steps: [...run.steps, s].slice(-REVIEW_RUN_STEP_RING),
-                failures: s.outcome === 'failed' ? [...run.failures, { path: s.path, phase: s.phase, reason: s.reason ?? 'failed' }] : run.failures,
+                failures: s.outcome === 'failed' ? withFailure(run.failures, { path: s.path, phase: s.phase, reason: s.reason ?? 'failed' }) : run.failures,
             };
         }
         case 'end':
@@ -116,10 +135,13 @@ export function applyRunEvent(run: ReviewRun, event: ReviewRunEvent, at: number)
     }
 }
 
-const phaseOf = (run: ReviewRun, phase: ReviewPhase): ReviewRunPhase | undefined => run.phases.find((p) => p.phase === phase);
+/** What the rate and the ETA read of a run (a restated run record qualifies too). */
+export type RunClock = Pick<ReviewRun, 'phases' | 'endedAt' | 'updatedAt'>;
+
+const phaseOf = (run: RunClock, phase: ReviewPhase): ReviewRunPhase | undefined => run.phases.find((p) => p.phase === phase);
 
 /** Items per second a phase has sustained so far; 0 when it has not started or no time has passed. */
-export function runRate(run: ReviewRun, phase: ReviewPhase): number {
+export function runRate(run: RunClock, phase: ReviewPhase): number {
     const p = phaseOf(run, phase);
     if (!p) return 0;
     const ms = (p.endedAt ?? run.endedAt ?? run.updatedAt) - p.startedAt;
@@ -127,7 +149,7 @@ export function runRate(run: ReviewRun, phase: ReviewPhase): number {
 }
 
 /** Milliseconds until a phase finishes at its measured rate; 0 when it is complete, undefined when it cannot be told. */
-export function runEta(run: ReviewRun, phase: ReviewPhase): number | undefined {
+export function runEta(run: RunClock, phase: ReviewPhase): number | undefined {
     const p = phaseOf(run, phase);
     if (!p) return undefined;
     const remaining = p.total - p.done;
@@ -137,6 +159,6 @@ export function runEta(run: ReviewRun, phase: ReviewPhase): number | undefined {
 }
 
 /** The `n` slowest steps of the run's ring, longest first (ties by path), each with its reason: a stall names itself. */
-export function slowestSteps(run: ReviewRun, n: number): ReviewStep[] {
+export function slowestSteps(run: Pick<ReviewRun, 'steps'>, n: number): ReviewStep[] {
     return [...run.steps].sort((a, b) => b.ms - a.ms || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).slice(0, Math.max(0, n));
 }

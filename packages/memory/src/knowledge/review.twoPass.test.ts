@@ -13,7 +13,8 @@ import type { ExtractPool } from './extractJob.js';
 import { orderForJudging } from './judgePriority.js';
 import { reviewDirectory } from './review.js';
 import { applyRunEvent, slowestSteps, startRun } from './reviewRun.js';
-import { args, fakeJudge, memSource, memStore, quietPack, ROOT, stateOf } from './testkit.test-util.js';
+import { LocalSnapshotStore } from './stores/localSnapshotStore.js';
+import { args, fakeJudge, memPersistence, memSource, memStore, quietPack, ROOT, stateOf } from './testkit.test-util.js';
 import type { ReviewStep } from './reviewRunModel.js';
 
 const N = 6;
@@ -71,6 +72,58 @@ describe('two-pass review', () => {
         const relKey = (r: { from: string; to: string; kind: string }) => `${r.from}|${r.to}|${r.kind}`;
         const sorted = async (st: ReturnType<typeof memStore>) => [...(await st.relations({ rootId: ROOT }))].sort((a, b) => (relKey(a) < relKey(b) ? -1 : 1));
         expect(await sorted(two)).toEqual(await sorted(single));
+    });
+});
+
+describe('pass 1 owes only what costs a model call, and a partial budget stores what a sequential run stores', () => {
+    const K = 3;
+    const bytesOf = (p: { value?: string }) => {
+        const snap = JSON.parse(p.value!) as { scopes: Array<Record<string, unknown>> };
+        for (const sc of snap.scopes) delete sc.lastReviewedAt; // the wall clock of the run
+        return JSON.stringify(snap);
+    };
+
+    it('mechanical + pass 2 over the first K files equals one sequential run with a budget of K calls, byte for byte', async () => {
+        const seq = memPersistence();
+        await reviewDirectory(args(memSource(files()), new LocalSnapshotStore(seq, { now: () => 'T' }), new InMemoryIngestManifest(), {
+            judgement: fakeJudge(), packs: [quietPack], concurrency: 1, judgeConcurrency: 1, budget: { modelCalls: K, ms: 60_000 },
+        }));
+
+        const two = memPersistence();
+        const store = new LocalSnapshotStore(two, { now: () => 'T' });
+        const manifest = new InMemoryIngestManifest();
+        const source = memSource(files());
+        await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), packs: [quietPack], mechanical: true }));
+        await reviewDirectory(args(source, store, manifest, {
+            judgement: fakeJudge(), packs: [quietPack], only: Object.keys(files()).slice(0, K), budget: { modelCalls: K, ms: 60_000 },
+        }));
+        expect(bytesOf(two)).toEqual(bytesOf(seq));
+    });
+
+    it('a re-review of files whose sections are all still judged owes nothing and calls no model', async () => {
+        const store = memStore();
+        const manifest = new InMemoryIngestManifest();
+        const source = memSource(files());
+        await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), packs: [quietPack] }));
+        const judge = fakeJudge();
+        const report = await reviewDirectory(args(source, store, manifest, { judgement: judge, packs: [quietPack], mechanical: true, force: true }));
+        expect(judge.requests).toHaveLength(0);
+        expect(report.awaitingJudge).toEqual([]);
+        expect((await stateOf(manifest)).owed).toEqual([]);
+    });
+
+    it('pass 2 follows the order it is given and reports what it left owed, unreached files included', async () => {
+        const judge = fakeJudge();
+        const store = memStore();
+        const manifest = new InMemoryIngestManifest();
+        const source = memSource(files());
+        const base = { judgement: judge, packs: [quietPack] };
+        await reviewDirectory(args(source, store, manifest, { ...base, mechanical: true }));
+        const order = ['d4.md', 'd0.md', 'd2.md'];
+        const report = await reviewDirectory(args(source, store, manifest, { ...base, only: order, concurrency: 1, judgeConcurrency: 1, budget: { modelCalls: 1, ms: 60_000 } }));
+        expect(judge.requests.map((r) => r.items[0]!.ref)).toEqual(['src:r::d4.md#'].map((p) => expect.stringContaining(p)));
+        expect(report.judgedFiles).toBe(1);
+        expect(report.awaitingJudge).toEqual(['d0.md', 'd2.md']);
     });
 });
 
