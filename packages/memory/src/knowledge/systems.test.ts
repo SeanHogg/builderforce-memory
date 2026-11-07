@@ -84,6 +84,18 @@ describe('buildGraph — systems', () => {
         expect(g.findings.filter((f) => f.kind === 'partition-violation').every((f) => !f.nodes.some((n) => n.endsWith('b/ui/z.ts')))).toBe(true);
     });
 
+    it('a link from a file to a path that is not there, in another system, gets no verdict', () => {
+        // b/ui/gone.ts is not a file of the graph: it becomes a `missing` node, which still lives in system b.
+        const across = buildGraph(input([sys('a'), sys('b')], [['a/data/x.ts', 'b/ui/gone.ts']]));
+        const missing = across.edges.find((e) => e.to.endsWith('b/ui/gone.ts'))!;
+        expect(across.nodes.find((n) => n.label === 'gone.ts')?.kind).toBe('missing');
+        expect(missing.verdict).toBeUndefined();
+        // Inside one system the same missing link is judged as before, and a missing node is not stamped (a file field).
+        const within = buildGraph(input([sys('a'), sys('b')], [['a/data/x.ts', 'a/ui/gone.ts']]));
+        expect(within.edges.find((e) => e.to.endsWith('a/ui/gone.ts'))?.verdict).toBe('upward');
+        expect(within.nodes.find((n) => n.label === 'gone.ts')?.system).toBeUndefined();
+    });
+
     it('the same edge IS a violation when the root is one system', () => {
         const g = buildGraph(input([sys('')], [['a/data/x.ts', 'b/ui/z.ts']]));
         expect(g.edges.find((e) => e.to.endsWith('b/ui/z.ts'))?.verdict).toBe('upward');

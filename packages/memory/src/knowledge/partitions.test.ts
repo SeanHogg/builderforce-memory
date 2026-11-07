@@ -54,6 +54,10 @@ describe('globs and partitionOf', () => {
         expect(matchGlob('b.md', '*')).toBe(true);
         expect(matchGlob('x.ts', '*.{ts,tsx}')).toBe(true);
         expect(globToRegExp('a.b').test('aXb')).toBe(false);
+        // A backslash makes the next character literal.
+        expect(matchGlob('copy*/x.ts', 'copy\\*/**')).toBe(true);
+        expect(matchGlob('copyabc/x.ts', 'copy\\*/**')).toBe(false);
+        expect(matchGlob('a[1]', 'a\\[1\\]')).toBe(true);
     });
 
     it('takes the first matching rule', () => {

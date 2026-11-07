@@ -3,7 +3,8 @@
  * per-file step events a review emits, and the failures it records instead of throwing.
  */
 
-export type ReviewPhase = 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'index' | 'done';
+/** `mapped` (PRD 41 A10): the mechanical pass is over and the map is complete; judging, if any is owed, follows. */
+export type ReviewPhase = 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'index' | 'mapped' | 'done';
 
 export type ReviewStepOutcome = 'ok' | 'cached' | 'skipped' | 'failed';
 

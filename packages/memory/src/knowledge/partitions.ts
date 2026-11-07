@@ -19,7 +19,7 @@ const globCache = new Map<string, RegExp>();
 
 /**
  * A glob as a RegExp over `/`-separated paths: `**` spans folders (`**\/` may match none),
- * `*` and `?` stay within one segment, `{a,b}` is alternation.
+ * `*` and `?` stay within one segment, `{a,b}` is alternation, `\x` is the literal `x`.
  */
 export function globToRegExp(glob: string): RegExp {
     const cached = globCache.get(glob);
@@ -27,6 +27,8 @@ export function globToRegExp(glob: string): RegExp {
     let re = '';
     for (let i = 0; i < glob.length; i++) {
         const ch = glob[i]!;
+        // A backslash makes the next character literal (`copy\*` is the folder named `copy*`), as in `.gitignore`.
+        if (ch === '\\' && i + 1 < glob.length) { re += escapeRe(glob[++i]!); continue; }
         if (ch === '*') {
             if (glob[i + 1] === '*') {
                 const slashAfter = glob[i + 2] === '/';

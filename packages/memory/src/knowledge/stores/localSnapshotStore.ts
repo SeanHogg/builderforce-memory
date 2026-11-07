@@ -12,6 +12,10 @@
  * Every write serializes the WHOLE snapshot, so a many-mutation run (a directory review)
  * would cost quadratic bytes. {@link LocalSnapshotStore.batched} holds persistence back
  * inside a run; outside one, each awaited mutation has persisted when it resolves.
+ *
+ * PRD 41 A10: reads come from memory once loaded (never behind the mutation queue); rows live in
+ * per-root maps updated incrementally; with the optional `extractedLog` port the extract cache is
+ * an append-only JSON Lines file instead of part of the snapshot.
  */
 
 import type {
@@ -24,15 +28,28 @@ export interface SnapshotPersistence {
     write(snapshot: string): Promise<void>;
 }
 
+/**
+ * Append-only, content-addressed home of the extract cache (PRD 41 A10 rule 7). JSON Lines, one
+ * `{"h":"<hash>","e":[...]}` per line; the LAST line for a hash wins, an unparseable (torn) line is ignored.
+ */
+export interface ExtractedLogPersistence {
+    read(): Promise<string | undefined>;
+    /** Appends `text` (whole lines, newline-terminated) to the end of the log. */
+    append(text: string): Promise<void>;
+}
+
 export interface KnowledgeSnapshot {
     version: 1;
     scopes: ScopeRecord[];
     facts: Record<string, StoredFact[]>;
     relations: Record<string, StoredRelation[]>;
-    extracted: Record<string, Extracted[]>;
+    /** Present only when the store has no `extractedLog` (or in a snapshot written before the log existed). */
+    extracted?: Record<string, Extracted[]>;
 }
 
 export interface LocalSnapshotStoreOptions {
+    /** When given, the extract cache lives in this log and the snapshot omits `extracted`. */
+    extractedLog?: ExtractedLogPersistence;
     /** ISO clock for `staleAt`. Default `new Date().toISOString()`. */
     now?(): string;
     /** Inside `batched`, a mutation persists when this many ms passed since the last write (a crash loses at most this much). Default 30_000. */
@@ -43,29 +60,58 @@ export interface LocalSnapshotStoreOptions {
 
 const relKey = (r: Pick<StoredRelation, 'from' | 'to' | 'kind'>) => `${r.from}\u0000${r.to}\u0000${r.kind}`;
 
-function empty(): KnowledgeSnapshot {
-    return { version: 1, scopes: [], facts: {}, relations: {}, extracted: {} };
+function asRecord<T>(v: unknown): Record<string, T[]> {
+    return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, T[]> : {};
 }
 
+/** Reads a snapshot's text; a corrupt snapshot is rebuilt by the next review rather than failing every read. */
 function parse(text: string | undefined): KnowledgeSnapshot {
-    if (!text) return empty();
+    if (!text) return { version: 1, scopes: [], facts: {}, relations: {} };
     try {
         const s = JSON.parse(text) as Partial<KnowledgeSnapshot>;
         return {
             version: 1,
             scopes: Array.isArray(s.scopes) ? s.scopes : [],
-            facts: s.facts && typeof s.facts === 'object' ? s.facts : {},
-            relations: s.relations && typeof s.relations === 'object' ? s.relations : {},
-            extracted: s.extracted && typeof s.extracted === 'object' ? s.extracted : {},
+            facts: asRecord(s.facts),
+            relations: asRecord(s.relations),
+            ...(s.extracted && typeof s.extracted === 'object' ? { extracted: s.extracted } : {}),
         };
     } catch {
-        // A corrupt snapshot is rebuilt by the next review rather than failing every read.
-        return empty();
+        return { version: 1, scopes: [], facts: {}, relations: {} };
     }
 }
 
+/** The log's entries, last line per hash winning; unparseable (torn) lines are skipped. */
+function parseLog(text: string | undefined): Map<string, Extracted[]> {
+    const out = new Map<string, Extracted[]>();
+    if (!text) return out;
+    for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+            const row = JSON.parse(line) as { h?: unknown; e?: unknown };
+            if (typeof row.h === 'string' && Array.isArray(row.e)) out.set(row.h, row.e as Extracted[]);
+        } catch { /* torn line */ }
+    }
+    return out;
+}
+
+type Index = Map<string, Set<string>>;
+
 export class LocalSnapshotStore implements KnowledgeStore {
-    private snapshot: KnowledgeSnapshot | undefined;
+    private loaded = false;
+    private loading: Promise<void> | undefined;
+    private scopeList: ScopeRecord[] = [];
+    /** Per-root rows, keyed by their unique key, updated incrementally (PRD 41 A10 rule 7). */
+    private readonly factMaps = new Map<string, Map<string, StoredFact>>();
+    private readonly relMaps = new Map<string, Map<string, StoredRelation>>();
+    /** Per root: source path → keys of the relations touching it (`from` or `to`). */
+    private readonly relByPath = new Map<string, Index>();
+    private readonly extracted = new Map<string, Extracted[]>();
+    /** Extract entries not yet appended to the log. */
+    private pending = new Map<string, Extracted[]>();
+    /** The log's last line is torn (no newline), so the next append starts on a fresh line. */
+    private logTorn = false;
+    private readonly log: ExtractedLogPersistence | undefined;
     /** Serializes mutations so two writers never interleave a read-modify-write. */
     private queue: Promise<unknown> = Promise.resolve();
     private readonly now: () => string;
@@ -76,16 +122,81 @@ export class LocalSnapshotStore implements KnowledgeStore {
     /** Memory is ahead of the persisted snapshot. */
     private dirty = false;
     private persistedAt = 0;
+    /** Serializes snapshot writes; never rejects. */
+    private persisting: Promise<void> = Promise.resolve();
+    /** A background checkpoint in flight (at most one). */
+    private checkpointing: Promise<void> | undefined;
 
     constructor(private readonly persistence: SnapshotPersistence, opts: LocalSnapshotStoreOptions = {}) {
         this.now = opts.now ?? (() => new Date().toISOString());
         this.nowMs = opts.nowMs ?? Date.now;
         this.checkpointMs = opts.checkpointMs ?? 30_000;
+        this.log = opts.extractedLog;
     }
 
-    private async load(): Promise<KnowledgeSnapshot> {
-        if (!this.snapshot) this.snapshot = parse(await this.persistence.read());
-        return this.snapshot;
+    /** Loads once; every later call is a no-op, so reads never wait on the mutation queue after the first. */
+    private load(): Promise<void> {
+        if (this.loaded) return Promise.resolve();
+        this.loading ??= this.doLoad().catch((err) => { this.loading = undefined; throw err; });
+        return this.loading;
+    }
+
+    private async doLoad(): Promise<void> {
+        const snap = parse(await this.persistence.read());
+        const logText = this.log ? await this.log.read() : undefined;
+        this.scopeList = snap.scopes;
+        for (const [rootId, rows] of Object.entries(snap.facts)) {
+            const m = this.factsOf(rootId);
+            if (Array.isArray(rows)) for (const f of rows) m.set(f.key, f);
+        }
+        for (const [rootId, rows] of Object.entries(snap.relations)) {
+            this.relsOf(rootId);
+            if (Array.isArray(rows)) for (const r of rows) this.putRelation(rootId, r);
+        }
+        if (this.log) {
+            for (const [h, e] of parseLog(logText)) this.extracted.set(h, e);
+            this.logTorn = !!logText && !logText.endsWith('\n');
+            // An old snapshot still carrying the cache: move it into the log once; the next snapshot write omits it.
+            const legacy = Object.entries(snap.extracted ?? {});
+            if (legacy.length) {
+                for (const [h, e] of legacy) {
+                    if (this.extracted.has(h)) continue;
+                    this.extracted.set(h, e);
+                    this.pending.set(h, e);
+                }
+                this.dirty = true;
+            }
+        } else {
+            for (const [h, e] of Object.entries(snap.extracted ?? {})) this.extracted.set(h, e);
+        }
+        this.loaded = true;
+    }
+
+    private factsOf(rootId: string): Map<string, StoredFact> {
+        let m = this.factMaps.get(rootId);
+        if (!m) this.factMaps.set(rootId, m = new Map());
+        return m;
+    }
+
+    private relsOf(rootId: string): Map<string, StoredRelation> {
+        let m = this.relMaps.get(rootId);
+        if (!m) this.relMaps.set(rootId, m = new Map());
+        return m;
+    }
+
+    /** Upserts a relation and indexes it under the source paths of both ends. */
+    private putRelation(rootId: string, r: StoredRelation): void {
+        const key = relKey(r);
+        this.relsOf(rootId).set(key, r);
+        let idx = this.relByPath.get(rootId);
+        if (!idx) this.relByPath.set(rootId, idx = new Map());
+        for (const ref of [r.from, r.to]) {
+            const p = pathOfRef(ref);
+            if (p === undefined) continue;
+            let keys = idx.get(p);
+            if (!keys) idx.set(p, keys = new Set());
+            keys.add(key);
+        }
     }
 
     private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -94,28 +205,65 @@ export class LocalSnapshotStore implements KnowledgeStore {
         return run;
     }
 
-    private async persist(s: KnowledgeSnapshot): Promise<void> {
-        await this.persistence.write(serialize(s));
-        this.dirty = false;
-        this.persistedAt = this.nowMs();
-    }
-
-    private async persistIfDirty(): Promise<void> {
-        if (this.dirty && this.snapshot) await this.persist(this.snapshot);
+    /** Appends the not-yet-logged extract entries. A failed append keeps them pending. */
+    private async appendPending(): Promise<void> {
+        if (!this.log || this.pending.size === 0) return;
+        const batch = this.pending;
+        this.pending = new Map();
+        let text = this.logTorn ? '\n' : '';
+        for (const [h, e] of batch) text += `${JSON.stringify({ h, e })}\n`;
+        try {
+            await this.log.append(text);
+            this.logTorn = false;
+        } catch (err) {
+            for (const [h, e] of batch) if (!this.pending.has(h)) this.pending.set(h, e);
+            throw err;
+        }
     }
 
     /**
-     * Applies in memory, then persists: at once outside a batch, else only at a checkpoint. A plain
-     * mutation from another caller during a batch (the live file watcher shares this store) is held
-     * like the batch's own and made durable by the next checkpoint, flush or batch end.
+     * Appends new extract entries, then writes the snapshot if memory is ahead of it, one write at a time. It
+     * runs OUTSIDE the mutation queue: a write of a large snapshot (serialize + disk) must never hold up reads or
+     * the next mutation's in-memory apply (PRD 41 A10 — it did: every `getExtracted` waited out each checkpoint).
+     * The log goes first, so a snapshot that dropped a migrated cache never outlives its entries. A failed
+     * write leaves the snapshot dirty, so the next one retries it.
      */
-    private mutate(fn: (s: KnowledgeSnapshot) => void): Promise<void> {
-        return this.enqueue(async () => {
-            const s = await this.load();
-            fn(s);
-            this.dirty = true;
-            if (this.depth === 0 || this.nowMs() - this.persistedAt >= this.checkpointMs) await this.persist(s);
+    private persistIfDirty(): Promise<void> {
+        const run = this.persisting.then(async () => {
+            if (!this.loaded) return;
+            await this.appendPending();
+            if (!this.dirty) return;
+            this.dirty = false;
+            try {
+                await this.persistence.write(this.serialize());
+            } catch (err) {
+                this.dirty = true;
+                throw err;
+            }
+            this.persistedAt = this.nowMs();
         });
+        this.persisting = run.catch(() => undefined);
+        return run;
+    }
+
+    /**
+     * Applies in memory (queued, so reads and writes never interleave), then persists: at once outside a
+     * batch, else a checkpoint in the BACKGROUND once `checkpointMs` passed. A plain mutation from another
+     * caller during a batch (the live file watcher shares this store) is held like the batch's own and made
+     * durable by the next checkpoint, flush or batch end. `snapshotChanged: false` is for a change that only
+     * touches the extract log.
+     */
+    private async mutate(fn: () => void, snapshotChanged = true): Promise<void> {
+        await this.enqueue(async () => {
+            await this.load();
+            fn();
+            if (snapshotChanged) this.dirty = true;
+        });
+        if (this.depth === 0) await this.persistIfDirty();
+        else if (!this.checkpointing && this.nowMs() - this.persistedAt >= this.checkpointMs) {
+            // A failed checkpoint is not lost: the snapshot stays dirty and the batch's end or flush writes (and reports) it.
+            this.checkpointing = this.persistIfDirty().catch(() => undefined).finally(() => { this.checkpointing = undefined; });
+        }
     }
 
     /**
@@ -127,13 +275,13 @@ export class LocalSnapshotStore implements KnowledgeStore {
         if (this.depth === 0) this.persistedAt = this.nowMs();
         this.depth += 1;
         // The end goes through the queue so every mutation made during the batch is held, then written once.
-        const end = () => this.enqueue(async () => {
-            this.depth -= 1;
+        const end = async () => {
+            await this.enqueue(async () => { this.depth -= 1; });
             if (this.depth === 0) await this.persistIfDirty();
-        });
+        };
         let result: T;
         try {
-            result = await work(() => this.enqueue(() => this.persistIfDirty()));
+            result = await work(async () => { await this.queue; await this.persistIfDirty(); });
         } catch (err) {
             await end().catch(() => undefined);
             throw err;
@@ -143,58 +291,72 @@ export class LocalSnapshotStore implements KnowledgeStore {
     }
 
     async scopes(): Promise<ScopeRecord[]> {
-        await this.queue;
-        return [...(await this.load()).scopes];
+        await this.load();
+        return [...this.scopeList];
     }
 
     async facts(scope: Scope): Promise<StoredFact[]> {
-        await this.queue;
-        return [...((await this.load()).facts[scope.rootId] ?? [])];
+        await this.load();
+        return [...(this.factMaps.get(scope.rootId)?.values() ?? [])];
     }
 
     async relations(scope: Scope): Promise<StoredRelation[]> {
-        await this.queue;
-        return [...((await this.load()).relations[scope.rootId] ?? [])];
+        await this.load();
+        return [...(this.relMaps.get(scope.rootId)?.values() ?? [])];
     }
 
     write(batch: { scope: ScopeRecord; facts: StoredFact[]; relations: StoredRelation[] }): Promise<void> {
         const bad = [...batch.facts, ...batch.relations].find((x) => (x.origin as string) === 'extracted');
         if (bad) return Promise.reject(new Error('knowledge: extracted output is never stored'));
-        return this.mutate((s) => {
+        return this.mutate(() => {
             const rootId = batch.scope.rootId;
-            const prior = s.scopes.find((x) => x.rootId === rootId);
+            const prior = this.scopeList.find((x) => x.rootId === rootId);
             const merged: ScopeRecord = { ...(prior ?? {}), ...stripUndefined(batch.scope) } as ScopeRecord;
-            s.scopes = [...s.scopes.filter((x) => x.rootId !== rootId), merged];
+            this.scopeList = [...this.scopeList.filter((x) => x.rootId !== rootId), merged];
 
-            const facts = new Map((s.facts[rootId] ?? []).map((f) => [f.key, f] as const));
+            const facts = this.factsOf(rootId);
             for (const f of batch.facts) facts.set(f.key, { ...f });
-            s.facts[rootId] = [...facts.values()];
-
-            const relations = new Map((s.relations[rootId] ?? []).map((r) => [relKey(r), r] as const));
-            for (const r of batch.relations) relations.set(relKey(r), { ...r });
-            s.relations[rootId] = [...relations.values()];
+            this.relsOf(rootId);
+            for (const r of batch.relations) this.putRelation(rootId, { ...r });
         });
     }
 
     markStale(scope: Scope, sourceRef: NodeRef, currentHash: string): Promise<void> {
         const path = pathOfRef(sourceRef);
-        return this.mutate((s) => {
+        return this.mutate(() => {
             const at = this.now();
-            const onSource = (ref: NodeRef) => path !== undefined && pathOfRef(ref) === path;
-            s.relations[scope.rootId] = (s.relations[scope.rootId] ?? []).map((r) =>
-                r.origin === 'model' && !r.staleAt && r.sourceHash !== currentHash && (onSource(r.from) || onSource(r.to))
-                    ? { ...r, staleAt: at }
-                    : r);
+            const rels = this.relsOf(scope.rootId);
+            const keys = path === undefined ? undefined : this.relByPath.get(scope.rootId)?.get(path);
+            for (const key of keys ?? []) {
+                const r = rels.get(key);
+                if (r && r.origin === 'model' && !r.staleAt && r.sourceHash !== currentHash) rels.set(key, { ...r, staleAt: at });
+            }
         });
     }
 
     async getExtracted(hash: string): Promise<Extracted[] | undefined> {
-        await this.queue;
-        return (await this.load()).extracted[hash];
+        await this.load();
+        return this.extracted.get(hash);
     }
 
     putExtracted(hash: string, extracted: Extracted[]): Promise<void> {
-        return this.mutate((s) => { s.extracted[hash] = extracted; });
+        return this.mutate(() => {
+            this.extracted.set(hash, extracted);
+            if (this.log) this.pending.set(hash, extracted);
+        }, !this.log);
+    }
+
+    /** Canonical: scopes by rootId, facts by key, relations by (from, to, kind), keys sorted. */
+    private serialize(): string {
+        const rows = <T>(maps: Map<string, Map<string, T>>, by: (a: T, b: T) => number) =>
+            Object.fromEntries([...maps.keys()].sort(compareStr).map((k) => [k, [...maps.get(k)!.values()].sort(by)]));
+        return canonicalJson({
+            version: 1,
+            scopes: [...this.scopeList].sort((a, b) => compareStr(a.rootId, b.rootId)),
+            facts: rows(this.factMaps, (a, b) => compareStr(a.key, b.key)),
+            relations: rows(this.relMaps, (a, b) => compareStr(relKey(a), relKey(b))),
+            ...(this.log ? {} : { extracted: Object.fromEntries(this.extracted) }),
+        });
     }
 }
 
@@ -204,17 +366,4 @@ export function localSnapshotStore(persistence: SnapshotPersistence, opts?: Loca
 
 function stripUndefined<T extends object>(o: T): Partial<T> {
     return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
-}
-
-/** Canonical: scopes by rootId, facts by key, relations by (from, to, kind), keys sorted. */
-function serialize(s: KnowledgeSnapshot): string {
-    const sortRecord = <T>(rec: Record<string, T[]>, by: (a: T, b: T) => number) =>
-        Object.fromEntries(Object.keys(rec).sort(compareStr).map((k) => [k, [...rec[k]!].sort(by)]));
-    return canonicalJson({
-        version: 1,
-        scopes: [...s.scopes].sort((a, b) => compareStr(a.rootId, b.rootId)),
-        facts: sortRecord(s.facts, (a, b) => compareStr(a.key, b.key)),
-        relations: sortRecord(s.relations, (a, b) => compareStr(relKey(a), relKey(b))),
-        extracted: s.extracted,
-    });
 }

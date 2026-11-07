@@ -76,7 +76,7 @@ function withProgress(phases: ReviewRunPhase[], p: ReviewProgress, at: number): 
     return phases.map((x, j) => (j === i ? next : x));
 }
 
-const PHASE_ORDER: readonly ReviewPhase[] = ['plan', 'extract', 'resolve', 'judge', 'compare', 'write', 'index', 'done'];
+const PHASE_ORDER: readonly ReviewPhase[] = ['plan', 'extract', 'resolve', 'judge', 'compare', 'write', 'index', 'mapped', 'done'];
 
 /** Lanes are keyed by phase and id: extract workers and judge lanes are different workers. */
 function withLane(lanes: ReviewRunLane[], step: ReviewStep): ReviewRunLane[] {

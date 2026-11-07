@@ -267,6 +267,9 @@ function closeEndpoints(g: GraphBuilder): void {
 }
 
 function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, PartitionRegistry>, systems: readonly GraphSystem[]): void {
+    // The system of EVERY node with a path (a `missing` node too): a file's link to a path in another system crosses systems.
+    // Only file nodes are stamped with it (`KNode.system` is a file field); the rest are kept here.
+    const systemOfRef = new Map<string, Pick<KNode, 'system'>>();
     for (const n of g.nodes.values()) {
         const path = pathOfRef(n.ref);
         if (path === undefined) continue;
@@ -276,11 +279,14 @@ function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, Par
         if (partition !== undefined) n.partition = partition;
         const area = areaOfPath(path);
         if (area) n.area = srcRef(rootId, area);
-        const placed = n.kind === 'file' && systems.length > 0 ? placeInSystem(systems, path) : undefined;
+        const placed = systems.length > 0 ? placeInSystem(systems, path) : undefined;
         if (placed) {
-            n.system = placed.system;
-            if (placed.app !== undefined) n.app = placed.app;
-            if (placed.copyOf !== undefined) n.copyOf = placed.copyOf;
+            systemOfRef.set(n.ref, { system: placed.system });
+            if (n.kind === 'file') {
+                n.system = placed.system;
+                if (placed.app !== undefined) n.app = placed.app;
+                if (placed.copyOf !== undefined) n.copyOf = placed.copyOf;
+            }
         }
     }
     for (const e of g.edges.values()) {
@@ -288,7 +294,7 @@ function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, Par
         const reg = from && registries.get(from.pack);
         if (!from || !to || !reg || from.pack !== to.pack) continue;
         // Layers are a system's own: a reference into another system is neither upward nor skipping.
-        if (crossesSystems(from, to)) continue;
+        if (crossesSystems(systemOfRef.get(from.ref) ?? from, systemOfRef.get(to.ref) ?? to)) continue;
         const verdict = verdictOf(from.partition, to.partition, reg);
         if (verdict) e.verdict = verdict;
     }

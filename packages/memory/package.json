@@ -18,6 +18,10 @@
       "types": "./dist/knowledge/index.d.ts",
       "import": "./dist/knowledge/index.js"
     },
+    "./knowledge/pack": {
+      "types": "./dist/knowledge/pack/index.d.ts",
+      "import": "./dist/knowledge/pack/index.js"
+    },
     "./wire": {
       "types": "./dist/wire/index.d.ts",
       "import": "./dist/wire/index.js"

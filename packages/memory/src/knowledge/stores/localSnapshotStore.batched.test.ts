@@ -23,7 +23,9 @@ function counting(): Counting {
     return p;
 }
 
-const SCOPE = { rootId: 'r', title: 'R', packs: ['docs'] };
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+const SCOPE ={ rootId: 'r', title: 'R', packs: ['docs'] };
 
 function setup(checkpointMs = 30_000) {
     const persistence = counting();
@@ -70,9 +72,11 @@ describe('LocalSnapshotStore.batched', () => {
             expect(persistence.writes).toBe(0);
             clock.ms = 1000;
             await store.putExtracted('c', []);
+            await settle(); // the checkpoint runs in the background (PRD 41 A10)
             expect(persistence.writes).toBe(1);
             clock.ms = 1500;
             await store.putExtracted('d', []);
+            await settle();
             expect(persistence.writes).toBe(1);
             expect(Object.keys(JSON.parse(persistence.value!).extracted)).toEqual(['a', 'b', 'c']);
         });
@@ -123,16 +127,34 @@ describe('LocalSnapshotStore.batched', () => {
         })).rejects.toThrow('disk full');
     });
 
-    it('a failed checkpoint rejects the mutation that triggered it', async () => {
+    it('a failed background checkpoint does not fail the mutation: the batch end writes what it held', async () => {
         const { persistence, clock, store } = setup(1000);
         await store.batched(async () => {
             await store.putExtracted('a', []);
             persistence.failWrites = true;
             clock.ms = 2000;
-            await expect(store.putExtracted('b', [])).rejects.toThrow('disk full');
+            await store.putExtracted('b', []);
+            await settle();
             persistence.failWrites = false;
         });
         expect(JSON.parse(persistence.value!).extracted).toHaveProperty('b');
+    });
+
+    it('reads do not wait for a checkpoint write (a large snapshot must not stall getExtracted)', async () => {
+        const { persistence, clock, store } = setup(1000);
+        let release!: () => void;
+        const gate = new Promise<void>((r) => { release = r; });
+        const write = persistence.write;
+        persistence.write = async (s) => { await gate; await write(s); };
+        await store.batched(async () => {
+            await store.putExtracted('a', []);
+            clock.ms = 5000;
+            await store.putExtracted('b', []); // starts a checkpoint that stays in flight
+            expect(await store.getExtracted('a')).toEqual([]);
+            await store.putExtracted('c', []); // and mutations still apply in memory
+            expect(await store.getExtracted('c')).toEqual([]);
+            release();
+        });
     });
 
     it('nested and overlapping batches flush once, at the outermost end', async () => {
