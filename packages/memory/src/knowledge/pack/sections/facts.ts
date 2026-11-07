@@ -4,7 +4,7 @@
  */
 
 import type { NodeRef, StoredFact, StoredRelation } from '../types.js';
-import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
+import { boundedCount, ByteReader, ByteWriter } from '../varint.js';
 import { EDGE_KINDS, STORED_ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
 import { assertFlagsKnown } from './extrLists.js';
 import { TAG } from './rows.js';
