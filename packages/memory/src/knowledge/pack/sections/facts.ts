@@ -6,6 +6,7 @@
 import type { NodeRef, StoredFact, StoredRelation } from '../types.js';
 import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
 import { EDGE_KINDS, STORED_ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
+import { assertFlagsKnown } from './extrLists.js';
 import { TAG } from './rows.js';
 
 const F_UPDATED = 1, F_BY_NULL = 2, F_BY = 4;
@@ -41,7 +42,7 @@ export const factSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'facts');
+        const n = boundedCount(r, limits.budget, 'facts');
         const keys: string[] = [];
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); keys.push(t.str(prev)); }
@@ -50,17 +51,18 @@ export const factSection: SectionCodec = {
         const importance = keys.map(() => r.num());
         const origin = keys.map(() => readEnum(r, STORED_ORIGINS));
         const flags = keys.map(() => r.u8());
+        for (const f of flags) assertFlagsKnown(f, F_UPDATED | F_BY_NULL | F_BY);
         const facts: StoredFact[] = keys.map((key, i) => ({ key, content: content[i]!, source: source[i]!, importance: importance[i]!, origin: origin[i]!, fileAnchors: [] }));
         facts.forEach((f, i) => {
             if (flags[i]! & F_UPDATED) f.updatedAt = t.str(r.varint());
             if (flags[i]! & F_BY_NULL) f.createdBy = null;
             if (flags[i]! & F_BY) f.createdBy = t.str(r.varint());
         });
-        const counts = facts.map(() => boundedCount(r, limits.maxRows, 'anchors'));
+        const counts = facts.map(() => boundedCount(r, limits.budget, 'anchors'));
         const total = counts.reduce((a, b) => a + b, 0);
-        if (total > limits.maxRows) throw new PackFormatError('anchors: over the row bound');
         const paths = Array.from({ length: total }, () => t.str(r.varint()));
         const aflags = Array.from({ length: total }, () => r.u8());
+        for (const f of aflags) assertFlagsKnown(f, A_LINE | A_HASH);
         let at = 0;
         facts.forEach((f, i) => {
             for (let k = 0; k < counts[i]!; k++, at++) {
@@ -101,7 +103,7 @@ export const relationSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'relations');
+        const n = boundedCount(r, limits.budget, 'relations');
         const from: string[] = [];
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); from.push(t.str(prev)); }
@@ -110,6 +112,7 @@ export const relationSection: SectionCodec = {
         const weight = from.map(() => r.num());
         const origin = from.map(() => readEnum(r, STORED_ORIGINS));
         const flags = from.map(() => r.u8());
+        for (const f of flags) assertFlagsKnown(f, R_CONF | R_HASH | R_STALE | R_STALE_NULL);
         into.relations = from.map((f0, i): StoredRelation => {
             const x: StoredRelation = { from: f0 as NodeRef, to: to[i]! as NodeRef, kind: kind[i]!, weight: weight[i]!, origin: origin[i]! };
             const f = flags[i]!;

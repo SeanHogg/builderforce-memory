@@ -130,9 +130,16 @@ export class ByteReader {
     }
 }
 
-/** A count that is bounded before anything is allocated for it. */
-export function boundedCount(r: ByteReader, max: number, what: string): number {
+/** What a whole pack may still hold: every list a decode reads draws its count from ONE budget. */
+export interface Budget { left: number }
+
+/**
+ * A count that is bounded before anything is allocated for it, and drawn from the pack's cumulative budget, so
+ * many lists that are each small cannot add up to a memory bomb.
+ */
+export function boundedCount(r: ByteReader, budget: Budget, what: string): number {
     const n = r.varint();
-    if (n > max) throw new PackFormatError(`${what}: ${n} exceeds the bound ${max}`);
+    if (n > budget.left) throw new PackFormatError(`${what}: ${n} exceeds the pack's row budget (${budget.left} left)`);
+    budget.left -= n;
     return n;
 }

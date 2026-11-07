@@ -4,7 +4,7 @@
  * descriptor type (PRD 41 A11).
  */
 
-import type { Pack, PackLimits } from '../types.js';
+import type { Pack, ReadLimits } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
 import { PackFormatError, type ByteReader, type ByteWriter } from '../varint.js';
 
@@ -12,7 +12,7 @@ import { PackFormatError, type ByteReader, type ByteWriter } from '../varint.js'
 export interface SectionCodec {
     tag: number;
     write(pack: Pack, t: Tables): Uint8Array | undefined;
-    read(bytes: Uint8Array, t: ReadTables, limits: PackLimits, into: Pack): void;
+    read(bytes: Uint8Array, t: ReadTables, limits: ReadLimits, into: Pack): void;
 }
 
 export const ORIGINS = ['extracted', 'model', 'human', 'agent'] as const;

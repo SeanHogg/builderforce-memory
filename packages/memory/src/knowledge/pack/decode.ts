@@ -1,6 +1,6 @@
 /**
  * knowledge/pack/decode.ts — `decodePack` (PRD 41 A11). Guards run before any row is built: the
- * magic and version, the CRC-32 of the decoded body, the inflate cap (`PackTooLargeError` past
+ * magic and version, the CRC-32 of the header and the decoded body, the inflate cap (`PackTooLargeError` past
  * `maxDecodedBytes`) and the string/row counts. A malformed pack is a `PackFormatError`.
  */
 
@@ -9,7 +9,7 @@ import { inflateRaw } from './deflate.js';
 import { FLAG_DEFLATED, readFrame, readSections } from './frame.js';
 import { ROW_SECTIONS, TAG } from './sections/index.js';
 import { readHashTable, readStringTable, readTables } from './strings.js';
-import { DEFAULT_PACK_LIMITS, PackTooLargeError, type Pack, type PackLimits } from './types.js';
+import { DEFAULT_PACK_LIMITS, PackTooLargeError, type Pack, type PackLimits, type ReadLimits } from './types.js';
 import { PackFormatError } from './varint.js';
 
 const NONE = new Uint8Array([0]);
@@ -21,8 +21,10 @@ export function peekPack(bytes: Uint8Array): { rootId: string; baseGeneration: n
 }
 
 export async function decodePack(bytes: Uint8Array, limits: Partial<PackLimits> = {}): Promise<Pack> {
-    const lim: PackLimits = { ...DEFAULT_PACK_LIMITS, ...limits };
-    const { header, stored, crc } = readFrame(bytes);
+    const base0: PackLimits = { ...DEFAULT_PACK_LIMITS, ...limits };
+    // ONE row budget for the whole pack: every list of every section draws from it.
+    const lim: ReadLimits = { ...base0, budget: { left: base0.maxRows } };
+    const { header, headerBytes, stored, crc } = readFrame(bytes);
     let body: Uint8Array;
     if (header.flags & FLAG_DEFLATED) {
         try {
@@ -35,10 +37,10 @@ export async function decodePack(bytes: Uint8Array, limits: Partial<PackLimits> 
         if (stored.length > lim.maxDecodedBytes) throw new PackTooLargeError(lim.maxDecodedBytes);
         body = stored;
     }
-    if (crc32(body) !== crc) throw new PackFormatError('CRC-32 mismatch');
+    if (crc32(body, crc32(headerBytes)) !== crc) throw new PackFormatError('CRC-32 mismatch');
     try {
         const sections = readSections(body);
-        const strings = readStringTable(sections.get(TAG.STR) ?? NONE, lim.maxStrings);
+        const strings = readStringTable(sections.get(TAG.STR) ?? NONE, lim.maxStrings, lim.maxDecodedBytes);
         const hashes = readHashTable(sections.get(TAG.HASH) ?? NONE, lim.maxStrings);
         const used = new Set<string>();
         const base = readTables(strings, hashes);

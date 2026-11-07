@@ -10,6 +10,8 @@
  * first pass with {@link collector} gathers what is used, a second with {@link tablesOf} writes real indexes.
  */
 
+import { fromHex64, HEX64, toHex } from './hex.js';
+import { PackTooLargeError } from './types.js';
 import { boundedCount, ByteReader, ByteWriter, PackFormatError, utf8 } from './varint.js';
 
 /** What a section encoder needs: the index of a string and of a hash. */
@@ -24,7 +26,6 @@ export interface ReadTables {
     hash(i: number): string;
 }
 
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** A pass-1 `Tables` that records every string and hash it is asked for. */
 export function collector(): Tables & { strings: Set<string>; hashes: Set<string> } {
@@ -63,15 +64,22 @@ export function writeStringTable(strings: readonly string[]): Uint8Array {
     return w.finish();
 }
 
-export function readStringTable(bytes: Uint8Array, maxStrings: number): string[] {
+/**
+ * Reads the front-coded string table. `maxBytes` bounds the table's TOTAL decoded bytes: front coding lets a few
+ * input bytes name a very long string many times over, so the cap is on what is built, not on what was sent.
+ */
+export function readStringTable(bytes: Uint8Array, maxStrings: number, maxBytes: number): string[] {
     const r = new ByteReader(bytes);
-    const n = boundedCount(r, maxStrings, 'string table');
+    const n = boundedCount(r, { left: maxStrings }, 'string table');
     const dec = new TextDecoder('utf-8', { fatal: true });
     const out: string[] = [];
     let prev: Uint8Array = new Uint8Array(0);
+    let total = 0;
     for (let i = 0; i < n; i++) {
         const shared = r.varint(), rest = r.varint();
         if (shared > prev.length) throw new PackFormatError('string table: prefix longer than the previous string');
+        total += shared + rest;
+        if (total > maxBytes) throw new PackTooLargeError(maxBytes);
         const b = new Uint8Array(shared + rest);
         b.set(prev.subarray(0, shared));
         b.set(r.bytes(rest), shared);
@@ -87,9 +95,7 @@ export function writeHashTable(hashes: readonly string[]): Uint8Array {
     for (const h of hashes) {
         if (HEX64.test(h)) {
             w.u8(0);
-            const raw = new Uint8Array(32);
-            for (let i = 0; i < 32; i++) raw[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-            w.bytes(raw);
+            w.bytes(fromHex64(h));
         } else {
             w.u8(1);
             w.str(h);
@@ -100,15 +106,12 @@ export function writeHashTable(hashes: readonly string[]): Uint8Array {
 
 export function readHashTable(bytes: Uint8Array, maxHashes: number): string[] {
     const r = new ByteReader(bytes);
-    const n = boundedCount(r, maxHashes, 'hash table');
+    const n = boundedCount(r, { left: maxHashes }, 'hash table');
     const out: string[] = [];
     for (let i = 0; i < n; i++) {
         const flag = r.u8();
-        if (flag === 0) {
-            let hex = '';
-            for (const b of r.bytes(32)) hex += (b < 16 ? '0' : '') + b.toString(16);
-            out.push(hex);
-        } else if (flag === 1) out.push(r.str());
+        if (flag === 0) out.push(toHex(r.bytes(32)));
+        else if (flag === 1) out.push(r.str());
         else throw new PackFormatError('hash table: unknown entry flag');
     }
     return out;

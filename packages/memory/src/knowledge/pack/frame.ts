@@ -9,6 +9,7 @@
  */
 
 import { crc32 } from './crc32.js';
+import { fromHex64, HEX64, toHex } from './hex.js';
 import { ByteReader, ByteWriter, PackFormatError } from './varint.js';
 
 export const MAGIC = [0x42, 0x46, 0x4b, 0x50] as const; // "BFKP"
@@ -20,26 +21,32 @@ export const MAX_PART_BYTES = 8 * 1024 * 1024;
 
 export interface FrameHeader { flags: number; rootId: string; baseGeneration: number; targetDigest: string }
 
-const hexOf = (b: Uint8Array): string => { let s = ''; for (const x of b) s += (x < 16 ? '0' : '') + x.toString(16); return s; };
-
+/**
+ * The CRC-32 in the trailer covers the HEADER (magic through digest) and the DECODED body, so a flipped
+ * root id, generation or digest fails the same check a flipped row does.
+ */
 export function writeFrame(h: FrameHeader, body: Uint8Array, storedBody: Uint8Array): Uint8Array {
-    if (!/^[0-9a-f]{64}$/.test(h.targetDigest)) throw new PackFormatError('targetDigest is 64 lowercase hex characters');
+    if (!HEX64.test(h.targetDigest)) throw new PackFormatError('targetDigest is 64 lowercase hex characters');
     const w = new ByteWriter();
     for (const m of MAGIC) w.u8(m);
     w.u8(VERSION);
     w.u8(h.flags);
     w.str(h.rootId);
     w.varint(h.baseGeneration);
-    const raw = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) raw[i] = parseInt(h.targetDigest.slice(i * 2, i * 2 + 2), 16);
-    w.bytes(raw);
-    w.bytes(storedBody);
-    w.u32le(crc32(body));
-    return w.finish();
+    w.bytes(fromHex64(h.targetDigest));
+    const head = w.finish();
+    const out = new ByteWriter();
+    out.bytes(head);
+    out.bytes(storedBody);
+    out.u32le(crc32(body, crc32(head)));
+    return out.finish();
 }
 
-/** Splits a frame into header fields, the stored (possibly deflated) body, and the CRC the trailer claims. */
-export function readFrame(bytes: Uint8Array): { header: FrameHeader; stored: Uint8Array; crc: number } {
+/**
+ * Splits a frame into header fields, the stored (possibly deflated) body, the header's bytes, and the CRC the
+ * trailer claims. The caller checks `crc32(decodedBody, crc32(headerBytes)) === crc` once it has inflated.
+ */
+export function readFrame(bytes: Uint8Array): { header: FrameHeader; headerBytes: Uint8Array; stored: Uint8Array; crc: number } {
     if (bytes.length < 4 + 2 + 1 + 1 + 32 + 4) throw new PackFormatError('truncated frame');
     const r = new ByteReader(bytes);
     for (const m of MAGIC) if (r.u8() !== m) throw new PackFormatError('not a BFKP pack (bad magic)');
@@ -48,10 +55,11 @@ export function readFrame(bytes: Uint8Array): { header: FrameHeader; stored: Uin
     const flags = r.u8();
     const rootId = r.str();
     const baseGeneration = r.varint();
-    const targetDigest = hexOf(r.bytes(32));
+    const targetDigest = toHex(r.bytes(32));
+    const headerBytes = bytes.subarray(0, r.offset);
     if (r.remaining < 4) throw new PackFormatError('truncated frame');
     const stored = r.bytes(r.remaining - 4);
-    return { header: { flags, rootId, baseGeneration, targetDigest }, stored, crc: r.u32le() };
+    return { header: { flags, rootId, baseGeneration, targetDigest }, headerBytes, stored, crc: r.u32le() };
 }
 
 export function writeSection(w: ByteWriter, tag: number, bytes: Uint8Array): void {

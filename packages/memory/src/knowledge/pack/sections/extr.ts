@@ -6,7 +6,7 @@
 
 import type { Extracted, ExtrEntryDiff, ListDiff, PackExtr } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
-import { boundedCount, ByteReader, ByteWriter } from '../varint.js';
+import { boundedCount, ByteReader, ByteWriter, type Budget } from '../varint.js';
 import type { SectionCodec } from './columns.js';
 import { readEdges, readKeys, readNodes, writeEdges, writeKeys, writeNodes } from './extrLists.js';
 import { TAG } from './rows.js';
@@ -22,13 +22,13 @@ function writeDiff<T>(w: ByteWriter, t: Tables, d: ListDiff<T>, items: (w: ByteW
     items(w, t, d.add.map((a) => a.item));
 }
 
-function readDiff<T>(r: ByteReader, t: ReadTables, max: number, items: (r: ByteReader, t: ReadTables, max: number) => T[]): ListDiff<T> {
-    const remove = Array.from({ length: boundedCount(r, max, 'diff removals') }, () => t.str(r.varint()));
-    const n = boundedCount(r, max, 'diff additions');
+function readDiff<T>(r: ByteReader, t: ReadTables, budget: Budget, items: (r: ByteReader, t: ReadTables, budget: Budget) => T[]): ListDiff<T> {
+    const remove = Array.from({ length: boundedCount(r, budget, 'diff removals') }, () => t.str(r.varint()));
+    const n = boundedCount(r, budget, 'diff additions');
     const ats: number[] = [];
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += r.varint(); ats.push(prev); }
-    const list = items(r, t, max);
+    const list = items(r, t, budget);
     return { remove, add: ats.map((at, i) => ({ at, item: list[i]! })) };
 }
 
@@ -62,24 +62,24 @@ export const extrSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'extracted hashes');
+        const n = boundedCount(r, limits.budget, 'extracted hashes');
         const out: PackExtr[] = [];
         for (let i = 0; i < n; i++) {
             const diff = r.u8() === 1;
             const hash = t.hash(r.varint());
             const prior = diff ? t.hash(r.varint()) : '';
-            const count = boundedCount(r, limits.maxRows, 'extracted entries');
+            const count = boundedCount(r, limits.budget, 'extracted entries');
             const entries: Array<Extracted | ExtrEntryDiff> = [];
             for (let k = 0; k < count; k++) {
                 const sourceRef = t.str(r.varint());
                 const sourceHash = t.hash(r.varint());
                 const version = r.u8() & HAS_VERSION ? { extractorVersion: r.varint() } : {};
                 if (!diff) {
-                    entries.push({ sourceRef: sourceRef as Extracted['sourceRef'], sourceHash, ...version, nodes: readNodes(r, t, limits.maxRows), edges: readEdges(r, t, limits.maxRows), keys: readKeys(r, t, limits.maxRows) });
+                    entries.push({ sourceRef: sourceRef as Extracted['sourceRef'], sourceHash, ...version, nodes: readNodes(r, t, limits.budget), edges: readEdges(r, t, limits.budget), keys: readKeys(r, t, limits.budget) });
                 } else {
                     entries.push({
                         sourceRef, sourceHash, ...version,
-                        nodes: readDiff(r, t, limits.maxRows, readNodes), edges: readDiff(r, t, limits.maxRows, readEdges), keys: readDiff(r, t, limits.maxRows, readKeys),
+                        nodes: readDiff(r, t, limits.budget, readNodes), edges: readDiff(r, t, limits.budget, readEdges), keys: readDiff(r, t, limits.budget, readKeys),
                     });
                 }
             }

@@ -4,7 +4,8 @@
  */
 
 import { deflateRaw } from './deflate.js';
-import { FLAG_DEFLATED, readFrame, writeFrame } from './frame.js';
+import { FLAG_DEFLATED, readFrame, writeFrame, writeSection } from './frame.js';
+import { ByteWriter } from './varint.js';
 import { decodePack, encodePack, joinParts, PackFormatError, PackTooLargeError, peekPack, splitParts, ZERO_DIGEST } from './index.js';
 import { genPack } from './pack.testkit.test-util.js';
 
@@ -54,6 +55,37 @@ describe('BFKP guards', () => {
         const bomb = writeFrame({ flags: FLAG_DEFLATED, rootId: 'r', baseGeneration: 0, targetDigest: ZERO_DIGEST }, body, await deflateRaw(body));
         await expect(decodePack(bomb)).rejects.toThrow(PackTooLargeError);
     }, 60_000);
+
+    it('the CRC covers the header: a flipped digest or generation byte fails like a flipped row', async () => {
+        const bytes = await encodePack(genPack(2, { files: 4 }), { deflate: false });
+        const { headerBytes } = readFrame(bytes);
+        const bad = bytes.slice();
+        bad[headerBytes.length - 1]! ^= 0x01; // the last byte of the target digest
+        await expect(decodePack(bad)).rejects.toThrow(/CRC/);
+        const gen = bytes.slice();
+        gen[headerBytes.length - 33]! ^= 0x01; // the generation varint
+        await expect(decodePack(gen)).rejects.toThrow(PackFormatError);
+    });
+
+    it('the row budget is cumulative across sections: many small lists cannot add up to a bomb', async () => {
+        const bytes = await encodePack(genPack(9, { files: 15, facts: 15, symbols: 0, edgesPerFile: 0, rich: false }));
+        await expect(decodePack(bytes, { maxRows: 100_000 })).resolves.toBeDefined();
+        // Each list is under 40, together they are over it.
+        await expect(decodePack(bytes, { maxRows: 40 })).rejects.toThrow(PackFormatError);
+    });
+
+    it('a front-coded string table cannot name a huge string many times: the decoded total is capped', async () => {
+        const w = new ByteWriter();
+        const n = 2000, big = 100_000;
+        w.varint(n);
+        w.varint(0); w.varint(big); w.bytes(new Uint8Array(big).fill(97));
+        for (let i = 1; i < n; i++) { w.varint(big); w.varint(0); }   // 2,000 strings of 100 KB each from ~100 KB of input
+        const body = new ByteWriter();
+        writeSection(body, 1, w.finish());
+        const plain = body.finish();
+        const frame = writeFrame({ flags: 0, rootId: 'r', baseGeneration: 0, targetDigest: ZERO_DIGEST }, plain, plain);
+        await expect(decodePack(frame, { maxDecodedBytes: 8 * 1024 * 1024 })).rejects.toThrow(PackTooLargeError);
+    });
 
     it('bounds counts before allocating for them', async () => {
         const bytes = await encodePack(genPack(5, { files: 20 }));

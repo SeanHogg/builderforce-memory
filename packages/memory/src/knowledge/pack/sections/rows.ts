@@ -6,6 +6,7 @@
  */
 
 import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
+import { fromHex64, toHex } from '../hex.js';
 import type { Pack } from '../types.js';
 import type { SectionCodec } from './columns.js';
 import { MANIFEST_BUCKETS } from '../manifest.js';
@@ -27,7 +28,7 @@ export const fileSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'files');
+        const n = boundedCount(r, limits.budget, 'files');
         const paths: string[] = [];
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); paths.push(t.str(prev)); }
@@ -50,7 +51,7 @@ export const staleSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'stale');
+        const n = boundedCount(r, limits.budget, 'stale');
         const refs: string[] = [];
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); refs.push(t.str(prev)); }
@@ -79,13 +80,13 @@ export const deleteSection: SectionCodec = {
         const r = new ByteReader(bytes);
         const lists: string[][] = [];
         for (let k = 0; k < 2; k++) {
-            const n = boundedCount(r, limits.maxRows, 'tombstones');
+            const n = boundedCount(r, limits.budget, 'tombstones');
             const out: string[] = [];
             let prev = 0;
             for (let i = 0; i < n; i++) { prev += r.varint(); out.push(t.str(prev)); }
             lists.push(out);
         }
-        const n = boundedCount(r, limits.maxRows, 'relation tombstones');
+        const n = boundedCount(r, limits.budget, 'relation tombstones');
         const from = Array.from({ length: n }, () => t.str(r.varint()));
         const to = Array.from({ length: n }, () => t.str(r.varint()));
         const kind = Array.from({ length: n }, () => t.str(r.varint()));
@@ -111,7 +112,7 @@ export const scopeSection: SectionCodec = {
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
         const scope: NonNullable<Pack['scope']> = { rootId: t.str(r.varint()), title: t.str(r.varint()), packs: [] };
-        const n = boundedCount(r, limits.maxRows, 'packs');
+        const n = boundedCount(r, limits.budget, 'packs');
         for (let i = 0; i < n; i++) scope.packs.push(t.str(r.varint()));
         const flags = r.u8();
         if (flags & 1) scope.lastDigest = t.str(r.varint());
@@ -120,13 +121,20 @@ export const scopeSection: SectionCodec = {
     },
 };
 
+/** Object keys in sorted order, recursively: equal documents become equal bytes however their keys were built. */
+const canonical = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical((v as Record<string, unknown>)[k])]));
+    return v;
+};
+
 /** The analysis snapshot is one JSON-compatible document with no row structure; it travels as one string (deflate does the rest). */
 export const analysisSection: SectionCodec = {
     tag: TAG.ANALYSIS,
     write(pack, t) {
         if (pack.analysis === undefined) return undefined;
         const w = new ByteWriter();
-        w.varint(t.str(JSON.stringify(pack.analysis)));
+        w.varint(t.str(JSON.stringify(canonical(pack.analysis))));
         return w.finish();
     },
     read(bytes, t, _limits, into) {
@@ -148,7 +156,7 @@ export const leafSection: SectionCodec = {
     },
     read(bytes, t, limits, into) {
         const r = new ByteReader(bytes);
-        const n = boundedCount(r, limits.maxRows, 'leaves');
+        const n = boundedCount(r, limits.budget, 'leaves');
         const keys: string[] = [];
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); keys.push(t.str(prev)); }
@@ -164,21 +172,13 @@ export const bucketSection: SectionCodec = {
         if (!b) return undefined;
         if (b.length !== MANIFEST_BUCKETS) throw new PackFormatError(`a bucket list holds ${MANIFEST_BUCKETS} digests`);
         const w = new ByteWriter();
-        for (const hex of b) {
-            const raw = new Uint8Array(32);
-            for (let i = 0; i < 32; i++) raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-            w.bytes(raw);
-        }
+        for (const hex of b) w.bytes(fromHex64(hex));
         return w.finish();
     },
     read(bytes, _t, _limits, into) {
         if (bytes.length !== MANIFEST_BUCKETS * 32) throw new PackFormatError('bucket section has the wrong size');
         const out: string[] = [];
-        for (let i = 0; i < MANIFEST_BUCKETS; i++) {
-            let hex = '';
-            for (const b of bytes.subarray(i * 32, i * 32 + 32)) hex += (b < 16 ? '0' : '') + b.toString(16);
-            out.push(hex);
-        }
+        for (let i = 0; i < MANIFEST_BUCKETS; i++) out.push(toHex(bytes.subarray(i * 32, i * 32 + 32)));
         into.buckets = out;
     },
 };

@@ -5,6 +5,7 @@
  */
 
 import type { Extracted, KEdge, KNode, NodeRef, ScopeRecord, StoredFact, StoredOrigin, StoredRelation } from '../model.js';
+import type { Budget } from './varint.js';
 
 /** A reviewed file: its root-relative path, the hash its extracted output is keyed under, and its size. */
 export interface PackFileRow { path: string; hash: string; bytes: number }
@@ -78,6 +79,13 @@ export interface PackLimits {
     /** Rows in any one section (default 1,000,000). */
     maxRows: number;
 }
+
+/**
+ * The limits a decode reads under. `maxRows` is CUMULATIVE: one `budget` is drawn down by every list of every
+ * section, so a pack of many small lists is bounded as a whole. `maxDecodedBytes` bounds the inflated body AND the
+ * total bytes of the string table.
+ */
+export interface ReadLimits extends PackLimits { budget: Budget }
 
 export const DEFAULT_PACK_LIMITS: PackLimits = { maxDecodedBytes: 64 * 1024 * 1024, maxStrings: 2_000_000, maxRows: 1_000_000 };
 

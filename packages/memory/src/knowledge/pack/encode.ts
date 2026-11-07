@@ -5,6 +5,11 @@
  * is written from the same normalized pack, so equal input (in any row order) gives equal bytes.
  * Two passes over the section writers: the first collects every string and hash they use, the
  * second writes real table indexes.
+ *
+ * NORMALISATION (lossless for every value the model produces, documented where it is not): rows are sorted and
+ * empty parts dropped; object keys of badges and of the analysis document are written in sorted order; a
+ * negative zero is written as zero; a string holding a lone UTF-16 surrogate is written with U+FFFD in its place
+ * (UTF-8 cannot carry it). Equal normalised input gives equal bytes.
  */
 
 import { deflateRaw } from './deflate.js';
@@ -56,6 +61,8 @@ export function normalizePack(pack: Pack): Pack {
 export interface EncodeOptions {
     /** Deflate the body (default true). Off, the bytes are the plain columnar form (tests, size comparisons). */
     deflate?: boolean;
+    /** Filled with the size of the DECODED body: a client cuts a pack by it before the server's cap refuses it. */
+    stats?: { decodedBytes: number };
 }
 
 export async function encodePack(input: Pack, opts: EncodeOptions = {}): Promise<Uint8Array> {
@@ -72,6 +79,7 @@ export async function encodePack(input: Pack, opts: EncodeOptions = {}): Promise
         if (bytes) writeSection(body, s.tag, bytes);
     }
     const plain = body.finish();
+    if (opts.stats) opts.stats.decodedBytes = plain.length;
     const deflate = opts.deflate ?? true;
     return writeFrame(
         { flags: deflate ? FLAG_DEFLATED : 0, rootId: pack.rootId, baseGeneration: pack.baseGeneration, targetDigest: pack.targetDigest },

@@ -6,10 +6,11 @@
 
 import type { KEdge, KNode, NodeRef } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
-import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
+import { boundedCount, ByteReader, ByteWriter, PackFormatError, type Budget } from '../varint.js';
 import { EDGE_KINDS, NODE_KINDS, ORIGINS, VERDICTS, readEnum, readWord, unzigzag, writeEnum, writeWord, zigzag } from './columns.js';
 
 const N_PARTITION = 1, N_AREA = 2, N_STALE = 4, N_STALE_V = 8, N_BADGES = 16, N_SYSTEM = 32, N_APP = 64, N_COPY = 128, N_HASH = 256;
+const N_KNOWN = 0x1ff;
 
 export function writeNodes(w: ByteWriter, t: Tables, nodes: readonly KNode[]): void {
     w.varint(nodes.length);
@@ -35,7 +36,7 @@ export function writeNodes(w: ByteWriter, t: Tables, nodes: readonly KNode[]): v
         if (f & N_COPY) w.varint(t.str(n.copyOf!));
         if (f & N_HASH) w.varint(t.hash(n.sourceHash!));
         if (f & N_BADGES) {
-            const keys = Object.keys(n.badges!);
+            const keys = Object.keys(n.badges!).sort(); // canonical order: equal badges, equal bytes
             w.varint(keys.length);
             for (const k of keys) {
                 w.varint(t.str(k));
@@ -46,8 +47,8 @@ export function writeNodes(w: ByteWriter, t: Tables, nodes: readonly KNode[]): v
     });
 }
 
-export function readNodes(r: ByteReader, t: ReadTables, max: number): KNode[] {
-    const n = boundedCount(r, max, 'nodes');
+export function readNodes(r: ByteReader, t: ReadTables, budget: Budget): KNode[] {
+    const n = boundedCount(r, budget, 'nodes');
     const refs: string[] = [];
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += unzigzag(r.varint()); refs.push(t.str(prev)); }
@@ -57,6 +58,7 @@ export function readNodes(r: ByteReader, t: ReadTables, max: number): KNode[] {
     const importance = Array.from({ length: n }, () => r.num());
     const origins = Array.from({ length: n }, () => readEnum(r, ORIGINS));
     const flags = Array.from({ length: n }, () => r.varint());
+    for (const f of flags) assertFlagsKnown(f, N_KNOWN);
     return refs.map((ref, i): KNode => {
         const f = flags[i]!;
         const node: KNode = { ref: ref as NodeRef, kind: kinds[i]!, label: labels[i]!, pack: packs[i]!, importance: importance[i]!, origin: origins[i]! };
@@ -69,7 +71,7 @@ export function readNodes(r: ByteReader, t: ReadTables, max: number): KNode[] {
         if (f & N_STALE) node.stale = (f & N_STALE_V) !== 0;
         if (f & N_BADGES) {
             const badges: Record<string, number | string> = {};
-            const count = boundedCount(r, max, 'badges');
+            const count = boundedCount(r, budget, 'badges');
             for (let b = 0; b < count; b++) {
                 const key = t.str(r.varint());
                 badges[key] = r.u8() === 0 ? r.num() : t.str(r.varint());
@@ -81,6 +83,7 @@ export function readNodes(r: ByteReader, t: ReadTables, max: number): KNode[] {
 }
 
 const E_CONF = 1, E_VERDICT = 2, E_CYCLE = 4, E_CYCLE_V = 8, E_STALE = 16, E_STALE_V = 32, E_BYNAME = 64;
+const E_KNOWN = 0x7f;
 
 export function writeEdges(w: ByteWriter, t: Tables, edges: readonly KEdge[]): void {
     w.varint(edges.length);
@@ -103,8 +106,8 @@ export function writeEdges(w: ByteWriter, t: Tables, edges: readonly KEdge[]): v
     });
 }
 
-export function readEdges(r: ByteReader, t: ReadTables, max: number): KEdge[] {
-    const n = boundedCount(r, max, 'edges');
+export function readEdges(r: ByteReader, t: ReadTables, budget: Budget): KEdge[] {
+    const n = boundedCount(r, budget, 'edges');
     const from: string[] = [];
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += unzigzag(r.varint()); from.push(t.str(prev)); }
@@ -113,6 +116,7 @@ export function readEdges(r: ByteReader, t: ReadTables, max: number): KEdge[] {
     const weights = Array.from({ length: n }, () => r.num());
     const origins = Array.from({ length: n }, () => readEnum(r, ORIGINS));
     const flags = Array.from({ length: n }, () => r.varint());
+    for (const f of flags) assertFlagsKnown(f, E_KNOWN);
     return from.map((f0, i): KEdge => {
         const f = flags[i]!;
         const edge: KEdge = { from: f0 as NodeRef, to: to[i]! as NodeRef, kind: kinds[i]!, weight: weights[i]!, origin: origins[i]! };
@@ -134,8 +138,8 @@ export function writeKeys(w: ByteWriter, t: Tables, keys: readonly KeyRow[]): vo
     for (const k of keys) w.varint(t.str(k.key));
 }
 
-export function readKeys(r: ByteReader, t: ReadTables, max: number): Array<{ ref: NodeRef; key: string }> {
-    const n = boundedCount(r, max, 'keys');
+export function readKeys(r: ByteReader, t: ReadTables, budget: Budget): Array<{ ref: NodeRef; key: string }> {
+    const n = boundedCount(r, budget, 'keys');
     const refs: string[] = [];
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += unzigzag(r.varint()); refs.push(t.str(prev)); }
