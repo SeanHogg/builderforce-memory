@@ -25,6 +25,20 @@ import { reasonOf } from './reviewRunModel.js';
 /** A section's validated answer: the output of the call stage, applied later by {@link applyAnswers}. */
 export interface SectionAnswer { section: SectionToJudge; v: ReturnType<typeof validateExtract> }
 
+/**
+ * Stops a run's judging after consecutive provider failures (PRD 41 A10 rule 9): with the network down every
+ * section would otherwise cost the full call timeout. Sections cut by it stay unjudged and owed.
+ */
+export class JudgeBreaker {
+    private streak = 0;
+    private reason: string | undefined;
+    constructor(private readonly limit: number = 5) {}
+    /** Why judging stopped; undefined while it runs. */
+    get stopped(): string | undefined { return this.reason; }
+    ok(): void { this.streak = 0; }
+    fail(reason: string): void { this.streak += 1; if (this.streak >= this.limit) this.reason ??= `${this.streak} model calls failed in a row: ${reason}`; }
+}
+
 export interface CallSectionsArgs {
     port: JudgementPort;
     fileHash: string;
@@ -34,6 +48,8 @@ export interface CallSectionsArgs {
     /** Shared across the files of a review: caps the calls in flight and adapts to rate limits. */
     limiter?: ModelLimiter;
     signal?: AbortSignal;
+    /** Counts consecutive failures across the files of a run; once it trips, no further call is made. */
+    breaker?: JudgeBreaker;
 }
 
 export interface CallSectionsResult {
@@ -63,13 +79,14 @@ export async function callSections(a: CallSectionsArgs): Promise<CallSectionsRes
     await runPool(a.sections.map((section, idx) => ({ section, idx })), JUDGE_CONCURRENCY, async ({ section, idx }) => {
         // Honoured per section, not only when the port throws: the caller drops this file whole.
         if (a.signal?.aborted) throw abortError();
-        if (!budgetLeft(a.budget)) { unjudged += 1; return; }
+        if (!budgetLeft(a.budget) || a.breaker?.stopped) { unjudged += 1; return; }
         const answer = await call(a.port, {
             kind: 'extract', items: [{ ref: section.ref, text: section.text, sourceHash: a.fileHash }],
             ...(a.signal ? { signal: a.signal } : {}),
         }, a.budget, hooks);
         // A failed call judged nothing: not counted judged, so the file stays changed and is retried.
-        if (!answer) { unjudged += 1; return; }
+        if (!answer) { unjudged += 1; a.breaker?.fail(firstError ?? 'model call failed'); return; }
+        a.breaker?.ok();
         // The abort can land while a call is in flight (the port sees the signal): a section that
         // finished after the abort must not count as judged, or the caller would not re-judge it.
         if (a.signal?.aborted) throw abortError();

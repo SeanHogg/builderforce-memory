@@ -27,12 +27,24 @@ export interface ExtractJob {
     knownKeys: ReadonlyArray<readonly [string, NodeRef]>;
     /** The file will be judged: return its parsed sections too (the main thread never parses when a pool is supplied). */
     needSections?: boolean;
+    /**
+     * The pool reads the file itself (PRD 41 A10 rule 8): `doc` is a content-free stand-in that only carries the path
+     * and media type; the worker reads `path`, runs the binary check and extracts. The main thread neither reads nor copies the text.
+     */
+    readByPool?: true;
     /** The extract is already cached and only the sections are wanted: skip extracting. Implies `needSections`. */
     sectionsOnly?: boolean;
 }
 
+/** Thrown by the extract stage when the pool found the file binary; the review records a `skipped` step. */
+export class BinaryContent extends Error {
+    constructor() { super('binary'); this.name = 'BinaryContent'; }
+}
+
 /** What a worker returns: the file's extract(s) — `[]` when no pack accepts it — and, if asked, its sections. */
 export interface ExtractJobResult {
+    /** The pool read the file itself (see `ExtractJob.readByPool`) and found it binary: nothing was extracted. */
+    binary?: true;
     extracted: Extracted[];
     sections?: ParsedSection[];
 }
@@ -65,12 +77,12 @@ export function runExtractor(
 export function jobOf(
     f: {
         rootId: string; path: string; hash: string; doc: SourceDocument; knownKeys: ReadonlyMap<string, NodeRef>;
-        needSections?: boolean; sectionsOnly?: boolean;
+        needSections?: boolean; sectionsOnly?: boolean; readByPool?: boolean;
     },
 ): ExtractJob {
     return {
         rootId: f.rootId, path: f.path, hash: f.hash, doc: f.doc, knownKeys: [...f.knownKeys],
-        ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}),
+        ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}), ...(f.readByPool ? { readByPool: true as const } : {}),
     };
 }
 

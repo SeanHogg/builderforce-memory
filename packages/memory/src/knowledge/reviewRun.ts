@@ -135,3 +135,8 @@ export function runEta(run: ReviewRun, phase: ReviewPhase): number | undefined {
     const rate = runRate(run, phase);
     return rate > 0 ? Math.round((remaining / rate) * 1000) : undefined;
 }
+
+/** The `n` slowest steps of the run's ring, longest first (ties by path), each with its reason: a stall names itself. */
+export function slowestSteps(run: ReviewRun, n: number): ReviewStep[] {
+    return [...run.steps].sort((a, b) => b.ms - a.ms || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).slice(0, Math.max(0, n));
+}

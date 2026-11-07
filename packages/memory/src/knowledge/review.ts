@@ -38,7 +38,8 @@ import {
     type CompareOutcome, type JudgeBudget,
 } from './judge.js';
 import { createModelLimiter } from './modelLimiter.js';
-import { applyJudge, startJudge, type JudgeJob } from './reviewJudge.js';
+import { JudgeBreaker } from './judgeCalls.js';
+import { applyJudge, judgesPack, splitSections, startJudge, type JudgeJob } from './reviewJudge.js';
 import { createPrefetch, type Prefetch } from './reviewPrefetch.js';
 import { Lanes } from './reviewRunModel.js';
 import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
@@ -76,7 +77,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const progress = (p: Parameters<NonNullable<ReviewArgs['onProgress']>>[0]) => args.onProgress?.(p);
     const report: ReviewReport = {
         rootId, digest: '', extracted: 0, judged: 0, unjudged: 0, invalidJudgements: 0,
-        factsWritten: 0, relationsWritten: 0, staleMarked: 0, readErrors: 0, extractErrors: 0, failures: [], aborted: false, durationMs: 0,
+        factsWritten: 0, relationsWritten: 0, staleMarked: 0, readErrors: 0, extractErrors: 0, failures: [], awaitingJudge: [], aborted: false, durationMs: 0,
     };
 
     const detail = args.plan
@@ -96,6 +97,8 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         used: 0, now,
     };
     const batch = new JudgedBatch();
+    const breaker = new JudgeBreaker();
+    const owedJudge: string[] = [];
     const judgedPrior = await manifestMap(manifest, judgedManifestKey(rootId));
     const judgedNow = new Map(judgedPrior);
     const filesNow = new Map(detail.prior);
@@ -134,17 +137,24 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     };
 
     const changed = detail.files.filter((f) => f.changed);
+    // `only` (pass 2) narrows what this run works on; the other changed files are untouched and stay owed (owedAfterRun sees them all).
+    const onlySet = args.only ? new Set(args.only) : undefined;
+    const work = onlySet ? changed.filter((f) => onlySet.has(f.path)) : changed;
     // Changed files this run finished (or had nothing to do for); an owed file not in it stays owed,
     // at the model calls it still costs where this run could measure that (see owedFiles.ts).
     const finished = new Set<string>();
     const measured = new Map<string, number>();
     // One bulk fetch of the extract cache for the whole run instead of a round trip per file.
-    const hashes = [...new Set(changed.map((f) => f.hash))];
+    const hashes = [...new Set(work.map((f) => f.hash))];
     if (hashes.length > 0) await store.preloadExtracted?.(hashes);
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
     // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
     // Judging runs `judgeWidth` files at once; ONE writer (`applyFile`) consumes them strictly in plan order.
     const concurrency = Math.min(32, Math.max(1, Math.floor(args.concurrency ?? DEFAULT_REVIEW_CONCURRENCY) || 1));
+    // Read-ahead is wider than the pool (PRD 41 A10 rule 8) so workers never wait for the ordered writer.
+    const readAhead = args.extractPool
+        ? Math.min(64, Math.max(concurrency, Math.floor(args.readAhead ?? Math.max(32, concurrency * 4)) || concurrency))
+        : concurrency;
     const judgeWidth = Math.min(concurrency, Math.min(16, Math.max(1, Math.floor(args.judgeConcurrency ?? DEFAULT_REVIEW_JUDGE_CONCURRENCY) || 1)));
     // The run's own stop: the caller's abort relays into it, and a thrown error (a local store failure) aborts it,
     // so queued and in-flight judge calls and pool jobs stop and nothing outlives the run.
@@ -156,9 +166,10 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const relay = () => { if (inWriter) cut = true; stopper.abort(signal?.reason); };
     if (signal?.aborted) relay(); else signal?.addEventListener('abort', relay, { once: true });
     const runSignal = stopper.signal;
-    const prefetch = createPrefetch({ args, signal: runSignal, rootId, packs, store, composed, knownKeys, width: concurrency });
+    const prefetch = createPrefetch({ args, signal: runSignal, rootId, packs, store, composed, knownKeys, width: readAhead, extractWidth: concurrency });
     const dispatch = {
-        port: args.judgement, signal: runSignal, budget, judgedPrior, lanes: new Lanes(judgeWidth),
+        // A mechanical run (pass 1) makes no model call: judged files stay owed.
+        port: args.mechanical ? undefined : args.judgement, signal: runSignal, breaker, budget, judgedPrior, lanes: new Lanes(judgeWidth),
         limiter: createModelLimiter(args.maxModelCalls ?? JUDGE_CONCURRENCY),
     };
     const judgeCtx = { batch, entities, stored, judgedNow, newClaims, measured, detail, report, ...(args.onStep ? { onStep: args.onStep } : {}) };
@@ -170,7 +181,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
      * applied even after an abort — the work is done, so it is kept.
      */
     const applyInner = async ({ f, i, job, judge }: Slot): Promise<boolean> => {
-        progress({ phase: 'extract', done: i, total: changed.length, path: f.path });
+        progress({ phase: 'extract', done: i, total: work.length, path: f.path });
         // A read that throws (permissions, a lock, a race with a delete) or an extraction that throws says nothing
         // about the file: skipped with its knowledge and manifest hash intact, tried again next review.
         if (job.kind === 'read-error' || job.kind === 'failed') {
@@ -192,20 +203,28 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         // The extract cache is written HERE, in plan order, so the cache, the counts and the order match a sequential run.
         if (!job.extraction.cached) await putExtract(store, f.hash, job.extraction.extracted);
         let complete = true;
+        if (args.mechanical && judgesPack(args.judgement, job.extraction.pack)) {
+            // Pass 1: the map has this file; its judgement is pass 2's. Owed at what it will cost where that is known.
+            complete = false;
+            owedJudge.push(f.path);
+            measured.set(f.path, Math.max(1, splitSections(judgedPrior, job.extraction).toJudge.length));
+        }
         if (judge) {
-            progress({ phase: 'judge', done: i, total: changed.length, path: f.path });
+            progress({ phase: 'judge', done: i, total: work.length, path: f.path });
             inWriter = false; // waiting for the model calls is not the writer working
             const outcome = await applyJudge(judgeCtx, f, judge);
             inWriter = true;
             if (outcome === 'aborted') return false;
             if (outcome === 'failed') {
+                owedJudge.push(f.path);
                 // Judging failed as a whole: leave the file exactly as it was (facts, manifest hash, owed) so the next review retries it.
                 measured.set(f.path, owedCalls(detail.extractor, f.path));
                 return true;
             }
             complete = outcome.complete;
+            if (!complete) owedJudge.push(f.path);
         }
-        progress({ phase: 'write', done: i, total: changed.length, path: f.path });
+        progress({ phase: 'write', done: i, total: work.length, path: f.path });
         const t0 = now();
         await write();
         await store.markStale(scope, srcRef(rootId, f.path), f.hash);
@@ -226,7 +245,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     };
     let completed = false;
     try {
-        for await (const { item: f, i, result } of prefetchOrdered(changed, concurrency, prefetch, runSignal)) {
+        for await (const { item: f, i, result } of prefetchOrdered(work, readAhead, prefetch, runSignal)) {
             if (result.status === 'rejected') throw result.reason; // a prefetch job settles to a Prefetch; this is a broken invariant
             const job = result.value;
             queue.push({ f, i, job, judge: job.kind === 'extracted' ? startJudge(dispatch, f, job.extraction) : undefined });
@@ -239,7 +258,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         signal?.removeEventListener('abort', relay);
         await Promise.allSettled(queue.map((s) => s.judge?.result)); // nothing outlives the run
     }
-    if (applied < changed.length) report.aborted = true;
+    if (applied < work.length) report.aborted = true;
 
     if (!report.aborted) {
         await retire(detail.plan.removed);
@@ -264,7 +283,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const wantsCompare = packs.some((p) => p.judgement?.contradictions);
     const canCompare = wantsCompare && !!args.judgement && !!args.similar;
     let outcome: CompareOutcome | undefined;
-    if (!report.aborted && canCompare) {
+    if (!report.aborted && canCompare && !args.mechanical) {
         outcome = await compareNew({
             args, pending: newClaims, known: stored.facts, budget, batch,
             onPairs: (total) => progress({ phase: 'compare', done: 0, total }),
@@ -281,8 +300,10 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     await write();
     await flush();
     // No pack asks for contradictions: nothing waits, and an earlier run's awaiting set is left as it was.
-    if (wantsCompare) await saveAwaiting(manifest, rootId, newClaims, outcome);
+    if (wantsCompare && !args.mechanical) await saveAwaiting(manifest, rootId, newClaims, outcome);
 
+    report.awaitingJudge = owedJudge;
+    if (breaker.stopped) report.judgeStopped = breaker.stopped;
     report.judged = batch.judged;
     report.unjudged = batch.unjudged;
     report.invalidJudgements = batch.invalid;
@@ -296,6 +317,6 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     }));
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
-    progress({ phase: 'done', done: changed.length, total: changed.length });
+    progress({ phase: 'done', done: work.length, total: work.length });
     return report;
 }

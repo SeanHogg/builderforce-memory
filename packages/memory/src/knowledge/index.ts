@@ -43,6 +43,8 @@ export { planReview, planDetail, refreshPlan, AVG_SECTION_BYTES } from './plan.j
 export type { PlanOptions, PlannedFile, PlanDetail } from './plan.js';
 export type { ExtractorState } from './owedFiles.js';
 export { reviewDirectory, assertStoredBatch } from './review.js';
+export { orderForJudging } from './judgePriority.js';
+export type { JudgeSignals } from './judgePriority.js';
 export { extractFile, extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
 export type { ExtractFileArgs, FileExtraction } from './extractFile.js';
 export { extractJob, jobOf } from './extractJob.js';
@@ -52,7 +54,7 @@ export { createModelLimiter, isRateLimit } from './modelLimiter.js';
 export type { ModelLimiter } from './modelLimiter.js';
 export { reasonOf } from './reviewRunModel.js';
 export type { ReviewFailure, ReviewPhase, ReviewStep, ReviewStepOutcome } from './reviewRunModel.js';
-export { startRun, applyRunEvent, runRate, runEta, REVIEW_RUN_STEP_RING } from './reviewRun.js';
+export { startRun, applyRunEvent, runRate, runEta, slowestSteps, REVIEW_RUN_STEP_RING } from './reviewRun.js';
 export type { ReviewRun, ReviewRunEvent, ReviewRunKind, ReviewRunLane, ReviewRunOutcome, ReviewRunPhase } from './reviewRun.js';
 export {
     validateExtract, validateCompare, clampQuote, clampClaim, MAX_QUOTE_LINES, MAX_QUOTE_CHARS, MAX_CLAIM_TEXT_CHARS,
@@ -69,7 +71,7 @@ export {
 export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule, contradictionRule } from './packs/docs.js';
 export { frontMatterOf, SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
 export { LocalSnapshotStore, localSnapshotStore } from './stores/localSnapshotStore.js';
-export type { SnapshotPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions } from './stores/localSnapshotStore.js';
+export type { SnapshotPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, ExtractedLogPersistence } from './stores/localSnapshotStore.js';
 
 // The knowledge index (search, expand, near-duplicate pairs) ships on the same subpath.
 export * from '../retrieval/knowledge-index/index.js';

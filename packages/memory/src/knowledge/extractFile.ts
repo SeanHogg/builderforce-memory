@@ -8,7 +8,7 @@
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
 import type { Extracted, KnowledgePack, KnowledgeParser, KnowledgeStore, NodeRef } from './model.js';
-import { jobOf, runExtractor, type ExtractPool } from './extractJob.js';
+import { BinaryContent, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
 import { srcRef } from './refs.js';
 import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
 import { asPathSource, composePacks, EXTRACTOR_VERSION, resolveRelativePath, type ComposedPacks } from './sources.js';
@@ -39,6 +39,10 @@ export interface ExtractFileArgs {
     signal?: AbortSignal;
     /** With a `pool`: whether the file's pack judges it, i.e. the worker must return its sections (default: never). */
     wantsSections?: (pack: KnowledgePack) => boolean;
+    /** The pool reads the file itself: `doc` is a stand-in (see `ExtractJob.readByPool`). */
+    readByPool?: boolean;
+    /** Told where the time went: the cache lookup and the pool job (PRD 41 A10, so a stall names itself). */
+    onTiming?: (t: { lookupMs: number; poolMs: number }) => void;
     /** Leave the extract cache write to the caller (the review writes it in plan order); default: write it. */
     writeCache?: boolean;
 }
@@ -68,22 +72,30 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     // With a pool the main thread never parses: the worker returns the sections when the file will be judged.
     const wants = !!a.pool && !!a.wantsSections?.(hit.pack);
     let sections: ParsedSection[] = a.pool ? [] : hit.parser.parse(src);
+    const tLookup = Date.now();
     const cached = await a.store.getExtracted?.(a.hash);
+    const lookupMs = Date.now() - tLookup;
     // A cached entry of another extractor version is ignored: its output may differ from today's.
     const found = cached?.find((e) => e.sourceRef === ref && e.extractorVersion === EXTRACTOR_VERSION);
     if (found) {
+        const tSections = Date.now();
         if (a.pool && wants) {
-            const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, doc: a.doc, knownKeys: new Map(), sectionsOnly: true }), a.signal);
+            const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, doc: a.doc, knownKeys: new Map(), sectionsOnly: true, ...(a.readByPool ? { readByPool: true } : {}) }), a.signal);
+            if (out.binary) throw new BinaryContent();
             if (!out.sections) throw new Error(`extract pool returned no sections for ${a.path}`);
             sections = out.sections;
         }
+        a.onTiming?.({ lookupMs, poolMs: Date.now() - tSections });
         return { extracted: found, parser: hit.parser, pack: hit.pack, sections, cached: true };
     }
 
     const knownKeys = a.knownKeys ?? knownKeysOfEntities((await a.store.facts({ rootId: a.rootId })).map((f) => f.key));
     let extracted: Extracted;
     if (a.pool) {
-        const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, doc: a.doc, knownKeys, needSections: wants }), a.signal);
+        const tPool = Date.now();
+        const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, doc: a.doc, knownKeys, needSections: wants, ...(a.readByPool ? { readByPool: true } : {}) }), a.signal);
+        a.onTiming?.({ lookupMs, poolMs: Date.now() - tPool });
+        if (out.binary) throw new BinaryContent();
         // Exact match only: a result for another file, or none although the packs accept this one, is a failure.
         const mine = out.extracted.find((e) => e.sourceRef === ref);
         if (!mine) throw new Error(`extract pool returned no extract for ${a.path}`);

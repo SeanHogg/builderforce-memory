@@ -86,17 +86,21 @@ export interface RootRows {
 /**
  * The leaves of a root. A fact belongs to the root when it is anchored to one of its files; a relation
  * when either end is one of its sources (`src:<root>::…`) or one of those facts.
+ *
+ * Only the review's own judgements count (`origin: 'model'`): a person's note or an agent's fact can be
+ * written on the server by someone else, so it never makes two sides "differ"; those rows travel by the
+ * dirty set when their writer changes them.
  */
 export function rootLeaves(rootId: string, rows: RootRows): ManifestLeaf[] {
     const paths = new Set(rows.files.map((f) => f.path));
-    const facts = rows.facts.filter((f) => f.fileAnchors.some((a) => paths.has(a.path)));
+    const facts = rows.facts.filter((f) => f.origin === 'model' && f.fileAnchors.some((a) => paths.has(a.path)));
     const factRefs = new Set(facts.map((f) => `fact:${f.key}`));
     const prefix = `src:${rootId}::`;
     const touches = (ref: string): boolean => ref.startsWith(prefix) || factRefs.has(ref);
     return [
         ...rows.files.map((f) => ({ key: fileLeafKey(f.path, f.hash), digest: f.hash })),
         ...facts.map((f) => ({ key: factLeafKey(f.key), digest: factDigest(f) })),
-        ...rows.relations.filter((r) => touches(r.from) || touches(r.to)).map((r) => ({ key: relationLeafKey(r), digest: relationDigest(r) })),
+        ...rows.relations.filter((r) => r.origin === 'model' && (touches(r.from) || touches(r.to))).map((r) => ({ key: relationLeafKey(r), digest: relationDigest(r) })),
     ];
 }
 

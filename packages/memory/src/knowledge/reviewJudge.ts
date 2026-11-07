@@ -19,7 +19,7 @@
 import { hashText } from '../ingest/hash.js';
 import { SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
 import { budgetLeft, type JudgeBudget, type JudgedBatch, type SectionToJudge } from './judge.js';
-import { applyAnswers, callSections, type SectionAnswer } from './judgeCalls.js';
+import { applyAnswers, callSections, type JudgeBreaker, type SectionAnswer } from './judgeCalls.js';
 import type { FileExtraction } from './extractFile.js';
 import type { KnowledgePack, NodeRef, ReviewArgs, ReviewReport, StoredFact } from './model.js';
 import type { ModelLimiter } from './modelLimiter.js';
@@ -55,23 +55,34 @@ export interface JudgeDispatch {
     judgedPrior: ReadonlyMap<string, string>;
     lanes: Lanes;
     limiter: ModelLimiter;
+    /** Stops judging for the run after consecutive provider failures. */
+    breaker?: JudgeBreaker;
 }
 
-/** Starts judging a file's changed sections; undefined when its pack asks for no judgement (or there is no port). */
-export function startJudge(d: JudgeDispatch, f: { path: string; hash: string }, extraction: FileExtraction): JudgeJob | undefined {
+/** The sections of a file the model has to judge (changed text) and those whose judgement is still current. */
+export function splitSections(
+    judgedPrior: ReadonlyMap<string, string>, extraction: FileExtraction,
+): { reuse: NodeRef[]; toJudge: SectionToJudge[] } {
     const { extracted: ex, sections, pack } = extraction;
-    const port = d.port;
-    if (!port || !judgesPack(port, pack)) return undefined;
-    const kinds = new Set(pack.judgement!.nodeKinds);
+    const kinds = new Set(pack.judgement?.nodeKinds ?? []);
     const reuse: NodeRef[] = [];
     const toJudge: SectionToJudge[] = [];
     for (const node of ex.nodes) {
         const index = node.badges?.[SECTION_INDEX_BADGE];
         const text = typeof index === 'number' ? sections[index]?.text : undefined;
         if (!kinds.has(node.kind) || !text) continue;
-        if (d.judgedPrior.get(node.ref) === hashText(text)) reuse.push(node.ref);
+        if (judgedPrior.get(node.ref) === hashText(text)) reuse.push(node.ref);
         else toJudge.push({ ref: node.ref, text });
     }
+    return { reuse, toJudge };
+}
+
+/** Starts judging a file's changed sections; undefined when its pack asks for no judgement (or there is no port). */
+export function startJudge(d: JudgeDispatch, f: { path: string; hash: string }, extraction: FileExtraction): JudgeJob | undefined {
+    const { pack } = extraction;
+    const port = d.port;
+    if (!port || !judgesPack(port, pack)) return undefined;
+    const { reuse, toJudge } = splitSections(d.judgedPrior, extraction);
     // Reserved now, in plan order: this file's calls come out of the shared budget before any later file's.
     const allot = budgetLeft(d.budget) ? Math.min(toJudge.length, Math.max(0, d.budget.modelCalls - d.budget.used)) : 0;
     d.budget.used += allot;
@@ -81,7 +92,7 @@ export function startJudge(d: JudgeDispatch, f: { path: string; hash: string }, 
         const lane = d.lanes.take();
         const t0 = Date.now();
         try {
-            const r = await callSections({ port, fileHash: f.hash, sections: toJudge, budget: slice, limiter: d.limiter, signal: d.signal });
+            const r = await callSections({ port, fileHash: f.hash, sections: toJudge, budget: slice, limiter: d.limiter, signal: d.signal, ...(d.breaker ? { breaker: d.breaker } : {}) });
             // Every call that was made failed: the provider is refusing us (key, quota, network), not the file.
             if (r.answers.length === 0 && r.errors > 0) {
                 return { status: 'error', reason: `judge: ${r.firstError ?? 'model call failed'}`, ms: Date.now() - t0, lane };

@@ -19,6 +19,8 @@ export interface ReviewStep {
     outcome: ReviewStepOutcome;
     reason?: string;
     lane?: number;
+    /** Where an extract step's time went (PRD 41 A10), so a stall names itself: the file read, the cache lookup, the pool job. */
+    parts?: { readMs?: number; lookupMs?: number; poolMs?: number };
 }
 
 /** A file a review could not finish: its prior knowledge and manifest hash are kept, so the next review retries it. */

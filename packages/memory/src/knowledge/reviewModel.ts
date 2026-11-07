@@ -59,6 +59,13 @@ export interface ReviewReport {
     extractErrors: number;
     /** Every file this run could not finish (read, extract, judge), with why. */
     failures: ReviewFailure[];
+    /**
+     * Files still owed model judgement after this run (PRD 41 A10): in a `mechanical` run every file of a judged pack
+     * with a section to judge; otherwise the files a budget cut or a failed call left. Plan order.
+     */
+    awaitingJudge: string[];
+    /** Judging was stopped for this run after consecutive provider failures (A10 rule 9); the files stay owed. */
+    judgeStopped?: string;
     aborted: boolean;
     durationMs: number;
 }
@@ -105,6 +112,23 @@ export interface ReviewArgs {
      * A result without the file's exact `sourceRef` fails that file's extraction (prior knowledge kept).
      */
     extractPool?: ExtractPool;
+    /**
+     * Pass 1 of a two-pass review (PRD 41 A10): read, extract, write — no model call. A file whose pack asks for
+     * judgement and has sections to judge stays OWED (manifest hash unchanged) and is listed in `report.awaitingJudge`;
+     * the map is complete without it. A later run without `mechanical` (pass 2) judges it.
+     */
+    mechanical?: boolean;
+    /** Restrict the run to these changed paths (pass 2: the prioritized, budgeted slice). Other changed files are untouched and stay owed. */
+    only?: readonly string[];
+    /**
+     * With an `extractPool`: the pool reads each file itself (PRD 41 A10 rule 8) — the job carries the path and the planned hash,
+     * the main thread neither reads nor copies the text, and a binary file comes back as `binary`. The pool must support `readByPool` jobs.
+     */
+    deferRead?: boolean;
+    /** Files read and extracted ahead of the writer (default: the pool's width times 4, 32..64, with a pool; else `concurrency`). Wider than the pool, so workers never wait for the writer. */
+    readAhead?: number;
+    /** Per-job ceilings in ms for the extract path (PRD 41 A10): reads 5000, extract (pool dispatch included) 10000. A job over its ceiling is a failed step with reason `timeout`. */
+    timeouts?: { readMs?: number; extractMs?: number };
     /** One event per file per phase, as it happens (PRD 41 A8). */
     onStep?(step: ReviewStep): void;
     onProgress?(p: ReviewProgress): void;
