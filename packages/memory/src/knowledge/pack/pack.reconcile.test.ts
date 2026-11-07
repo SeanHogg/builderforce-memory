@@ -58,7 +58,9 @@ describe('within-file diff', () => {
         const g = gen(5);
         const targets = Array.from({ length: 12 }, (_, i) => `src/t${i}.ts`);
         const prior = extractionOf(g, 'src/big.ts', 'a'.repeat(64), targets, 400, false);
-        const next = { ...prior, sourceHash: 'b'.repeat(64), nodes: [...prior.nodes, { ...prior.nodes[1]!, ref: 'src:ws:gen::src/big.ts#added' as typeof prior.nodes[0]['ref'], label: 'added' }],
+        const hash = 'b'.repeat(64);
+        const restamped = prior.nodes.map((n) => ({ ...n, sourceHash: hash }));
+        const next = { ...prior, sourceHash: hash, nodes: [...restamped, { ...restamped[1]!, ref: 'src:ws:gen::src/big.ts#added' as typeof prior.nodes[0]['ref'], label: 'added' }],
             edges: [...prior.edges, { ...prior.edges[0]!, to: 'src:ws:gen::src/added-target.ts' as typeof prior.edges[0]['to'] }] };
         const diffs = diffEntries([prior], [next])!;
         expect(diffs).toBeDefined();

@@ -5,10 +5,9 @@
 
 import type { NodeRef, StoredFact, StoredRelation } from '../types.js';
 import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
-import { EDGE_KINDS, ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
+import { EDGE_KINDS, STORED_ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
 import { TAG } from './rows.js';
 
-const STORED_ORIGINS = ORIGINS.slice(1);
 const F_UPDATED = 1, F_BY_NULL = 2, F_BY = 4;
 const A_LINE = 1, A_HASH = 2;
 

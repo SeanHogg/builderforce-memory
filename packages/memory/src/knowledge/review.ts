@@ -303,6 +303,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     if (wantsCompare && !args.mechanical) await saveAwaiting(manifest, rootId, newClaims, outcome);
 
     report.awaitingJudge = owedJudge;
+    report.awaitingJudgeCount = owedJudge.length;
     if (breaker.stopped) report.judgeStopped = breaker.stopped;
     report.judged = batch.judged;
     report.unjudged = batch.unjudged;

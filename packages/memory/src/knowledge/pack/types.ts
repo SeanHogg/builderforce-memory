@@ -4,7 +4,7 @@
  * `Extracted`, `ScopeRecord`), so a pack carries exactly what the single writer stores.
  */
 
-import type { Extracted, KEdge, KNode, ScopeRecord, StoredFact, StoredRelation } from '../model.js';
+import type { Extracted, KEdge, KNode, NodeRef, ScopeRecord, StoredFact, StoredOrigin, StoredRelation } from '../model.js';
 
 /** A reviewed file: its root-relative path, the hash its extracted output is keyed under, and its size. */
 export interface PackFileRow { path: string; hash: string; bytes: number }
@@ -86,4 +86,4 @@ export class PackTooLargeError extends Error {
     constructor(readonly limit: number) { super(`pack inflates past ${limit} bytes`); this.name = 'PackTooLargeError'; }
 }
 
-export type { Extracted, KEdge, KNode, ScopeRecord, StoredFact, StoredRelation };
+export type { Extracted, KEdge, KNode, NodeRef, ScopeRecord, StoredFact, StoredOrigin, StoredRelation };

@@ -51,7 +51,7 @@ function commonPrefix(a: Uint8Array, b: Uint8Array): number {
 export function writeStringTable(strings: readonly string[]): Uint8Array {
     const w = new ByteWriter();
     w.varint(strings.length);
-    let prev = new Uint8Array(0);
+    let prev: Uint8Array = new Uint8Array(0);
     for (const s of strings) {
         const b = utf8(s);
         const shared = commonPrefix(prev, b);
@@ -68,7 +68,7 @@ export function readStringTable(bytes: Uint8Array, maxStrings: number): string[]
     const n = boundedCount(r, maxStrings, 'string table');
     const dec = new TextDecoder('utf-8', { fatal: true });
     const out: string[] = [];
-    let prev = new Uint8Array(0);
+    let prev: Uint8Array = new Uint8Array(0);
     for (let i = 0; i < n; i++) {
         const shared = r.varint(), rest = r.varint();
         if (shared > prev.length) throw new PackFormatError('string table: prefix longer than the previous string');

@@ -14,17 +14,17 @@ import type { KnowledgePack, KnowledgeStore, NodeRef, ReviewArgs } from './model
 import { extractFileDetailed, type FileExtraction } from './extractFile.js';
 import { BinaryContent } from './extractJob.js';
 import { judgesPack } from './reviewJudge.js';
-import { JobTimeout, withDeadline } from './jobDeadline.js';
+import { createDeadlines } from './jobDeadline.js';
 import { createModelLimiter } from './modelLimiter.js';
 import { Lanes, reasonOf, type ReviewStep } from './reviewRunModel.js';
-import { isBinaryText, stubSource, type ComposedPacks } from './sources.js';
+import { isBinaryText, type ComposedPacks } from './sources.js';
 
 /** What the prefetch stage learned about one file. `failed` and `read-error` carry why. */
 export type Prefetch = (
     | { kind: 'read-error'; reason: string }
     | { kind: 'binary' }
     | { kind: 'none' }
-    | { kind: 'extracted'; doc: SourceDocument; extraction: FileExtraction }
+    | { kind: 'extracted'; doc?: SourceDocument; extraction: FileExtraction }
     | { kind: 'failed'; reason: string }
 ) & { ms: number; lane: number; parts?: NonNullable<ReviewStep['parts']> };
 
@@ -67,6 +67,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
     // extract deadline counts from the moment a job holds a slot, never from its wait in line (the limiter is used as a plain semaphore).
     const lanes = new Lanes(c.extractWidth ?? c.width);
     const extractSlots = createModelLimiter(c.extractWidth ?? c.width);
+    const withDeadline = createDeadlines(c.signal);
     const readMs = c.args.timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS;
     const extractMs = c.args.timeouts?.extractMs ?? DEFAULT_EXTRACT_TIMEOUT_MS;
     // Judging is a later pass in a mechanical review: no sections are wanted from the pool.
@@ -74,27 +75,26 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
     const byPool = !!c.args.extractPool && !!c.args.deferRead;
 
     const run = async (f: { path: string; hash: string }, parts: NonNullable<ReviewStep['parts']>, held: { lane: number }): Promise<Outcome> => {
-        let doc: SourceDocument;
+        let doc: SourceDocument | undefined;
         const t0 = Date.now();
-        if (byPool) doc = stubSource(f.path);
-        else {
-            try { doc = await withDeadline(readMs, () => c.args.source.read(f.path), c.signal); } catch (error) {
+        if (!byPool) {
+            try { doc = await withDeadline(readMs, () => c.args.source.read(f.path)); } catch (error) {
                 return { kind: 'read-error', reason: reasonOf(error) };
             }
             parts.readMs = Date.now() - t0;
         }
         try {
-            if (doc.content.kind === 'text' && !byPool && isBinaryText(doc.content.text)) return { kind: 'binary' };
+            if (doc && doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
             const extraction = await extractSlots.run(async () => {
                 held.lane = lanes.take();
                 try { return await withDeadline(extractMs, (signal) => extractFileDetailed({
-                rootId: c.rootId, path: f.path, hash: f.hash, doc, packs: c.packs, store: c.store, composed: c.composed,
+                rootId: c.rootId, path: f.path, hash: f.hash, ...(doc ? { doc } : {}), packs: c.packs, store: c.store, composed: c.composed,
                 knownKeys: c.knownKeys, writeCache: false,
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
                 ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true } : {}) } : {}),
-            }), c.signal); } finally { lanes.free(held.lane); }
-            }, c.signal);
-            return extraction ? { kind: 'extracted', doc, extraction } : { kind: 'none' };
+            })); } finally { lanes.free(held.lane); }
+            });
+            return extraction ? { kind: 'extracted', ...(doc ? { doc } : {}), extraction } : { kind: 'none' };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };
             return { kind: 'failed', reason: reasonOf(error) };

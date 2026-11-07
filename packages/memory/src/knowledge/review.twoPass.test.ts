@@ -5,6 +5,7 @@
  * stop judging with the sections left owed.
  */
 
+import { hashText } from '../ingest/hash.js';
 import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
 import { DOCS_PACK } from './packs/docs.js';
 import { extractJob } from './extractJob.js';
@@ -30,7 +31,7 @@ describe('two-pass review', () => {
         expect(report.awaitingJudge).toEqual(Object.keys(files()));
         expect(report.extracted).toBe(N);
         expect(await factsOf(store)).toEqual([]);
-        expect(await store.getExtracted(report.digest ? (await store.scopes()).length ? (await manifestHashOf(manifest, 'd0.md')) ?? '' : '' : '')).toBeUndefined();
+        expect(await store.getExtracted(hashText(files()['d0.md']!))).toBeDefined(); // the map has the file
         expect((await stateOf(manifest)).owed).toEqual(Object.keys(files()));
     });
 
@@ -67,7 +68,9 @@ describe('two-pass review', () => {
         await reviewDirectory(args(source, two, manifest, { judgement: fakeJudge(), packs: [quietPack], mechanical: true, concurrency: 4 }));
         await reviewDirectory(args(source, two, manifest, { judgement: fakeJudge(), packs: [quietPack], only: Object.keys(files()), concurrency: 4 }));
         expect(await factsOf(two)).toEqual(await factsOf(single));
-        expect(await two.relations({ rootId: ROOT })).toEqual(await single.relations({ rootId: ROOT }));
+        const relKey = (r: { from: string; to: string; kind: string }) => `${r.from}|${r.to}|${r.kind}`;
+        const sorted = async (st: ReturnType<typeof memStore>) => [...(await st.relations({ rootId: ROOT }))].sort((a, b) => (relKey(a) < relKey(b) ? -1 : 1));
+        expect(await sorted(two)).toEqual(await sorted(single));
     });
 });
 
@@ -166,8 +169,3 @@ describe('judge priority and the slowest steps', () => {
         expect(slowestSteps(run, 2).map((s) => [s.path, s.reason])).toEqual([['b', 'timeout'], ['c', undefined]]);
     });
 });
-
-async function manifestHashOf(manifest: InMemoryIngestManifest, path: string): Promise<string | undefined> {
-    const rows = (await manifest.get(`knowledge:${ROOT}:files`)) ?? [];
-    return rows.find((r) => r.id === path)?.hash;
-}

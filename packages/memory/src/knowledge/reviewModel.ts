@@ -64,6 +64,8 @@ export interface ReviewReport {
      * with a section to judge; otherwise the files a budget cut or a failed call left. Plan order.
      */
     awaitingJudge: string[];
+    /** How many files are awaiting judgement: the ONLY form that leaves memory — hosts persist and send this, never the path list. */
+    awaitingJudgeCount?: number;
     /** Judging was stopped for this run after consecutive provider failures (A10 rule 9); the files stay owed. */
     judgeStopped?: string;
     aborted: boolean;

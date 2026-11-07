@@ -15,26 +15,30 @@ import { basenameOf, srcRef } from './refs.js';
 import { asPathSource, composePacks, EXTRACTOR_VERSION, resolveRelativePath, type ComposedPacks } from './sources.js';
 
 /** Everything the extractor needs for one file, as structured-cloneable data. */
-export interface ExtractJob {
+/** What every job carries, whichever way the file reaches the worker. */
+export interface ExtractJobBase {
     rootId: string;
     /** Root-relative path. */
     path: string;
     /** Content hash of the file. */
     hash: string;
-    /** The document as read (plain data). */
-    doc: SourceDocument;
     /** The known entity keys (`mentions`), as entries of the review's map. */
     knownKeys: ReadonlyArray<readonly [string, NodeRef]>;
     /** The file will be judged: return its parsed sections too (the main thread never parses when a pool is supplied). */
     needSections?: boolean;
-    /**
-     * The pool reads the file itself (PRD 41 A10 rule 8): `doc` is a content-free stand-in that only carries the path
-     * and media type; the worker reads `path`, runs the binary check and extracts. The main thread neither reads nor copies the text.
-     */
-    readByPool?: true;
     /** The extract is already cached and only the sections are wanted: skip extracting. Implies `needSections`. */
     sectionsOnly?: boolean;
 }
+
+/**
+ * How the file reaches the worker (PRD 41 A10 rule 8): `doc` is the document the review read (plain data); `readByPool` says the
+ * worker reads and binary-checks `path` itself at the planned `hash` — no stand-in document, no text copied across the thread.
+ */
+export type ExtractJobSource =
+    | { doc: SourceDocument; readByPool?: never }
+    | { doc?: never; readByPool: { path: string; hash: string } };
+
+export type ExtractJob = ExtractJobBase & ExtractJobSource;
 
 /** Thrown by the extract stage when the pool found the file binary; the review records a `skipped` step. */
 export class BinaryContent extends Error {
@@ -76,14 +80,15 @@ export function runExtractor(
 /** The job as a serializable value for `doc` (what a pool receives). */
 export function jobOf(
     f: {
-        rootId: string; path: string; hash: string; doc: SourceDocument; knownKeys: ReadonlyMap<string, NodeRef>;
-        needSections?: boolean; sectionsOnly?: boolean; readByPool?: boolean;
-    },
+        rootId: string; path: string; hash: string; knownKeys: ReadonlyMap<string, NodeRef>;
+        needSections?: boolean; sectionsOnly?: boolean;
+    } & ({ doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true }),
 ): ExtractJob {
     return {
-        rootId: f.rootId, path: f.path, hash: f.hash, doc: f.doc, knownKeys: [...f.knownKeys],
-        ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}), ...(f.readByPool ? { readByPool: true as const } : {}),
-    };
+        rootId: f.rootId, path: f.path, hash: f.hash, knownKeys: [...f.knownKeys],
+        ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}),
+        ...(f.readByPool ? { readByPool: { path: f.path, hash: f.hash } } : { doc: f.doc! }),
+    } as ExtractJob;
 }
 
 /**
@@ -92,6 +97,8 @@ export function jobOf(
  */
 export function extractJob(job: ExtractJob, packs: readonly KnowledgePack[] | ComposedPacks): ExtractJobResult {
     const composed = Array.isArray(packs) ? composePacks(packs as readonly KnowledgePack[]) : (packs as ComposedPacks);
+    // A pure job has no filesystem: a `readByPool` job is for a worker that reads (the host's handler), not for this function.
+    if (!job.doc) throw new Error(`extract job for ${job.path} carries no document (readByPool needs a reading worker)`);
     const src = asPathSource(job.doc, job.path, job.hash);
     const hit = composed.resolve(src);
     if (!hit) return { extracted: [] };

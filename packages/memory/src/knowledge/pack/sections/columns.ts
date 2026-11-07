@@ -16,6 +16,7 @@ export interface SectionCodec {
 }
 
 export const ORIGINS = ['extracted', 'model', 'human', 'agent'] as const;
+export const STORED_ORIGINS = ['model', 'human', 'agent'] as const;
 export const VERDICTS = ['allowed', 'same', 'skips', 'upward'] as const;
 /** The relation/edge kinds the model names; anything else is stored as 0 + a string. */
 export const EDGE_KINDS = [
