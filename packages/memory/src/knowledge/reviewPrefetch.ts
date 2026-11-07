@@ -78,7 +78,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
         if (!byPool) {
-            try { doc = await withDeadline(readMs, () => c.args.source.read(f.path)); } catch (error) {
+            try { doc = await withDeadline(readMs, (signal) => c.args.source.read(f.path, signal)); } catch (error) {
                 return { kind: 'read-error', reason: reasonOf(error) };
             }
             parts.readMs = Date.now() - t0;

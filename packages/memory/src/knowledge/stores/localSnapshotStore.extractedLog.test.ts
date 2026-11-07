@@ -135,4 +135,146 @@ describe('LocalSnapshotStore extractedLog', () => {
         const saved = JSON.parse(r.snap.value!) as { facts: { r: StoredFact[] } };
         expect(saved.facts.r.map((f) => f.key)).toEqual(['k1', 'k2']);
     });
+
+    it('writes a batch as ONE append of complete lines', async () => {
+        const r = rig();
+        const store = mk(r);
+        await store.batched(async () => {
+            await store.putExtracted('h1', ex('a'));
+            await store.putExtracted('h2', ex('b'));
+        });
+        expect(r.log.appends).toHaveLength(1);
+        expect(r.log.appends[0]!.endsWith('\n')).toBe(true);
+        for (const line of r.log.appends[0]!.trim().split('\n')) expect(() => JSON.parse(line)).not.toThrow();
+    });
+
+    it('drops a torn or unparseable line without losing the lines around it', async () => {
+        const r = rig();
+        r.log.text = `${JSON.stringify({ h: 'a', e: ex('a') })}\n{"h":"x","e":[{"na\n${JSON.stringify({ h: 'c', e: ex('c') })}\nnot json\n`;
+        const store = mk(r);
+        expect(await store.getExtracted('a')).toEqual(ex('a'));
+        expect(await store.getExtracted('c')).toEqual(ex('c'));
+        expect(await store.getExtracted('x')).toBeUndefined();
+        expect(Object.keys(await store.extractedEntries())).toEqual(['a', 'c']);
+    });
+
+    it('a failed append marks the log torn: the retry starts on a fresh line and nothing is lost', async () => {
+        const r = rig();
+        let fail = true;
+        r.log.append = async (t: string) => {
+            r.log.appends.push(t);
+            if (fail) { r.log.text = (r.log.text ?? '') + t.slice(0, 10); throw new Error('disk full'); } // a partial line landed
+            r.log.text = (r.log.text ?? '') + t;
+        };
+        const store = mk(r);
+        await expect(store.putExtracted('h1', ex('a'))).rejects.toThrow('disk full');
+        fail = false;
+        await store.putExtracted('h2', ex('b'));
+        expect(r.log.appends[1]!.startsWith('\n')).toBe(true);
+        const again = mk(r);
+        expect(await again.getExtracted('h1')).toEqual(ex('a'));
+        expect(await again.getExtracted('h2')).toEqual(ex('b'));
+    });
+
+    it('does not re-append an identical entry, but appends a changed one', async () => {
+        const r = rig();
+        const store = mk(r);
+        await store.putExtracted('h1', ex('a'));
+        await store.putExtracted('h1', ex('a'));
+        expect(r.log.appends).toHaveLength(1);
+        await store.putExtracted('h1', ex('changed'));
+        expect(r.log.appends).toHaveLength(2);
+        // An entry the log already held at load is not re-appended either.
+        const reloaded = mk(r);
+        await reloaded.putExtracted('h1', ex('changed'));
+        expect(r.log.appends).toHaveLength(2);
+    });
+
+    it('does not rewrite the snapshot for an identical entry when there is no log', async () => {
+        const snap = rig().snap;
+        const store = new LocalSnapshotStore(snap, { now: () => 'T' });
+        await store.putExtracted('h1', ex('a'));
+        await store.putExtracted('h1', ex('a'));
+        expect(snap.writes).toBe(1);
+    });
+
+    it('compacts the log on load when dead bytes exceed live bytes, and only with a `replace` port', async () => {
+        const r = rig();
+        const lines = [1, 2, 3, 4].map((n) => `${JSON.stringify({ h: 'a', e: ex(`v${n}`) })}\n`);
+        r.log.text = `${lines.join('')}${JSON.stringify({ h: 'b', e: ex('b') })}\ntorn{"h"\n`;
+        const withoutReplace = mk(r);
+        expect(await withoutReplace.getExtracted('a')).toEqual(ex('v4'));
+        expect(r.log.text).toContain('v1');
+
+        const replaced: string[] = [];
+        r.log.replace = async (t: string) => { replaced.push(t); r.log.text = t; };
+        const store = mk(r);
+        expect(await store.getExtracted('a')).toEqual(ex('v4'));
+        expect(replaced).toHaveLength(1);
+        expect(replaced[0]).toBe(`${lines[3]}${JSON.stringify({ h: 'b', e: ex('b') })}\n`);
+        expect(await mk(r).getExtracted('b')).toEqual(ex('b'));
+        expect(replaced).toHaveLength(1); // now all live: nothing more to compact
+    });
+
+    it('does not compact a log that is mostly live', async () => {
+        const r = rig();
+        r.log.text = `${JSON.stringify({ h: 'a', e: ex('a') })}\n${JSON.stringify({ h: 'b', e: ex('b') })}\n`;
+        const replaced: string[] = [];
+        r.log.replace = async (t: string) => { replaced.push(t); };
+        await mk(r).getExtracted('a');
+        expect(replaced).toHaveLength(0);
+    });
+
+    it('a failed background checkpoint backs off by checkpointMs instead of retrying on every mutation', async () => {
+        const r = rig();
+        let attempts = 0;
+        r.snap.write = async () => { attempts += 1; throw new Error('disk full'); };
+        const clock = { ms: 0 };
+        const store = new LocalSnapshotStore(r.snap, { extractedLog: r.log, now: () => 'T', checkpointMs: 1000, nowMs: () => clock.ms });
+        const settle = () => new Promise((res) => setTimeout(res, 0));
+        const touch = (n: number) => store.write({ scope: { ...SCOPE, title: `t${n}` }, facts: [], relations: [] });
+        await expect(store.batched(async () => {
+            clock.ms = 1000;
+            await touch(1);
+            await settle();
+            expect(attempts).toBe(1);
+            clock.ms = 1500;
+            await touch(2);
+            await settle();
+            expect(attempts).toBe(1); // inside the backoff window
+            clock.ms = 2000;
+            await touch(3);
+            await settle();
+            expect(attempts).toBe(2);
+        })).rejects.toThrow('disk full'); // the batch end still reports the unwritten snapshot
+    });
+
+    it('keeps a snapshot that does not parse aside, then starts empty rather than silently dropping it', async () => {
+        const r = rig();
+        r.snap.value = '{"version":1,"scopes":[';
+        const kept: string[] = [];
+        r.snap.keepAside = async (t: string) => { kept.push(t); };
+        const store = mk(r);
+        expect(await store.scopes()).toEqual([]);
+        expect(kept).toEqual(['{"version":1,"scopes":[']);
+        await store.write({ scope: SCOPE, facts: [], relations: [] });
+        expect(await mk(r).scopes()).toHaveLength(1);
+    });
+
+    it('still starts empty when keepAside itself fails', async () => {
+        const r = rig();
+        r.snap.value = 'garbage';
+        r.snap.keepAside = async () => { throw new Error('read-only'); };
+        expect(await mk(r).scopes()).toEqual([]);
+    });
+
+    it('extractedEntries reads the log, else the snapshot\'s legacy extracted', async () => {
+        const r = rig();
+        r.log.text = `${JSON.stringify({ h: 'a', e: ex('a') })}\n`;
+        r.snap.value = JSON.stringify({ version: 1, scopes: [], facts: {}, relations: {}, extracted: { old: ex('o') } });
+        expect(await mk(r).extractedEntries()).toEqual({ a: ex('a'), old: ex('o') });
+        const plain = rig();
+        plain.snap.value = r.snap.value;
+        expect(await new LocalSnapshotStore(plain.snap, {}).extractedEntries()).toEqual({ old: ex('o') });
+    });
 });

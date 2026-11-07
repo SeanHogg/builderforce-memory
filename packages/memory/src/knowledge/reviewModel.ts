@@ -15,7 +15,8 @@ export interface DirectorySource {
     rootId: string;
     title: string;
     list(): AsyncIterable<{ path: string; hash: string; size: number }>;
-    read(path: string): Promise<SourceDocument>;
+    /** `signal` aborts the read when the review gives up on it (a per-job timeout, a stop); a source that cannot cancel may ignore it. */
+    read(path: string, signal?: AbortSignal): Promise<SourceDocument>;
     watch?(cb: (paths: string[]) => void): () => void;
 }
 
@@ -29,6 +30,8 @@ export interface ReviewPlan {
     skipped: Array<{ path: string; reason: 'ignored' | 'binary' | 'too-large' | 'no-pack' }>;
     /** ≈ judgement calls for changed files (sections of judged kinds). */
     estimatedModelCalls: number;
+    /** The file budget of the judge pass this run will run after the map is complete (PRD 41 A10); set by the host, so the confirm chip states it. */
+    judgeFiles?: number;
 }
 
 export interface ReviewProgress {
@@ -66,6 +69,8 @@ export interface ReviewReport {
     awaitingJudge: string[];
     /** How many files are awaiting judgement: the ONLY form that leaves memory — hosts persist and send this, never the path list. */
     awaitingJudgeCount?: number;
+    /** Pass 2 (`only`): files of the slice judged to completion. */
+    judgedFiles?: number;
     /** Judging was stopped for this run after consecutive provider failures (A10 rule 9); the files stay owed. */
     judgeStopped?: string;
     aborted: boolean;

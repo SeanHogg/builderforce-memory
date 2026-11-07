@@ -138,8 +138,9 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
 
     const changed = detail.files.filter((f) => f.changed);
     // `only` (pass 2) narrows what this run works on; the other changed files are untouched and stay owed (owedAfterRun sees them all).
-    const onlySet = args.only ? new Set(args.only) : undefined;
-    const work = onlySet ? changed.filter((f) => onlySet.has(f.path)) : changed;
+    // Pass 2 works in the order it was given (priority), so a model-call ceiling is spent on the most important files first.
+    const byPath = new Map(changed.map((f) => [f.path, f] as const));
+    const work = args.only ? args.only.flatMap((p) => byPath.get(p) ?? []) : changed;
     // Changed files this run finished (or had nothing to do for); an owed file not in it stays owed,
     // at the model calls it still costs where this run could measure that (see owedFiles.ts).
     const finished = new Set<string>();
@@ -203,11 +204,20 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         // The extract cache is written HERE, in plan order, so the cache, the counts and the order match a sequential run.
         if (!job.extraction.cached) await putExtract(store, f.hash, job.extraction.extracted);
         let complete = true;
+        let deferred = false;
         if (args.mechanical && judgesPack(args.judgement, job.extraction.pack)) {
-            // Pass 1: the map has this file; its judgement is pass 2's. Owed at what it will cost where that is known.
-            complete = false;
-            owedJudge.push(f.path);
-            measured.set(f.path, Math.max(1, splitSections(judgedPrior, job.extraction).toJudge.length));
+            // Pass 1: the map has this file; its judgement is pass 2's. With sections at hand (in-thread parse) a file whose sections are all
+            // still judged costs no model call: its facts are refreshed and it is complete. A pool returns none in a mechanical run, so those files are
+            // owed and pass 2 finds nothing to judge (a cache hit, no call).
+            const { reuse, toJudge } = splitSections(judgedPrior, job.extraction);
+            if (job.extraction.sections.length > 0 && toJudge.length === 0) {
+                for (const ref of reuse) stored.refresh(ref, f.path, f.hash, batch, entities);
+            } else {
+                complete = false;
+                deferred = true;
+                owedJudge.push(f.path);
+                measured.set(f.path, Math.max(1, toJudge.length));
+            }
         }
         if (judge) {
             progress({ phase: 'judge', done: i, total: work.length, path: f.path });
@@ -227,8 +237,11 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         progress({ phase: 'write', done: i, total: work.length, path: f.path });
         const t0 = now();
         await write();
-        await store.markStale(scope, srcRef(rootId, f.path), f.hash);
-        report.staleMarked += 1;
+        // An owed file keeps its old judgement current until pass 2 replaces it: nothing of it is marked stale yet.
+        if (!deferred) {
+            await store.markStale(scope, srcRef(rootId, f.path), f.hash);
+            report.staleMarked += 1;
+        }
         args.onStep?.({ path: f.path, phase: 'write', ms: now() - t0, outcome: 'ok' });
         if (complete) { filesNow.set(f.path, f.hash); finished.add(f.path); }
         return true;
@@ -260,7 +273,8 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     }
     if (applied < work.length) report.aborted = true;
 
-    if (!report.aborted) {
+    // Pass 2 (`only`) is judging alone: the map pass already retired the removed files and ran the analyzers.
+    if (!report.aborted && !args.only) {
         await retire(detail.plan.removed);
         // Analyzers run in parallel and a failing one never aborts the review — its extracted
         // output is simply not stored (the file-level facts above are already durable), so a
@@ -302,8 +316,10 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // No pack asks for contradictions: nothing waits, and an earlier run's awaiting set is left as it was.
     if (wantsCompare && !args.mechanical) await saveAwaiting(manifest, rootId, newClaims, outcome);
 
-    report.awaitingJudge = owedJudge;
-    report.awaitingJudgeCount = owedJudge.length;
+    // Pass 2: what is still owed is every file of its slice it did not finish (an abort leaves the unreached ones owed too).
+    report.awaitingJudge = args.only ? work.filter((f) => !finished.has(f.path)).map((f) => f.path) : owedJudge;
+    report.awaitingJudgeCount = report.awaitingJudge.length;
+    report.judgedFiles = args.only ? work.length - report.awaitingJudge.length : 0;
     if (breaker.stopped) report.judgeStopped = breaker.stopped;
     report.judged = batch.judged;
     report.unjudged = batch.unjudged;
