@@ -474,4 +474,26 @@ describe('regression: DirectorySource.hashOf and readTimeoutMs take the path', (
         const kept = await reviewDirectory(args(bad, memStore(), new InMemoryIngestManifest(), { timeouts: { readMs: 40 } }));
         expect(kept.failures).toEqual([{ path: 'slow.md', phase: 'extract', reason: 'read: timeout' }]);
     });
+
+    it('regression: with a pool and deferRead, readTimeoutMs lets a job run past extractMs, and the worker is told the override', async () => {
+        const files = { 'slow.md': '# S\nslow\n', 'fast.md': '# F\nfast\n' };
+        const pooled = (source: SpySource, seen: Array<number | undefined> = []): ExtractPool => async (job) => {
+            seen.push((job as { readByPool?: { readMs?: number } }).readByPool?.readMs);
+            const doc = await source.read(job.path);
+            if (job.path === 'slow.md') await new Promise((r) => setTimeout(r, 120));
+            return extractJob({ ...job, doc } as ExtractJob, [DOCS_PACK]);
+        };
+        const timeouts = { readMs: 40, extractMs: 40 };
+        const base = memSource({ ...files });
+        const baseReport = await reviewDirectory(args(base, memStore(), new InMemoryIngestManifest(), { extractPool: pooled(base), deferRead: true, timeouts }));
+        expect(baseReport.failures.map((f) => f.path)).toEqual(['slow.md']);
+
+        const source = memSource({ ...files });
+        source.readTimeoutMs = (path) => (path === 'slow.md' ? 2_000 : undefined);
+        const seen: Array<number | undefined> = [];
+        const report = await reviewDirectory(args(source, memStore(), new InMemoryIngestManifest(), { extractPool: pooled(source, seen), deferRead: true, timeouts }));
+        expect(report.failures).toEqual([]);
+        expect(report.extracted).toBe(2);
+        expect(seen.filter((x) => x !== undefined)).toEqual([2_000]);
+    });
 });

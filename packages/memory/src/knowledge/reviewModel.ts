@@ -23,6 +23,8 @@ export interface DirectorySource {
      * text it read (once) and a file whose bytes no longer match the planned hash fails with "changed since plan" and stays owed.
      * Optional: a source whose hash is not a pure function of the text (or that cannot say) is not checked in-thread.
      * The `path` lets a host whose read() transforms bytes (document text) return the listing hash for that path.
+     * A transforming host must return the hash of the bytes it ACTUALLY read on that call, never the cached listing hash,
+     * or the changed-since-plan check becomes vacuous.
      * A host that declares `hashOf(text)` still works: the extra argument is ignored.
      */
     hashOf?(text: string, path: string): string;

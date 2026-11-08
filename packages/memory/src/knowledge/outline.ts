@@ -20,7 +20,7 @@ export const OUTLINE_BADGE_KEYS: readonly string[] = [
     'entry', 'layerRule', 'unusedDependencies', 'externals', 'added', 'removed', 'changed', 'status',
     'communityId', 'communityConfidence',
     // An asset file (assetFile.ts): a binary file the review stores as a node, never read.
-    'asset', 'mediaType', 'size',
+    'asset', 'mediaType', 'size', 'oversized',
 ];
 /** Verdict codes of a link, least to worst; code 0 is "no verdict". */
 export const OUTLINE_VERDICTS: readonly ('none' | EdgeVerdict)[] = ['none', 'same', 'allowed', 'skips', 'upward'];

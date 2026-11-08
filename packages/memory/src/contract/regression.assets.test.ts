@@ -11,7 +11,7 @@ import { buildGraph } from '../knowledge/build.js';
 import type { KnowledgePack, KnowledgeParser } from '../knowledge/model.js';
 import { DOCS_PACK } from '../knowledge/packs/docs.js';
 import { owedCalls } from '../knowledge/owedFiles.js';
-import { planDetail, planReview } from '../knowledge/plan.js';
+import { planDetail, planReview, refreshPlan } from '../knowledge/plan.js';
 import { srcRef } from '../knowledge/refs.js';
 import { reviewDirectory } from '../knowledge/review.js';
 import { extractJob, type ExtractPool } from '../knowledge/extractJob.js';
@@ -220,7 +220,7 @@ describe('regression: an oversized claimed document stays an asset', () => {
         const report = await reviewDirectory(args(source, store, manifest, { packs: [withPdf] }));
         expect(report.extracted).toBe(0);
         expect(source.reads).not.toContain('a.pdf');
-        expect((await store.getExtracted(hashText(big)))![0]!.nodes[0]).toMatchObject({ kind: 'file', badges: { asset: 1, mediaType: 'application/pdf' } });
+        expect((await store.getExtracted(hashText(big)))![0]!.nodes[0]).toMatchObject({ kind: 'file', badges: { asset: 1, oversized: 1, mediaType: 'application/pdf' } });
 
         // A later shrink below the cap: the content hash moved, so the file is owed and now extracted.
         source.files['a.pdf'] = 'small pdf text';
@@ -229,5 +229,18 @@ describe('regression: an oversized claimed document stays an asset', () => {
         const again = await reviewDirectory(args(source, store, manifest, { packs: [withPdf] }));
         expect(again.extracted).toBe(1);
         expect((await store.getExtracted(hashText('small pdf text')))![0]!.nodes[0]!.badges?.asset).toBeUndefined();
+    });
+
+    it('regression: an oversized claimed pdf still owes no calls after an aborted run and a refreshed (Continue) plan', async () => {
+        const source = memSource({ 'big.pdf': 'x'.repeat(3 * 1024 * 1024) });
+        const manifest = new InMemoryIngestManifest();
+        const store = memStore();
+        const detail = await planDetail(source, manifest, [withPdf]);
+        const stop = new AbortController();
+        stop.abort();
+        await reviewDirectory(args(source, store, manifest, { packs: [withPdf], plan: detail, signal: stop.signal }));
+        const refreshed = await refreshPlan(detail, manifest);
+        expect(owedCalls(refreshed.extractor, 'big.pdf')).toBe(0);
+        expect(refreshed.files).toMatchObject([{ path: 'big.pdf', asset: true, oversized: true }]);
     });
 });

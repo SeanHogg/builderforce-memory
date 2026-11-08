@@ -12,6 +12,7 @@ import { matchGlob } from './partitions.js';
 import { compareStr, walkRelative } from './refs.js';
 
 /** Default per-file size cap (bytes). */
+// Changing this cap changes which claimed documents are assets (plan.ts), so it requires an EXTRACTOR_VERSION bump.
 export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 /**
  * Version of the extractors' output. Bump it whenever an extractor emits different nodes,
@@ -90,7 +91,8 @@ export function isBinaryPath(path: string): boolean {
 }
 
 /**
- * The ONE decision "this listed file is an asset": binary by extension and not claimed as a document by a host parser.
+ * The ONE decision "this listed file is an asset": binary by extension and not claimed as a document by a host parser. The plan passes
+ * `claimedAsDocument` false for a claimed document over the size cap (`maxFileBytes`): it stays an asset, as before host parsers existed.
  * An asset is planned, hashed and diffed like any file but never read, extracted or judged (assetFile.ts writes its node).
  */
 export function isAssetPath(path: string, claimedAsDocument: boolean): boolean {

@@ -77,10 +77,12 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
     const extractSlots = createModelLimiter(c.extractWidth ?? c.width);
     const withDeadline = createDeadlines(c.signal);
     const defaultReadMs = c.args.timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS;
-    const readMsOf = (path: string): number => {
+    /** The source's own read deadline for `path`, when it sets a usable one (finite, above 0). */
+    const readOverrideOf = (path: string): number | undefined => {
         const ms = c.args.source.readTimeoutMs?.(path);
-        return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : defaultReadMs;
+        return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : undefined;
     };
+    const readMsOf = (path: string): number => readOverrideOf(path) ?? defaultReadMs;
     const extractMs = c.args.timeouts?.extractMs ?? DEFAULT_EXTRACT_TIMEOUT_MS;
     // Judging is a later pass in a mechanical review: no sections are wanted from the pool.
     const wantsSections = (pack: KnowledgePack) => !c.args.mechanical && judgesPack(c.args.judgement, pack);
@@ -103,11 +105,11 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
             if (doc && doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
             const extraction = await extractSlots.run(async () => {
                 held.lane = lanes.take();
-                try { return await withDeadline(extractMs, (signal) => extractFileDetailed({
+                try { return await withDeadline(byPool ? extractMs + readMsOf(f.path) : extractMs, (signal) => extractFileDetailed({
                 rootId: c.rootId, path: f.path, hash: f.hash, ...(doc ? { doc } : {}), packs: c.packs, store: c.store, composed: c.composed,
                 knownKeys: c.knownKeys, writeCache: false,
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
-                ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true } : {}) } : {}),
+                ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true, ...(readOverrideOf(f.path) ? { readMs: readOverrideOf(f.path)! } : {}) } : {}) } : {}),
             })); } finally { lanes.free(held.lane); }
             }, byPool ? c.signal : undefined);
             if (!extraction) return { kind: 'none' };

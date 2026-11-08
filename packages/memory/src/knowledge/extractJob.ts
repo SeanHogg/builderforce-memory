@@ -36,7 +36,7 @@ export interface ExtractJobBase {
  */
 export type ExtractJobSource =
     | { doc: SourceDocument; readByPool?: never }
-    | { doc?: never; readByPool: { path: string; hash: string } };
+    | { doc?: never; readByPool: { path: string; hash: string; /** The read deadline for this path (`DirectorySource.readTimeoutMs`), when the source sets one; a worker may use it in place of its constant. */ readMs?: number } };
 
 export type ExtractJob = ExtractJobBase & ExtractJobSource;
 
@@ -92,13 +92,13 @@ export function runExtractor(
 export function jobOf(
     f: {
         rootId: string; path: string; hash: string; knownKeys: ReadonlyMap<string, NodeRef>;
-        needSections?: boolean; sectionsOnly?: boolean;
+        needSections?: boolean; sectionsOnly?: boolean; readMs?: number;
     } & ({ doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true }),
 ): ExtractJob {
     return {
         rootId: f.rootId, path: f.path, hash: f.hash, knownKeys: [...f.knownKeys],
         ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}),
-        ...(f.readByPool ? { readByPool: { path: f.path, hash: f.hash } } : { doc: f.doc! }),
+        ...(f.readByPool ? { readByPool: { path: f.path, hash: f.hash, ...(f.readMs ? { readMs: f.readMs } : {}) } } : { doc: f.doc! }),
     } as ExtractJob;
 }
 

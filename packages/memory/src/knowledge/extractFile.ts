@@ -42,6 +42,8 @@ export interface ExtractFileArgs {
     wantsSections?: (pack: KnowledgePack) => boolean;
     /** The pool reads the file itself: no `doc` (see `ExtractJob.readByPool`). */
     readByPool?: boolean;
+    /** With `readByPool`: the read deadline for this path (`DirectorySource.readTimeoutMs`), handed to the worker. */
+    readMs?: number;
     /** Told where the time went: the cache lookup and the pool job (PRD 41 A10, so a stall names itself). */
     onTiming?: (t: { lookupMs: number; poolMs: number }) => void;
     /** Leave the extract cache write to the caller (the review writes it in plan order); default: write it. */
@@ -100,7 +102,7 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     if (found) {
         const tSections = Date.now();
         if (a.pool && wants) {
-            const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, knownKeys: new Map(), sectionsOnly: true, ...jobSource(a) }), a.signal);
+            const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, knownKeys: new Map(), sectionsOnly: true, ...(a.readMs ? { readMs: a.readMs } : {}), ...jobSource(a) }), a.signal);
             if (out.binary) throw new BinaryContent();
             if (!out.sections) throw new Error(`extract pool returned no sections for ${a.path}`);
             sections = out.sections;
@@ -113,7 +115,7 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     let extracted: Extracted;
     if (a.pool) {
         const tPool = Date.now();
-        const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, knownKeys, needSections: wants, ...jobSource(a) }), a.signal);
+        const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, knownKeys, needSections: wants, ...(a.readMs ? { readMs: a.readMs } : {}), ...jobSource(a) }), a.signal);
         a.onTiming?.({ lookupMs, poolMs: Date.now() - tPool });
         if (out.binary) throw new BinaryContent();
         // Exact match only: a result for another file, or none although the packs accept this one, is a failure.

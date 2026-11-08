@@ -18,6 +18,7 @@ import type {
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
     RowChange, RowPersistence,
 } from '../knowledge/index.js';
+import type { PlannedFile } from '../knowledge/index.js';
 import { placementOf } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
@@ -88,7 +89,11 @@ export const jobWithSectionFlags = { ...base, doc: aDocument, needSections: true
 export const jobWithBoth: ExtractJob = { ...base, doc: aDocument, readByPool: { path: 'a.md', hash: 'h' } };
 // @ts-expect-error ExtractJob: a job carries one of `doc` / `readByPool`
 export const jobWithNeither: ExtractJob = { ...base };
-export type ExtractJob_readByPool_shape = Expect<Equal<NonNullable<Extract<ExtractJob, { readByPool: unknown }>['readByPool']>, { path: string; hash: string }>>;
+// readByPool gained an OPTIONAL `readMs` (the source's per-path read deadline, for a worker to use instead of its constant); a worker that ignores it is unaffected.
+export type ExtractJob_readByPool_shape = Expect<Equal<NonNullable<Extract<ExtractJob, { readByPool: unknown }>['readByPool']>, { path: string; hash: string; readMs?: number }>>;
+export const jobTheWorkerReadsWithDeadline = { ...base, readByPool: { path: 'a.md', hash: 'h', readMs: 30_000 } } satisfies ExtractJob;
+// PlannedFile.oversized: an asset only because a claimed document is over the size cap; optional, so a hand-built PlannedFile stays valid.
+export type PlannedFile_oversized = Expect<Equal<PlannedFile['oversized'], true | undefined>>;
 export const resultShape = { binary: true, extracted: [anExtract], sections: someSections } satisfies ExtractJobResult;
 export type ExtractJobResult_fields = Expect<Equal<ExtractJobResult, { binary?: true; extracted: Extracted[]; sections?: ParsedSection[] }>>;
 // ExtractFailed: the marker of a PROVEN-final extraction failure (the parser or extractor threw); every other failure is transient.

@@ -57,10 +57,13 @@ export interface PlannedFile {
      */
     owed: boolean;
     /**
-     * An asset: binary by extension and not claimed as a document by a host parser. Counted in `files` (and in `ReviewPlan.assets`,
+     * An asset: binary by extension and not claimed as a document by a host parser, OR a claimed document over the size cap
+     * (`maxFileBytes`, see `oversized`). Counted in `files` (and in `ReviewPlan.assets`,
      * not in `byPack`), diffed by hash like any file, but never read, extracted or judged; the review writes its file node (assetFile.ts).
      */
     asset?: true;
+    /** An asset only because a claimed document exceeds the size cap: its node carries `badges.oversized` so a UI can say why it has no text. */
+    oversized?: true;
 }
 
 export interface PlanDetail {
@@ -132,7 +135,7 @@ export async function planDetail(
         if (document && e.size > maxBytes) oversized.add(e.path);
         if (isAssetPath(e.path, !!document && e.size <= maxBytes)) {
             const { owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
-            files.push({ path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true });
+            files.push({ path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true, ...(document && e.size > maxBytes ? { oversized: true as const } : {}) });
             assets += 1;
             continue;
         }
