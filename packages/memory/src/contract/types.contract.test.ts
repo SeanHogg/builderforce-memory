@@ -16,8 +16,9 @@ import type {
     Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
     OutlineFile, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
+    RowChange, RowPersistence,
 } from '../knowledge/index.js';
-import { ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
+import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -143,14 +144,37 @@ export const batchedHostStore = {
 export type LocalSnapshotStore_is_a_KnowledgeStore = Expect<Equal<LocalSnapshotStore extends KnowledgeStore ? true : false, true>>;
 export type LocalSnapshotStore_public_methods = Expect<Equal<
     keyof LocalSnapshotStore,
-    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'putExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck' | 'hasRecheck'
+    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'preloadExtracted' | 'putExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck' | 'hasRecheck'
 >>;
 export type LocalSnapshotStore_extractedEntries = Expect<Equal<LocalSnapshotStore['extractedEntries'], () => Promise<Record<string, Extracted[]>>>>;
 export type LocalSnapshotStore_constructor = Expect<Equal<
     ConstructorParameters<typeof LocalSnapshotStore>, [persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions]
 >>;
-export type localSnapshotStore_factory = Expect<Equal<typeof localSnapshotStore, (persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions) => LocalSnapshotStore>>;
-export type LocalSnapshotStoreOptions_keys = Expect<Equal<keyof LocalSnapshotStoreOptions, 'extractedLog' | 'now' | 'checkpointMs' | 'nowMs'>>;
+// Two overloads: the snapshot-persisted one (the last, so `Parameters` reads it) and the row-persisted one (`undefined` + `opts.rows`).
+export type localSnapshotStore_factory = Expect<Equal<Parameters<typeof localSnapshotStore>, [persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions]>>;
+export type localSnapshotStore_factory_returns = Expect<Equal<ReturnType<typeof localSnapshotStore>, LocalSnapshotStore>>;
+export const rowPersistedStore = (rows: RowPersistence): LocalSnapshotStore => localSnapshotStore(undefined, { rows });
+export const rowPersistedStoreByConstructor = (rows: RowPersistence): LocalSnapshotStore => new LocalSnapshotStore(undefined, { rows });
+export const dumpsAStore = (store: LocalSnapshotStore): Promise<string> => canonicalDump(store);
+export type LocalSnapshotStoreOptions_keys = Expect<Equal<keyof LocalSnapshotStoreOptions, 'extractedLog' | 'rows' | 'now' | 'checkpointMs' | 'nowMs'>>;
+export type RowChange_shape = Expect<Equal<RowChange, {
+    upserts: {
+        scopes: ScopeRecord[]; facts: Array<[rootId: string, fact: StoredFact]>; relations: Array<[rootId: string, relation: StoredRelation]>;
+        extracted: Array<[hash: string, entries: Extracted[]]>; recheck: string[];
+    };
+    deletes: {
+        scopes: string[]; facts: Array<[rootId: string, key: string]>;
+        relations: Array<[rootId: string, from: string, to: string, kind: string]>;
+        extracted: string[]; recheck: string[];
+    };
+}>>;
+export type RowPersistence_ports = Expect<Equal<RowPersistence, {
+    load(): Promise<KnowledgeSnapshot | undefined>;
+    apply(change: RowChange): Promise<{ generation: number; reloaded?: KnowledgeSnapshot }>;
+    loadAllExtracted?(): Promise<Record<string, Extracted[]>>;
+    loadExtracted?(hash: string): Promise<Extracted[] | undefined>;
+    changedElsewhere?(): Promise<boolean>;
+}>>;
 export type SnapshotPersistence_ports = Expect<Equal<
     SnapshotPersistence,
     { read(): Promise<string | undefined>; write(snapshot: string): Promise<void>; keepAside?(text: string): Promise<void> }

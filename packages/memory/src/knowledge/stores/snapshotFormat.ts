@@ -4,6 +4,10 @@
  */
 
 import type { Extracted, ScopeRecord, StoredFact, StoredRelation } from '../model.js';
+import { canonicalJson, compareStr } from '../refs.js';
+
+/** The unique key of a relation inside its root. */
+export const relKey = (r: { from: string; to: string; kind: string }) => `${r.from}\u0000${r.to}\u0000${r.kind}`;
 
 export interface KnowledgeSnapshot {
     version: 1;
@@ -34,6 +38,32 @@ export function parse(text: string | undefined): KnowledgeSnapshot {
         ...(s.extracted && typeof s.extracted === 'object' ? { extracted: s.extracted } : {}),
         ...(Array.isArray(s.recheck) ? { recheck: s.recheck.filter((h): h is string => typeof h === 'string') } : {}),
     };
+}
+
+/** Canonical text of a store's rows: scopes by rootId, facts by key, relations by (from, to, kind), keys sorted. Equal content is equal bytes. */
+export function serializeSnapshot(s: {
+    scopes: readonly ScopeRecord[];
+    facts: Map<string, Map<string, StoredFact>>;
+    relations: Map<string, Map<string, StoredRelation>>;
+    /** Omitted from the text when undefined (the extract cache lives in a log). */
+    extracted?: Map<string, Extracted[]>;
+    recheck: ReadonlySet<string>;
+}): string {
+    const rows = <T>(maps: Map<string, Map<string, T>>, by: (a: T, b: T) => number) =>
+        Object.fromEntries([...maps.keys()].sort(compareStr).map((k) => [k, [...maps.get(k)!.values()].sort(by)]));
+    return canonicalJson({
+        version: 1,
+        scopes: [...s.scopes].sort((a, b) => compareStr(a.rootId, b.rootId)),
+        facts: rows(s.facts, (a, b) => compareStr(a.key, b.key)),
+        relations: rows(s.relations, (a, b) => compareStr(relKey(a), relKey(b))),
+        ...(s.extracted ? { extracted: Object.fromEntries(s.extracted) } : {}),
+        ...(s.recheck.size > 0 ? { recheck: [...s.recheck].sort(compareStr) } : {}),
+    });
+}
+
+/** `o` without its undefined values (a partial write must not blank a field it omits). */
+export function stripUndefined<T extends object>(o: T): Partial<T> {
+    return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 export interface ParsedLog {

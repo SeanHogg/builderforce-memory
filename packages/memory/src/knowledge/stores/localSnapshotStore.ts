@@ -14,17 +14,24 @@
  * inside a run; outside one, each awaited mutation has persisted when it resolves.
  *
  * PRD 41 A10: reads come from memory once loaded (never behind the mutation queue); rows live in
- * per-root maps updated incrementally; with the optional `extractedLog` port the extract cache is
- * an append-only JSON Lines file instead of part of the snapshot.
+ * per-root maps (rowMemory.ts) updated incrementally; with the optional `extractedLog` port the
+ * extract cache is an append-only JSON Lines file (extractLogWriter.ts) instead of part of the snapshot.
+ *
+ * PRD 41 B4 (G03): with `opts.rows` ({@link RowPersistence}) the store persists only the rows that changed
+ * (dirty keys in rowDelta.ts) and `persistence` / `extractedLog` are not used. Construct it as
+ * `new LocalSnapshotStore(undefined, { rows })`; a `persistence` given beside `rows` is ignored.
  */
 
-import type {
-    Extracted, KnowledgeStore, NodeRef, Scope, ScopeRecord, StoredFact, StoredRelation,
-} from '../model.js';
+import type { Extracted, KnowledgeStore, NodeRef, Scope, ScopeRecord, StoredFact, StoredRelation } from '../model.js';
 import { canonicalJson, compareStr, pathOfRef } from '../refs.js';
-import { emptySnapshot, parse, parseLog, type KnowledgeSnapshot, type ParsedLog } from './snapshotFormat.js';
+import { ExtractLogWriter } from './extractLogWriter.js';
+import type { RowDelta, RowPersistence } from './rowDelta.js';
+import { RowMemory } from './rowMemory.js';
+import { RowSync } from './rowSync.js';
+import { emptySnapshot, parse, stripUndefined, type KnowledgeSnapshot } from './snapshotFormat.js';
 
 export type { KnowledgeSnapshot } from './snapshotFormat.js';
+export type { RowChange, RowPersistence } from './rowDelta.js';
 
 export interface SnapshotPersistence {
     read(): Promise<string | undefined>;
@@ -46,8 +53,10 @@ export interface ExtractedLogPersistence {
 }
 
 export interface LocalSnapshotStoreOptions {
-    /** When given, the extract cache lives in this log and the snapshot omits `extracted`. */
+    /** When given, the extract cache lives in this log and the snapshot omits `extracted`. Ignored with `rows`. */
     extractedLog?: ExtractedLogPersistence;
+    /** Row-level persistence (a SQLite file): only changed rows are written; `SnapshotPersistence` and `extractedLog` are not used. */
+    rows?: RowPersistence;
     /** ISO clock for `staleAt`. Default `new Date().toISOString()`. */
     now?(): string;
     /** Inside `batched`, a mutation persists when this many ms passed since the last write (a crash loses at most this much). Default 30_000. */
@@ -56,27 +65,17 @@ export interface LocalSnapshotStoreOptions {
     nowMs?(): number;
 }
 
-const relKey = (r: Pick<StoredRelation, 'from' | 'to' | 'kind'>) => `${r.from}\u0000${r.to}\u0000${r.kind}`;
-
-type Index = Map<string, Set<string>>;
-
 export class LocalSnapshotStore implements KnowledgeStore {
     private loaded = false;
     private loading: Promise<void> | undefined;
-    private scopeList: ScopeRecord[] = [];
-    /** Per-root rows, keyed by their unique key, updated incrementally (PRD 41 A10 rule 7). */
-    private readonly factMaps = new Map<string, Map<string, StoredFact>>();
-    private readonly relMaps = new Map<string, Map<string, StoredRelation>>();
-    /** Per root: source path → keys of the relations touching it (`from` or `to`). */
-    private readonly relByPath = new Map<string, Index>();
-    private readonly extracted = new Map<string, Extracted[]>();
-    /** Hashes the next review re-checks (persisted with the snapshot). */
-    private readonly recheck = new Set<string>();
-    /** Extract entries not yet appended to the log. */
-    private pending = new Map<string, Extracted[]>();
-    /** The log's last line is torn (no newline), so the next append starts on a fresh line. */
-    private logTorn = false;
-    private readonly log: ExtractedLogPersistence | undefined;
+    /** Per-root rows and the extract cache (PRD 41 A10 rule 7). */
+    private mem = new RowMemory();
+    private readonly log: ExtractLogWriter | undefined;
+    private readonly rows: RowPersistence | undefined;
+    /** Row mode only: writes the changed rows, reloads, reads bodies lazily (rowSync.ts). */
+    private readonly sync: RowSync | undefined;
+    /** Row mode only: the keys changed since the last `apply`. */
+    private readonly delta: RowDelta | undefined;
     /** Serializes mutations so two writers never interleave a read-modify-write. */
     private queue: Promise<unknown> = Promise.resolve();
     private readonly now: () => string;
@@ -89,14 +88,26 @@ export class LocalSnapshotStore implements KnowledgeStore {
     private persistedAt = 0;
     /** Serializes snapshot writes; never rejects. */
     private persisting: Promise<void> = Promise.resolve();
+    /** Steps queued or running on the persist chain. */
+    private steps = 0;
     /** A background checkpoint in flight (at most one). */
     private checkpointing: Promise<void> | undefined;
 
-    constructor(private readonly persistence: SnapshotPersistence, opts: LocalSnapshotStoreOptions = {}) {
+    /** Row-persisted: no whole-snapshot port; only changed rows are written through `opts.rows`. */
+    constructor(persistence: undefined, opts: LocalSnapshotStoreOptions & { rows: RowPersistence });
+    /** Snapshot-persisted (the default): the whole canonical snapshot is written through `persistence`. */
+    constructor(persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions);
+    constructor(private readonly persistence: SnapshotPersistence | undefined, opts: LocalSnapshotStoreOptions = {}) {
+        this.rows = opts.rows;
+        if (!this.rows && !persistence) throw new Error('LocalSnapshotStore: give a SnapshotPersistence or opts.rows');
+        this.sync = this.rows && new RowSync(this.rows, {
+            mem: () => this.mem, setMem: (m) => { this.mem = m; }, enqueue: (t) => this.enqueue(t), chain: (s) => this.onChain(s), inBatch: () => this.depth > 0, busy: () => this.steps > 0,
+        });
+        this.delta = this.sync?.delta;
         this.now = opts.now ?? (() => new Date().toISOString());
         this.nowMs = opts.nowMs ?? Date.now;
         this.checkpointMs = opts.checkpointMs ?? 30_000;
-        this.log = opts.extractedLog;
+        this.log = !this.rows && opts.extractedLog ? new ExtractLogWriter(opts.extractedLog) : undefined;
     }
 
     /** Loads once; every later call is a no-op, so reads never wait on the mutation queue after the first. */
@@ -106,86 +117,51 @@ export class LocalSnapshotStore implements KnowledgeStore {
         return this.loading;
     }
 
+    /** What a read waits for: the first load, then (row mode) a reload when another writer changed the store. */
+    private async fresh(): Promise<void> {
+        await this.load();
+        await this.sync?.sync();
+    }
+
     private async doLoad(): Promise<void> {
-        const snapText = await this.persistence.read();
         let snap: KnowledgeSnapshot;
-        try {
-            snap = parse(snapText);
-        } catch {
-            // Unreadable: never silently replaced. Its bytes are kept aside, then the store starts empty (the next review rebuilds).
-            await this.persistence.keepAside?.(snapText!).catch(() => undefined);
-            snap = emptySnapshot();
+        let logText: string | undefined;
+        if (this.rows) {
+            snap = (await this.rows.load()) ?? emptySnapshot();
+        } else {
+            const snapText = await this.persistence!.read();
+            try {
+                snap = parse(snapText);
+            } catch {
+                // Unreadable: never silently replaced. Its bytes are kept aside, then the store starts empty (the next review rebuilds).
+                await this.persistence!.keepAside?.(snapText!).catch(() => undefined);
+                snap = emptySnapshot();
+            }
+            logText = this.log ? await this.log.read() : undefined;
         }
-        const logText = this.log ? await this.log.read() : undefined;
-        this.scopeList = snap.scopes;
-        for (const h of snap.recheck ?? []) this.recheck.add(h);
-        for (const [rootId, rows] of Object.entries(snap.facts)) {
-            const m = this.factsOf(rootId);
-            if (Array.isArray(rows)) for (const f of rows) m.set(f.key, f);
-        }
-        for (const [rootId, rows] of Object.entries(snap.relations)) {
-            this.relsOf(rootId);
-            if (Array.isArray(rows)) for (const r of rows) this.putRelation(rootId, r);
-        }
+        this.mem.fill(snap, !this.log);
         if (this.log) {
-            const parsed = parseLog(logText);
-            for (const [h, e] of parsed.entries) this.extracted.set(h, e);
-            this.logTorn = !!logText && !logText.endsWith('\n');
-            await this.compactLog(parsed);
+            await this.log.load(logText, this.mem.extracted);
             // An old snapshot still carrying the cache: move it into the log once; the next snapshot write omits it.
             const legacy = Object.entries(snap.extracted ?? {});
             if (legacy.length) {
                 for (const [h, e] of legacy) {
-                    if (this.extracted.has(h)) continue;
-                    this.extracted.set(h, e);
-                    this.pending.set(h, e);
+                    if (this.mem.extracted.has(h)) continue;
+                    this.mem.extracted.set(h, e);
+                    this.log.queue(h, e);
                 }
                 this.dirty = true;
             }
-        } else {
-            for (const [h, e] of Object.entries(snap.extracted ?? {})) this.extracted.set(h, e);
         }
         this.loaded = true;
     }
 
-    /**
-     * Rewrites the log to its live lines when dead bytes (superseded and torn lines) exceed live bytes. Needs the
-     * port's `replace`; a failure is ignored (the log stays correct, only larger). Another window appending between
-     * this read and the replace loses those lines from the cache — a cache miss, re-extracted next review.
-     */
-    private async compactLog(parsed: ParsedLog): Promise<void> {
-        if (!this.log?.replace || parsed.deadBytes <= parsed.liveBytes) return;
-        try {
-            await this.log.replace([...parsed.liveLines.values()].join(''));
-            this.logTorn = false;
-        } catch { /* keep the uncompacted log */ }
-    }
-
-    private factsOf(rootId: string): Map<string, StoredFact> {
-        let m = this.factMaps.get(rootId);
-        if (!m) this.factMaps.set(rootId, m = new Map());
-        return m;
-    }
-
-    private relsOf(rootId: string): Map<string, StoredRelation> {
-        let m = this.relMaps.get(rootId);
-        if (!m) this.relMaps.set(rootId, m = new Map());
-        return m;
-    }
-
-    /** Upserts a relation and indexes it under the source paths of both ends. */
-    private putRelation(rootId: string, r: StoredRelation): void {
-        const key = relKey(r);
-        this.relsOf(rootId).set(key, r);
-        let idx = this.relByPath.get(rootId);
-        if (!idx) this.relByPath.set(rootId, idx = new Map());
-        for (const ref of [r.from, r.to]) {
-            const p = pathOfRef(ref);
-            if (p === undefined) continue;
-            let keys = idx.get(p);
-            if (!keys) idx.set(p, keys = new Set());
-            keys.add(key);
-        }
+    /** Runs a step after the previous persist step (one at a time); the chain itself never rejects. */
+    private onChain<T>(step: () => Promise<T>): Promise<T> {
+        const run = this.persisting.then(step);
+        this.steps += 1;
+        this.persisting = run.then(() => undefined, () => undefined).then(() => { this.steps -= 1; });
+        return run;
     }
 
     private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -195,48 +171,26 @@ export class LocalSnapshotStore implements KnowledgeStore {
     }
 
     /**
-     * Appends the not-yet-logged extract entries as ONE `append` of complete lines. A failed append keeps them
-     * pending and marks the log torn (it may hold a partial line), so the next append starts on a fresh line.
-     */
-    private async appendPending(): Promise<void> {
-        if (!this.log || this.pending.size === 0) return;
-        const batch = this.pending;
-        this.pending = new Map();
-        let text = this.logTorn ? '\n' : '';
-        for (const [h, e] of batch) text += `${JSON.stringify({ h, e })}\n`;
-        try {
-            await this.log.append(text);
-            this.logTorn = false;
-        } catch (err) {
-            this.logTorn = true;
-            for (const [h, e] of batch) if (!this.pending.has(h)) this.pending.set(h, e);
-            throw err;
-        }
-    }
-
-    /**
-     * Appends new extract entries, then writes the snapshot if memory is ahead of it, one write at a time. It
-     * runs OUTSIDE the mutation queue: a write of a large snapshot (serialize + disk) must never hold up reads or
-     * the next mutation's in-memory apply (PRD 41 A10 — it did: every `getExtracted` waited out each checkpoint).
-     * The log goes first, so a snapshot that dropped a migrated cache never outlives its entries. A failed
-     * write leaves the snapshot dirty, so the next one retries it.
+     * Appends new extract entries, then writes the snapshot (or, in row mode, the changed rows) if memory is ahead of it,
+     * one write at a time. It runs OUTSIDE the mutation queue: a write of a large snapshot (serialize + disk) must never
+     * hold up reads or the next mutation's in-memory apply (PRD 41 A10 — it did: every `getExtracted` waited out each
+     * checkpoint). The log goes first, so a snapshot that dropped a migrated cache never outlives its entries. A failed
+     * write leaves the store dirty, so the next one retries it.
      */
     private persistIfDirty(): Promise<void> {
-        const run = this.persisting.then(async () => {
+        return this.onChain(async () => {
             if (!this.loaded) return;
-            await this.appendPending();
+            await this.log?.flush();
             if (!this.dirty) return;
             this.dirty = false;
             try {
-                await this.persistence.write(this.serialize());
+                await (this.sync ? this.sync.apply() : this.persistence!.write(this.mem.serialize(this.log ? undefined : this.mem.extracted)));
             } catch (err) {
                 this.dirty = true;
                 throw err;
             }
             this.persistedAt = this.nowMs();
         });
-        this.persisting = run.catch(() => undefined);
-        return run;
     }
 
     /**
@@ -285,18 +239,18 @@ export class LocalSnapshotStore implements KnowledgeStore {
     }
 
     async scopes(): Promise<ScopeRecord[]> {
-        await this.load();
-        return [...this.scopeList];
+        await this.fresh();
+        return [...this.mem.scopes];
     }
 
     async facts(scope: Scope): Promise<StoredFact[]> {
-        await this.load();
-        return [...(this.factMaps.get(scope.rootId)?.values() ?? [])];
+        await this.fresh();
+        return [...(this.mem.facts.get(scope.rootId)?.values() ?? [])];
     }
 
     async relations(scope: Scope): Promise<StoredRelation[]> {
-        await this.load();
-        return [...(this.relMaps.get(scope.rootId)?.values() ?? [])];
+        await this.fresh();
+        return [...(this.mem.relations.get(scope.rootId)?.values() ?? [])];
     }
 
     write(batch: { scope: ScopeRecord; facts: StoredFact[]; relations: StoredRelation[] }): Promise<void> {
@@ -304,14 +258,15 @@ export class LocalSnapshotStore implements KnowledgeStore {
         if (bad) return Promise.reject(new Error('knowledge: extracted output is never stored'));
         return this.mutate(() => {
             const rootId = batch.scope.rootId;
-            const prior = this.scopeList.find((x) => x.rootId === rootId);
+            const prior = this.mem.scopes.find((x) => x.rootId === rootId);
             const merged: ScopeRecord = { ...(prior ?? {}), ...stripUndefined(batch.scope) } as ScopeRecord;
-            this.scopeList = [...this.scopeList.filter((x) => x.rootId !== rootId), merged];
+            this.mem.scopes = [...this.mem.scopes.filter((x) => x.rootId !== rootId), merged];
+            this.delta?.mark('scopes', [rootId]);
 
-            const facts = this.factsOf(rootId);
-            for (const f of batch.facts) facts.set(f.key, { ...f });
-            this.relsOf(rootId);
-            for (const r of batch.relations) this.putRelation(rootId, { ...r });
+            const facts = this.mem.factsOf(rootId);
+            for (const f of batch.facts) { facts.set(f.key, { ...f }); this.delta?.mark('facts', [rootId, f.key]); }
+            this.mem.relsOf(rootId);
+            for (const r of batch.relations) { this.mem.putRelation(rootId, { ...r }); this.delta?.mark('relations', [rootId, r.from, r.to, r.kind]); }
         });
     }
 
@@ -319,77 +274,92 @@ export class LocalSnapshotStore implements KnowledgeStore {
         const path = pathOfRef(sourceRef);
         return this.mutate(() => {
             const at = this.now();
-            const rels = this.relsOf(scope.rootId);
-            const keys = path === undefined ? undefined : this.relByPath.get(scope.rootId)?.get(path);
+            const rels = this.mem.relsOf(scope.rootId);
+            const keys = path === undefined ? undefined : this.mem.relationKeysAt(scope.rootId, path);
             for (const key of keys ?? []) {
                 const r = rels.get(key);
-                if (r && r.origin === 'model' && !r.staleAt && r.sourceHash !== currentHash) rels.set(key, { ...r, staleAt: at });
+                if (r && r.origin === 'model' && !r.staleAt && r.sourceHash !== currentHash) {
+                    rels.set(key, { ...r, staleAt: at });
+                    this.delta?.mark('relations', [scope.rootId, r.from, r.to, r.kind]);
+                }
             }
         });
     }
 
+    /** The cached entries of a content hash. In row mode a hash not in memory is read through `rows.loadExtracted` and kept. */
     async getExtracted(hash: string): Promise<Extracted[] | undefined> {
-        await this.load();
-        return this.extracted.get(hash);
+        await this.fresh();
+        return this.sync ? this.sync.body(hash) : this.mem.extracted.get(hash);
+    }
+
+    /** Row mode: reads the bodies of these hashes through `rows.loadExtracted`, a chunk at a time. Otherwise a no-op (everything is in memory). */
+    async preloadExtracted(hashes: readonly string[]): Promise<void> {
+        if (!this.sync) return;
+        await this.fresh();
+        await this.sync.preload(hashes);
     }
 
     /** Asks the next review to re-check the files with these content hashes (persisted until {@link clearRecheck}). */
     markRecheck(hashes: readonly string[]): Promise<void> {
         // The snapshot is dirty only when the set really changed (a repeated mark costs no write).
-        return this.mutate(() => { for (const h of hashes) if (!this.recheck.has(h)) { this.recheck.add(h); this.dirty = true; } }, false);
+        return this.mutate(() => {
+            for (const h of hashes) if (!this.mem.recheck.has(h)) { this.mem.recheck.add(h); this.dirty = true; this.delta?.mark('recheck', [h]); }
+        }, false);
     }
 
     async hasRecheck(hash: string): Promise<boolean> {
-        await this.load();
-        return this.recheck.has(hash);
+        await this.fresh();
+        return this.mem.recheck.has(hash);
     }
 
     async recheckHashes(): Promise<string[]> {
-        await this.load();
-        return [...this.recheck].sort(compareStr);
+        await this.fresh();
+        return [...this.mem.recheck].sort(compareStr);
     }
 
     /** Forgets hashes a review has handled. */
     clearRecheck(hashes: readonly string[]): Promise<void> {
-        return this.mutate(() => { for (const h of hashes) if (this.recheck.delete(h)) this.dirty = true; }, false);
+        return this.mutate(() => {
+            for (const h of hashes) if (this.mem.recheck.delete(h)) { this.dirty = true; this.delta?.mark('recheck', [h], true); }
+        }, false);
     }
 
-    /** Every cached entry by content hash (the log's, else the snapshot's `extracted`), for a host that packs the cache. */
+    /** Every cached entry by content hash (the log's, else the snapshot's `extracted`), for a host that packs the cache. Row mode reads ALL bodies through `loadAllExtracted` (memory wins) and throws without it: never a partial map. */
     async extractedEntries(): Promise<Record<string, Extracted[]>> {
-        await this.load();
-        return Object.fromEntries(this.extracted);
+        await this.fresh();
+        return Object.fromEntries(this.sync ? await this.sync.allBodies() : this.mem.extracted);
     }
 
     putExtracted(hash: string, extracted: Extracted[]): Promise<void> {
         return this.mutate(() => {
             // The same entry again (a second pass re-puts what the first stored) is skipped: no append, no dirty snapshot.
-            const prior = this.extracted.get(hash);
+            const prior = this.mem.extracted.get(hash);
             if (prior && canonicalJson(prior) === canonicalJson(extracted)) return;
-            this.extracted.set(hash, extracted);
-            if (this.log) this.pending.set(hash, extracted);
+            this.mem.extracted.set(hash, extracted);
+            this.sync?.forget(hash);
+            this.delta?.mark('extracted', [hash]);
+            if (this.log) this.log.queue(hash, extracted);
             else this.dirty = true;
         }, false);
     }
 
-    /** Canonical: scopes by rootId, facts by key, relations by (from, to, kind), keys sorted. */
-    private serialize(): string {
-        const rows = <T>(maps: Map<string, Map<string, T>>, by: (a: T, b: T) => number) =>
-            Object.fromEntries([...maps.keys()].sort(compareStr).map((k) => [k, [...maps.get(k)!.values()].sort(by)]));
-        return canonicalJson({
-            version: 1,
-            scopes: [...this.scopeList].sort((a, b) => compareStr(a.rootId, b.rootId)),
-            facts: rows(this.factMaps, (a, b) => compareStr(a.key, b.key)),
-            relations: rows(this.relMaps, (a, b) => compareStr(relKey(a), relKey(b))),
-            ...(this.log ? {} : { extracted: Object.fromEntries(this.extracted) }),
-            ...(this.recheck.size > 0 ? { recheck: [...this.recheck].sort(compareStr) } : {}),
-        });
+    /** See {@link canonicalDump}. Static so it can reach private state without widening the instance's public surface. */
+    static async dumpOf(store: LocalSnapshotStore): Promise<string> {
+        await store.fresh();
+        if (!store.sync) return store.mem.serialize(store.log ? undefined : store.mem.extracted);
+        const bodies = await store.sync.allBodies();
+        return store.mem.serialize(bodies);
     }
 }
 
-export function localSnapshotStore(persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions): LocalSnapshotStore {
-    return new LocalSnapshotStore(persistence, opts);
-}
+/**
+ * The canonical text of a store's rows: byte-equal to what a snapshot-persisted store writes (without `extractedLog`, the
+ * extract cache included). The projection `packPush` / `portablePack` read. Row mode reads every body through `loadAllExtracted` and throws `knowledge_dump_needs_all_bodies` without it.
+ */
+export const canonicalDump = (store: LocalSnapshotStore): Promise<string> => LocalSnapshotStore.dumpOf(store);
 
-function stripUndefined<T extends object>(o: T): Partial<T> {
-    return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+export function localSnapshotStore(persistence: undefined, opts: LocalSnapshotStoreOptions & { rows: RowPersistence }): LocalSnapshotStore;
+export function localSnapshotStore(persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions): LocalSnapshotStore;
+export function localSnapshotStore(persistence: SnapshotPersistence | undefined, opts?: LocalSnapshotStoreOptions): LocalSnapshotStore {
+    return new LocalSnapshotStore(persistence as SnapshotPersistence, opts);
 }

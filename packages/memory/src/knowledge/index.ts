@@ -72,8 +72,10 @@ export {
 } from './refs.js';
 export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule, contradictionRule } from './packs/docs.js';
 export { frontMatterOf, SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';
-export { LocalSnapshotStore, localSnapshotStore } from './stores/localSnapshotStore.js';
-export type { SnapshotPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, ExtractedLogPersistence } from './stores/localSnapshotStore.js';
+export { LocalSnapshotStore, localSnapshotStore, canonicalDump } from './stores/localSnapshotStore.js';
+export type {
+    SnapshotPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, ExtractedLogPersistence, RowPersistence, RowChange,
+} from './stores/localSnapshotStore.js';
 
 // The knowledge index (search, expand, near-duplicate pairs) ships on the same subpath.
 export * from '../retrieval/knowledge-index/index.js';

@@ -314,6 +314,7 @@
     "buildGraph",
     "buildOutline",
     "byImportance",
+    "canonicalDump",
     "canonicalJson",
     "clampClaim",
     "clampQuote",
