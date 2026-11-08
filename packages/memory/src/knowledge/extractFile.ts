@@ -8,7 +8,7 @@
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
 import type { Extracted, KnowledgePack, KnowledgeParser, KnowledgeStore, NodeRef } from './model.js';
-import { BinaryContent, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
+import { BinaryContent, CHANGED_SINCE_PLAN, ExtractFailed, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
 import { srcRef } from './refs.js';
 import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
 import { asPathSource, composePacks, EXTRACTOR_VERSION, resolveRelativePath, stubSource, type ComposedPacks } from './sources.js';
@@ -88,7 +88,9 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     const ref = srcRef(a.rootId, a.path);
     // With a pool the main thread never parses: the worker returns the sections when the file will be judged.
     const wants = !!a.pool && !!a.wantsSections?.(hit.pack);
-    let sections: ParsedSection[] = a.pool ? [] : hit.parser.parse(src);
+    // The parser and the extractor run in this thread only without a pool; their errors are the PROVEN-final failures (ExtractFailed).
+    const proven = <T>(work: () => T): T => { try { return work(); } catch (error) { throw new ExtractFailed(error instanceof Error ? error.message : String(error), { cause: error }); } };
+    let sections: ParsedSection[] = a.pool ? [] : proven(() => hit.parser.parse(src));
     const tLookup = Date.now();
     const cached = await a.store.getExtracted?.(a.hash);
     const lookupMs = Date.now() - tLookup;
@@ -117,14 +119,14 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
         const mine = out.extracted.find((e) => e.sourceRef === ref);
         if (!mine) throw new Error(`extract pool returned no extract for ${a.path}`);
         // The pool read other bytes than the plan hashed: nothing is stored under the planned hash.
-        if (mine.sourceHash !== a.hash) throw new Error('changed since plan');
+        if (mine.sourceHash !== a.hash) throw new Error(CHANGED_SINCE_PLAN); // transient: the bytes may settle
         if (wants) {
             if (!out.sections) throw new Error(`extract pool returned no sections for ${a.path}`);
             sections = out.sections;
         }
         extracted = mine;
     } else {
-        extracted = runExtractor(hit, src, sections, { rootId: a.rootId, knownKeys, resolvePath: resolveRelativePath }, a);
+        extracted = proven(() => runExtractor(hit, src, sections, { rootId: a.rootId, knownKeys, resolvePath: resolveRelativePath }, a));
     }
     if (a.writeCache !== false) await putExtract(a.store, a.hash, extracted, cached ?? []);
     return { extracted, parser: hit.parser, pack: hit.pack, sections, cached: false };

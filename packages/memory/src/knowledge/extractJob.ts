@@ -40,6 +40,17 @@ export type ExtractJobSource =
 
 export type ExtractJob = ExtractJobBase & ExtractJobSource;
 
+/** The planned bytes are not the bytes read: nothing is stored under the planned hash. Always TRANSIENT (the bytes may settle). */
+export const CHANGED_SINCE_PLAN = 'changed since plan';
+
+/**
+ * A failure PROVEN final: the parser or extractor itself threw on these bytes (in-thread, or a pool's worker reporting it). Every other
+ * failure (a read, a timeout, a crashed or disposed worker, a failing store, a changed-since-plan) is transient: the file may extract next time.
+ */
+export class ExtractFailed extends Error {
+    constructor(message: string, options?: { cause?: unknown }) { super(message); this.name = 'ExtractFailed'; if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause; }
+}
+
 /** Thrown by the extract stage when the pool found the file binary; the review records a `skipped` step. */
 export class BinaryContent extends Error {
     constructor() { super('binary'); this.name = 'BinaryContent'; }

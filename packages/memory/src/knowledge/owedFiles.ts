@@ -31,6 +31,7 @@ import { EXTRACTOR_VERSION, extractorManifestKey } from './sources.js';
 
 const VERSION_ID = 'version';
 const OWED_PREFIX = 'owed:';
+const FAIL_PREFIX = 'fail:';
 /** What a version upgrade costs per file: the one new section a re-extraction may add (an upper bound). */
 const UPGRADE_CALLS = 1;
 
@@ -39,21 +40,27 @@ export interface ExtractorState {
     version: number | undefined;
     /** Paths a previous run left unfinished under that version → model calls each still costs. */
     owed: ReadonlyMap<string, number>;
+/** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. */    failures: ReadonlyMap<string, { hash: string; count: number }>;
 }
 
 export async function loadExtractorState(manifest: IngestManifest, rootId: string): Promise<ExtractorState> {
     let version: number | undefined;
     const owed = new Map<string, number>();
+    const failures = new Map<string, { hash: string; count: number }>();
     for (const { id, hash } of (await manifest.get(extractorManifestKey(rootId))) ?? []) {
         if (id === VERSION_ID) {
             const v = Number(hash);
             if (Number.isFinite(v)) version = v;
+        } else if (id.startsWith(FAIL_PREFIX)) {
+            const at = hash.indexOf(':');
+            const count = Number(hash.slice(0, at));
+            if (at > 0 && Number.isInteger(count) && count > 0) failures.set(id.slice(FAIL_PREFIX.length), { hash: hash.slice(at + 1), count });
         } else if (id.startsWith(OWED_PREFIX)) {
             const calls = Number(hash);
             owed.set(id.slice(OWED_PREFIX.length), Number.isFinite(calls) && calls >= 0 ? calls : UPGRADE_CALLS);
         }
     }
-    return { version, owed };
+    return { version, owed, failures };
 }
 
 /** True when `path` is owed a re-extraction: another extractor version than today's, or left unfinished before. */
@@ -102,9 +109,12 @@ export function owedAfterRun(a: {
 }
 
 /** Records today's version and exactly the files still owed after this run. */
-export async function saveExtractorState(manifest: IngestManifest, rootId: string, owed: ReadonlyMap<string, number>): Promise<void> {
+export async function saveExtractorState(
+    manifest: IngestManifest, rootId: string, owed: ReadonlyMap<string, number>, failures: ReadonlyMap<string, { hash: string; count: number }> = new Map(),
+): Promise<void> {
     await manifest.set(extractorManifestKey(rootId), [
         { id: VERSION_ID, hash: String(EXTRACTOR_VERSION) },
         ...[...owed].sort((a, b) => compareStr(a[0], b[0])).map(([path, calls]) => ({ id: `${OWED_PREFIX}${path}`, hash: String(calls) })),
+        ...[...failures].filter(([path]) => owed.has(path)).sort((a, b) => compareStr(a[0], b[0])).map(([path, f]) => ({ id: `${FAIL_PREFIX}${path}`, hash: `${f.count}:${f.hash}` })),
     ]);
 }

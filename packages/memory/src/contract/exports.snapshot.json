@@ -281,6 +281,7 @@
     "EXPAND_HOP_DECAY",
     "EXTERNAL_SERVICE_IDS",
     "EXTRACTOR_VERSION",
+    "ExtractFailed",
     "GOD_MODULE_KIND",
     "GOD_MODULE_LIMITS",
     "LocalSnapshotStore",

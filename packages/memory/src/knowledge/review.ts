@@ -33,6 +33,7 @@ import { planDetail, refreshPlan } from './plan.js';
 import { composePacks, filesManifestKey, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
 import { knownKeysOfEntities, putExtract, putNoExtract } from './extractFile.js';
 import { backfillCandidates, backfillNoExtract } from './backfillNoExtract.js';
+import { recordFailure } from './reviewFailure.js';
 import { prefetchOrdered } from './orderedPool.js';
 import {
     DEFAULT_REVIEW_CONCURRENCY, DEFAULT_REVIEW_JUDGE_CONCURRENCY, DEFAULT_REVIEW_MODEL_CALLS, JUDGE_CONCURRENCY, JudgedBatch,
@@ -173,6 +174,8 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const finished = new Set<string>();
     /** Files that failed for a reason that says nothing final about them, at the manifest's own bytes: owed, so the next review retries them. */
     const unreadable = new Set<string>();
+    /** Consecutive transient failures by path at one hash (saved beside the owed record). */
+    const failures = new Map(detail.extractor.failures);
     const measured = new Map<string, number>();
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
     // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
@@ -213,17 +216,12 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             if (job.kind === 'read-error') report.readErrors += 1; else report.extractErrors += 1;
             fail(f.path, 'extract', job.kind === 'read-error' ? `read: ${job.reason}` : job.reason);
             measured.set(f.path, owedCalls(detail.extractor, f.path)); // learns nothing: keep what it was owed
-            // A FINAL failure gets a terminal answer, so a replica does not hold the file back and ask for it forever: the manifest's bytes are
-            // gone (the hash moved), or the extraction failed deterministically (not a timeout, a stop or a changed-since-plan). Never when the
-            // run was stopped. A transient failure at the manifest's own bytes keeps the re-check request AND makes the file owed, so the next
-            // normal review retries it. (`[]` rather than a sibling member: the reason is already in `report.failures`.)
-            const known = detail.prior.get(f.path);
-            const transient = job.kind === 'read-error' || job.transient === true; // a read error says nothing final about the bytes
-            if (known && !runSignal.aborted) {
-                if (known !== f.hash || !transient) { await putNoExtract(store, known); await settledRecheck(known); } else unreadable.add(f.path);
-            }
+            // The ONE failure path (reviewFailure.ts): a transient failure keeps the re-check request and makes the file owed; only a proven-final
+            // one (or the third in a row at the same bytes) is answered with a terminal `[]`.
+            await recordFailure({ store, detail, stopped: () => runSignal.aborted, unreadable, failures, settledRecheck }, f, job);
             return true;
         }
+        failures.delete(f.path); // it read and extracted (or was decided): the run of failures at this hash ends
         // Recorded, so a file found binary on read is not re-read by every later review.
         if (job.kind === 'binary') {
             filesNow.set(f.path, f.hash);
@@ -314,6 +312,8 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         await Promise.allSettled(queue.map((s) => s.judge?.result)); // nothing outlives the run
     }
     if (applied < work.length) report.aborted = true;
+    // A Stop ends the run: the file in hand was finished and applied above, but nothing after it (retire, analyzers, the digest stamp) runs.
+    report.aborted ||= runSignal.aborted;
 
     // Pass 2 (`only`) is judging alone: the map pass already retired the removed files and ran the analyzers.
     if (!report.aborted && !args.only) {
@@ -373,7 +373,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // content-changed or not, and the owed paths the plan did not list that the manifest still holds.
     await saveExtractorState(manifest, rootId, owedAfterRun({
         state: detail.extractor, changed, prior: detail.prior, finished, carried: detail.carried, live: filesNow, measured, unreadable,
-    }));
+    }), failures);
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
     progress({ phase: 'done', done: work.length, total: work.length });

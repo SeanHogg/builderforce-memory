@@ -49,7 +49,7 @@ export { orderForJudging } from './judgePriority.js';
 export type { JudgeSignals } from './judgePriority.js';
 export { extractFile, extractFileDetailed, knownKeysOfEntities } from './extractFile.js';
 export type { ExtractFileArgs, FileExtraction } from './extractFile.js';
-export { extractJob, jobOf } from './extractJob.js';
+export { ExtractFailed, extractJob, jobOf } from './extractJob.js';
 export type { ExtractJob, ExtractJobResult, ExtractPool } from './extractJob.js';
 export { putExtract, putNoExtract } from './extractFile.js';
 export { createModelLimiter, isRateLimit } from './modelLimiter.js';

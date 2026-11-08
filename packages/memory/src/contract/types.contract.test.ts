@@ -17,7 +17,7 @@ import type {
     OutlineFile, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
 } from '../knowledge/index.js';
-import { failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore } from '../knowledge/index.js';
+import { ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -89,6 +89,7 @@ export const jobWithNeither: ExtractJob = { ...base };
 export type ExtractJob_readByPool_shape = Expect<Equal<NonNullable<Extract<ExtractJob, { readByPool: unknown }>['readByPool']>, { path: string; hash: string }>>;
 export const resultShape = { binary: true, extracted: [anExtract], sections: someSections } satisfies ExtractJobResult;
 export type ExtractJobResult_fields = Expect<Equal<ExtractJobResult, { binary?: true; extracted: Extracted[]; sections?: ParsedSection[] }>>;
+// ExtractFailed: the marker of a PROVEN-final extraction failure (the parser or extractor threw); every other failure is transient.export type ExtractFailed_is_an_Error = Expect<Equal<InstanceType<typeof ExtractFailed> extends Error ? true : false, true>>;export type ExtractFailed_constructor = Expect<Equal<ConstructorParameters<typeof ExtractFailed>, [message: string, options?: { cause?: unknown }]>>;
 
 /* ── KnowledgeStore: the port hosts implement ──────────────────────────────────────────────────────────────── */
 export type KnowledgeStore_methods = Expect<Equal<

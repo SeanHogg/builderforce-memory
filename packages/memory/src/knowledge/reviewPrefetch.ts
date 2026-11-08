@@ -12,9 +12,9 @@
 import type { SourceDocument } from '../ingest/types.js';
 import type { KnowledgePack, KnowledgeStore, NodeRef, ReviewArgs } from './model.js';
 import { extractFileDetailed, type FileExtraction } from './extractFile.js';
-import { BinaryContent } from './extractJob.js';
+import { BinaryContent, CHANGED_SINCE_PLAN, ExtractFailed } from './extractJob.js';
 import { judgesPack } from './reviewJudge.js';
-import { createDeadlines, JobTimeout } from './jobDeadline.js';
+import { createDeadlines } from './jobDeadline.js';
 import { createModelLimiter } from './modelLimiter.js';
 import { Lanes, reasonOf, type ReviewStep } from './reviewRunModel.js';
 import { isBinaryText, type ComposedPacks } from './sources.js';
@@ -58,8 +58,7 @@ export function extractStepOf(path: string, job: Prefetch): ReviewStep {
     }
 }
 
-/** The failure reason of a file whose bytes no longer match the planned hash. */
-export const CHANGED_SINCE_PLAN = 'changed since plan';
+export { CHANGED_SINCE_PLAN };
 
 /** Per-job ceilings of the extract path (PRD 41 A10 rule 2). */
 export const DEFAULT_READ_TIMEOUT_MS = 5_000;
@@ -108,8 +107,9 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
             return { kind: 'extracted', ...(doc ? { doc } : {}), extraction };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };
-            // A timeout or a stop says nothing final about the file; any other extraction error is deterministic.
-            return { kind: 'failed', reason: reasonOf(error), ...(error instanceof JobTimeout || c.signal.aborted ? { transient: true as const } : {}) };
+            // Transient UNLESS proven final: only the parser or extractor throwing on these bytes (ExtractFailed) is. A read, a timeout, a crashed or
+            // disposed worker, a failing store, a stop: all say nothing final about the file.
+            return { kind: 'failed', reason: reasonOf(error), ...(error instanceof ExtractFailed && !c.signal.aborted ? {} : { transient: true as const }) };
         }
     };
 
