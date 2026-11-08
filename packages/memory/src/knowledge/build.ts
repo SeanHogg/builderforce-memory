@@ -8,7 +8,8 @@
  *   3. stored relations become edges; near-duplicate pairs become `near-duplicate` edges
  *      (an exact `duplicate` between the same pair wins); live changes badge nodes and
  *      `runFiles` become `co-changed` edges;
- *   4. partitions, areas, verdicts; PageRank importance; findings; then truncation.
+ *   4. partitions, areas, verdicts; PageRank importance; communities (`communityId` /
+ *      `communityConfidence` badges, Q in the stats); findings; then truncation.
  *
  * Deterministic: equal input ⇒ byte-identical JSON. Every list is sorted, every sort ends
  * on ref, objects are built with a fixed key order.
@@ -23,6 +24,7 @@ import type {
 import { crossesSystems, placeInSystem } from './systems.js';
 import { computeFindings } from './findings.js';
 import { pageRank } from './importance.js';
+import { applyCommunities } from './communities.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
 import {
@@ -194,6 +196,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
 
     const rank = pageRank([...g.nodes.keys()], [...g.edges.values()]);
     for (const n of g.nodes.values()) n.importance = rank.get(n.ref) ?? 0;
+    const { modularity, method: communityMethod } = applyCommunities(g.nodes.values(), g.edges.values());
 
     const allNodes = [...g.nodes.values()].map(finalNode).sort((a, b) => compareStr(a.ref, b.ref));
     const allEdges = [...g.edges.values()].map(finalEdge).sort(compareEdges);
@@ -202,7 +205,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         scope: { rootId, packs, digest: graphDigest(input) },
         nodes: allNodes, edges: allEdges, findings: [],
         ...(systems.length > 0 ? { meta: { systems: systemsMeta(systems, allNodes) } } : {}),
-        stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false },
+        stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false, modularity, communityMethod },
     };
     full.findings = computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
     full.stats.stale = allNodes.filter((n) => n.stale).length;

@@ -7,7 +7,8 @@
  * touches — code layers or doc folders — and `toMermaid` draws them as a sequence diagram.
  */
 
-import type { KEdge, KnowledgeGraph, NodeRef, PartitionRegistry, Trace, TraceStep } from './model.js';
+import { placementOf } from './communities.js';
+import type { KEdge, KNode, KnowledgeGraph, NodeRef, PartitionRegistry, Trace, TraceStep } from './model.js';
 import { partitionOrder } from './partitions.js';
 import { compareStr } from './refs.js';
 
@@ -30,11 +31,24 @@ export interface TraceOptions {
     registry?: PartitionRegistry;
 }
 
+/** The lane of a community: its name, and the id the lanes are sorted by (numerically, not as text). */
+const communityLane = (id: number): string => `community ${id}`;
+
+function placementLane(n: KNode, communities: Map<string, number>): string | undefined {
+    const p = placementOf(n);
+    if (p === undefined) return undefined;
+    if (p.kind === 'partition') return p.id;
+    communities.set(communityLane(p.id), p.id);
+    return communityLane(p.id);
+}
+
 export function traceGraph(g: KnowledgeGraph, from: NodeRef, opts: TraceOptions = {}): LanedTrace {
     const kinds = new Set(opts.edgeKinds ?? DEFAULT_TRACE_EDGE_KINDS);
     const maxDepth = opts.maxDepth ?? DEFAULT_TRACE_DEPTH;
     const maxSteps = opts.maxSteps ?? DEFAULT_TRACE_STEPS;
-    const partition = new Map(g.nodes.map((n) => [n.ref, n.partition] as const));
+    // A node's lane is its partition, else its community (PRD 38 P1), else none.
+    const communityIds = new Map<string, number>();
+    const partition = new Map(g.nodes.map((n) => [n.ref, placementLane(n, communityIds)] as const));
     const out = new Map<NodeRef, KEdge[]>();
     for (const e of g.edges) {
         if (!kinds.has(e.kind)) continue;
@@ -77,8 +91,14 @@ export function traceGraph(g: KnowledgeGraph, from: NodeRef, opts: TraceOptions 
     }
     if (opts.registry) {
         const reg = opts.registry;
-        const order = (l: string) => partitionOrder(l, reg) ?? Number.MAX_SAFE_INTEGER;
-        lanes.sort((a, b) => order(a) - order(b) || compareStr(a, b));
+        // Partitions in the registry's order, then communities by numeric id, then everything else by name.
+        const key = (l: string): [number, number] => {
+            const order = partitionOrder(l, reg);
+            if (order !== undefined) return [0, order];
+            const community = communityIds.get(l);
+            return community !== undefined ? [1, community] : [2, 0];
+        };
+        lanes.sort((a, b) => key(a)[0] - key(b)[0] || key(a)[1] - key(b)[1] || compareStr(a, b));
     }
     return { from, lanes, steps, truncated, laneOf };
 }

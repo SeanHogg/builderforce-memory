@@ -11,7 +11,7 @@ export type {
     PartitionRule, PartitionRegistry, JudgementSpec, JudgementRequest, JudgedClaim, JudgedEntity, JudgementResult,
     JudgementPort, AnalyzerPort, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
-    ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile,
+    ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile, OutlineCommunity,
     GraphSystem, GraphApp, GraphReadSkip,
 } from './model.js';
 export {
@@ -23,6 +23,11 @@ export { buildGraph, graphDigest, oneLineLabel, DEFAULT_MAX_NODES, MAX_NODES_CAP
 export { placeInSystem, crossesSystems, type SystemPlacement } from './systems.js';
 export { truncateGraph, TRUNCATION_HARD_CAP, UNANCHORED_AREA } from './truncate.js';
 export type { TruncateOptions } from './truncate.js';
+export {
+    detectCommunities, applyCommunities, communityTable, placementOf, COMMUNITY_EDGE_KINDS, COMMUNITY_LOUVAIN_MAX_NODES,
+    COMMUNITY_MAX_PASSES, COMMUNITY_MAX_ITERATIONS, COMMUNITY_LP_ITERATIONS,
+} from './communities.js';
+export type { CommunityMembership, CommunityMethod, CommunityResult, NodePlacement } from './communities.js';
 export { pageRank, byImportance, areaImportance, PAGERANK_DAMPING, PAGERANK_ITERATIONS } from './importance.js';
 export {
     loadPartitions, partitionOf, partitionOrder, verdictOf, globToRegExp, matchGlob, TOP_LEVEL_FOLDER,

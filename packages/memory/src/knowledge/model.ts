@@ -284,7 +284,13 @@ export interface KnowledgeGraph {
     findings: Finding[];
     /** Present only when the root held systems to report (see {@link GraphSystem}). */
     meta?: { systems?: GraphSystem[] };
-    stats: { sources: number; nodes: number; edges: number; stale: number; truncated: boolean };
+    stats: {
+        sources: number; nodes: number; edges: number; stale: number; truncated: boolean;
+        /** Q of the file communities (PRD 38 P1), 6 decimals; absent on graphs stored before it existed. */
+        modularity?: number;
+        /** Which algorithm produced the communities (label propagation above COMMUNITY_LOUVAIN_MAX_NODES connected files). */
+        communityMethod?: 'louvain' | 'label-propagation';
+    };
     /**
      * Attached only when the graph was truncated (`stats.truncated`): the whole graph's files,
      * so an overview never depends on the cut. Consumers read it through `outlineOf`, never directly.
@@ -310,6 +316,11 @@ export interface GraphOutline {
     apps?: string[];
     /** The root's systems with their file counts, copies and graph reads — `KnowledgeGraph.meta.systems`, carried so the outline stands alone. */
     systemInfo?: GraphSystem[];
+    /**
+     * The communities the files' `communityId` badge indexes (PRD 38 P1), sorted by id. Absent when no file has one.
+     * Ids are per build, not stable across builds.
+     */
+    communities?: OutlineCommunity[];
     /** File nodes of the full graph, sorted by ref. */
     files: OutlineFile[];
     /**
@@ -320,6 +331,15 @@ export interface GraphOutline {
     links: Array<[number, number, number, number]>;
     /** True when files or links were capped (see OUTLINE_MAX_*). */
     capped: boolean;
+}
+
+/** One community of the file reference graph: `id` is the `communityId` badge; `label` the members' common directory (else the top member's path). */
+export interface OutlineCommunity {
+    id: number;
+    /** Unique within the table. */
+    label: string;
+    /** Members counted in THIS outline: smaller than the full community when the outline is capped (`capped`). */
+    size: number;
 }
 
 export interface OutlineFile {

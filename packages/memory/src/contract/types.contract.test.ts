@@ -14,10 +14,11 @@
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
 import type {
     Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
-    OutlineFile, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
+    OutlineFile, OutlineCommunity, NodePlacement, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
     RowChange, RowPersistence,
 } from '../knowledge/index.js';
+import { placementOf } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -204,6 +205,13 @@ export type GraphOutline_systems = Expect<Equal<
     { systems?: string[]; apps?: string[]; systemInfo?: GraphSystem[] }
 >>;
 export type OutlineFile_system_indexes = Expect<Equal<Pick<OutlineFile, 'system' | 'app' | 'copyOf'>, { system?: number; app?: number; copyOf?: number }>>;
+// PRD 38 P1: communities. `communityId` indexes the outline's `communities` table; ids are per build.
+export type KnowledgeGraph_stats_modularity = Expect<Equal<KnowledgeGraph['stats']['modularity'], number | undefined>>;
+export type KnowledgeGraph_stats_communityMethod = Expect<Equal<KnowledgeGraph['stats']['communityMethod'], 'louvain' | 'label-propagation' | undefined>>;
+export type GraphOutline_communities = Expect<Equal<GraphOutline['communities'], OutlineCommunity[] | undefined>>;
+export type OutlineCommunity_fields = Expect<Equal<OutlineCommunity, { id: number; label: string; size: number }>>;
+export type NodePlacement_shape = Expect<Equal<NodePlacement, { kind: 'partition'; id: string } | { kind: 'community'; id: number }>>;
+export type placementOf_signature = Expect<Equal<ReturnType<typeof placementOf>, NodePlacement | undefined>>;
 export type KEdge_verdict = Expect<Equal<KEdge['verdict'], 'allowed' | 'same' | 'skips' | 'upward' | undefined>>;
 
 describe('type contract', () => {

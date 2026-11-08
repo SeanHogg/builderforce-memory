@@ -13,9 +13,9 @@ import { edge, extractedOf, fileNode, ref, ROOT } from './testkit.test-util.js';
 const PACK: KnowledgePack = { id: 'docs', parsers: [] };
 const pad = (i: number) => `p/${String(i).padStart(6, '0')}.ts`;
 
-function chain(extra: Partial<KNode> = {}): BuildGraphInput {
+function chain(extra: Partial<KNode> = {}, kind = 'references'): BuildGraphInput {
     const paths = Array.from({ length: 40 }, (_, i) => `d${i % 4}/f${String(i).padStart(2, '0')}.md`);
-    const extracted = paths.map((p, i) => extractedOf(fileNode(p, extra), i + 1 < paths.length ? [edge(p, paths[i + 1]!, 'references')] : []));
+    const extracted = paths.map((p, i) => extractedOf(fileNode(p, extra), i + 1 < paths.length ? [edge(p, paths[i + 1]!, kind)] : []));
     return { rootId: ROOT, packs: [PACK], extracted, facts: [], relations: [] };
 }
 
@@ -77,19 +77,31 @@ describe('buildGraph outline', () => {
         expect(JSON.stringify(a.outline)).toBe(JSON.stringify(b.outline));
     });
 
+    // 'mentions' edges are not references, so these files have no community badges (PRD 38 P1) and the cases below are about the whitelist alone.
     it('keeps only the whitelisted badges', () => {
-        const g = buildGraph(chain({ badges: { complexity: 7, entry: 'main', secret: 'x', added: 3, status: 'M' } }), { maxNodes: 6 });
+        const g = buildGraph(chain({ badges: { complexity: 7, entry: 'main', secret: 'x', added: 3, status: 'M' } }, 'mentions'), { maxNodes: 6 });
         for (const f of g.outline!.files) expect(f.badges).toEqual({ complexity: 7, entry: 'main', added: 3, status: 'M' });
     });
 
     it('keeps the externals string badge and still drops unlisted ones', () => {
-        const g = buildGraph(chain({ badges: { externals: 'react,zod', notListed: 'x' } }), { maxNodes: 6 });
+        const g = buildGraph(chain({ badges: { externals: 'react,zod', notListed: 'x' } }, 'mentions'), { maxNodes: 6 });
         for (const f of g.outline!.files) expect(f.badges).toEqual({ externals: 'react,zod' });
     });
 
     it('omits badges when none of the whitelisted keys are present', () => {
-        const g = buildGraph(chain({ badges: { other: 3 } }), { maxNodes: 6 });
+        const g = buildGraph(chain({ badges: { other: 3 } }, 'mentions'), { maxNodes: 6 });
         for (const f of g.outline!.files) expect(f.badges).toBeUndefined();
+        expect(g.outline!.communities).toBeUndefined();
+    });
+
+    it('carries the community badges and the communities table of referenced files', () => {
+        const g = buildGraph(chain(), { maxNodes: 6 });
+        for (const f of g.outline!.files) expect(Object.keys(f.badges ?? {}).sort()).toEqual(['communityConfidence', 'communityId']);
+        const table = g.outline!.communities!;
+        expect(table.length).toBeGreaterThan(0);
+        expect(table.reduce((s, c) => s + c.size, 0)).toBe(g.outline!.files.length);
+        expect(table.map((c) => c.id)).toEqual([...table.map((c) => c.id)].sort((a, b) => a - b));
+        for (const f of g.outline!.files) expect(table.some((c) => c.id === f.badges!['communityId'])).toBe(true);
     });
 });
 

@@ -106,7 +106,7 @@ describe('buildGraph — the join', () => {
             ...fixture(),
             live: { changes: [{ path: 'a/two.md', status: 'M', added: 3, removed: 1 }], runFiles: ['a/two.md', 'a/one.md'] },
         });
-        expect(live.nodes.find((n) => n.ref === ref('a/two.md'))?.badges).toEqual({ added: 3, removed: 1, status: 'M' });
+        expect(live.nodes.find((n) => n.ref === ref('a/two.md'))?.badges).toMatchObject({ added: 3, removed: 1, status: 'M' });
         expect(live.edges).toContainEqual(expect.objectContaining({ from: ref('a/one.md'), to: ref('a/two.md'), kind: 'co-changed', origin: 'agent' }));
     });
 });

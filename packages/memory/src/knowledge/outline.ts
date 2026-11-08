@@ -5,6 +5,7 @@
  */
 
 import type { EdgeVerdict, GraphOutline, KnowledgeGraph, NodeRef, OutlineFile } from './model.js';
+import { communityTable } from './communities.js';
 import { byImportance } from './importance.js';
 import { compareStr, fileRefOf } from './refs.js';
 
@@ -17,6 +18,7 @@ export const OUTLINE_MAX_LINKS = 60000;
 export const OUTLINE_BADGE_KEYS: readonly string[] = [
     'complexity', 'maxComplexity', 'coverage', 'churn', 'owner', 'patterns', 'cloneGroup', 'unused', 'unusedExports',
     'entry', 'layerRule', 'unusedDependencies', 'externals', 'added', 'removed', 'changed', 'status',
+    'communityId', 'communityConfidence',
 ];
 /** Verdict codes of a link, least to worst; code 0 is "no verdict". */
 export const OUTLINE_VERDICTS: readonly ('none' | EdgeVerdict)[] = ['none', 'same', 'allowed', 'skips', 'upward'];
@@ -112,8 +114,10 @@ export function buildOutline(full: KnowledgeGraph): GraphOutline {
     }
     list.sort((a, b) => a.from - b.from || a.to - b.to);
     const links = list.map((m) => [m.from, m.to, m.verdict, m.cycle ? OUTLINE_FLAG_CYCLE : 0] as [number, number, number, number]);
+    const communities = communityTable(fileNodes, prefix);
     return {
         prefix, areas, partitions,
+        ...(communities.length > 0 ? { communities } : {}),
         ...(systems.length > 0 ? { systems } : {}),
         ...(apps.length > 0 ? { apps } : {}),
         ...(full.meta?.systems ? { systemInfo: full.meta.systems } : {}),
