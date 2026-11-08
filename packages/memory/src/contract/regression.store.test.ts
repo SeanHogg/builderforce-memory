@@ -94,4 +94,17 @@ describe('regression: re-check channel', () => {
         await again.clearRecheck(['b']);
         expect(JSON.parse(snap.value!).recheck).toBeUndefined();
     });
+
+    it('regression: hasRecheck answers membership, survives a reload, and is false after the hash is cleared', async () => {
+        const snap = memPersistence();
+        const store = new LocalSnapshotStore(snap);
+        expect(await store.hasRecheck('a')).toBe(false);
+        await store.markRecheck(['a']);
+        expect(await store.hasRecheck('a')).toBe(true);
+        expect(await store.hasRecheck('b')).toBe(false);
+        expect(await new LocalSnapshotStore(snap).hasRecheck('a')).toBe(true); // persisted
+        await store.clearRecheck(['a']);
+        expect(await store.hasRecheck('a')).toBe(false);
+        expect(await new LocalSnapshotStore(snap).hasRecheck('a')).toBe(false);
+    });
 });

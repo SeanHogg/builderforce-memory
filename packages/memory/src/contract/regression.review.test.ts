@@ -322,19 +322,69 @@ describe('regression: a root reviewed before binary files were recorded is settl
         expect((await store.getExtracted(hashText('# L\nlocked\n')))!.length).toBeGreaterThan(0);
     });
 
-    it('regression: a review that is aborted before it did the work keeps the re-check request, and one that completes it clears it', async () => {
-        const manifest = new InMemoryIngestManifest();
+
+    /** A source whose `a.md` read is observed: `onRead(n)` runs on its n-th read and may throw. */
+    const watched = (onRead: (n: number) => void): SpySource => {
+        const inner = memSource({ 'a.md': text });
+        let n = 0;
+        return { ...inner, read: async (p: string) => { if (p === 'a.md') onRead(++n); return inner.read(p); } } as SpySource;
+    };
+    const legacyStore = async (manifest: InMemoryIngestManifest) => {
         await reviewDirectory(args(memSource({ 'a.md': text }), memStore(), manifest));
-        const legacy = memStore();
+        const legacy = memStore(); // the manifest names a.md; this store holds no body for it
         await legacy.markRecheck([hashText(text)]);
+        return legacy;
+    };
+
+    it('regression: a review stopped mid-way (after the backfill queued the file) keeps the re-check request and records no terminal [], and a complete one clears it', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const legacy = await legacyStore(manifest);
         const stop = new AbortController();
-        stop.abort();
-        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest, { signal: stop.signal })).catch(() => undefined);
+        // Read 1 is the backfill's, read 2 is the review's: the run is stopped there and the read rejects.
+        const source = watched((n) => { if (n === 2) { stop.abort(); throw new Error('aborted'); } });
+        await reviewDirectory(args(source, legacy, manifest, { signal: stop.signal })).catch(() => undefined);
         expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
+        expect(await legacy.getExtracted(hashText(text))).toBeUndefined();
         await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest));
         expect(await legacy.recheckHashes()).toEqual([]);
         expect((await legacy.getExtracted(hashText(text)))!.length).toBeGreaterThan(0);
     });
+
+    it('regression: a read error at the manifest\'s own bytes keeps the request and makes the file owed; the next review stores the body', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const legacy = await legacyStore(manifest);
+        const report = await reviewDirectory(args(watched(() => { throw new Error('EBUSY'); }), legacy, manifest));
+        expect(report.readErrors).toBe(1);
+        expect(await legacy.getExtracted(hashText(text))).toBeUndefined(); // not a terminal answer: the bytes may be readable next time
+        expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
+        expect((await stateOf(manifest)).owed).toContain('a.md');
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest)); // a normal review: it is owed, so it is retried
+        expect((await legacy.getExtracted(hashText(text)))!.length).toBeGreaterThan(0);
+        expect(await legacy.recheckHashes()).toEqual([]);
+        expect((await stateOf(manifest)).owed).toEqual([]);
+    });
+
+    it('regression: a deterministic extraction failure at the same bytes gets a terminal [] and settles the request', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const legacy = await legacyStore(manifest);
+        const exploding: ExtractPool = async () => { throw new Error('parse exploded'); };
+        const report = await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest, { extractPool: exploding, deferRead: true }));
+        expect(report.extractErrors).toBe(1);
+        expect(await legacy.getExtracted(hashText(text))).toEqual([]);
+        expect(await legacy.recheckHashes()).toEqual([]);
+    });
+
+    it('regression: the body is stored BEFORE the request is cleared (a store that observes the put still sees the request)', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const legacy = await legacyStore(manifest);
+        let sawRequest: boolean | undefined;
+        const put = legacy.putExtracted.bind(legacy);
+        legacy.putExtracted = async (h, e) => { sawRequest ??= await legacy.hasRecheck(h); await put(h, e); };
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest));
+        expect(sawRequest).toBe(true);
+        expect(await legacy.recheckHashes()).toEqual([]);
+    });
+
 
     it('regression: an unchanged text file with no stored body is NOT given [] (it is "not extracted yet")', async () => {
         const manifest = new InMemoryIngestManifest();

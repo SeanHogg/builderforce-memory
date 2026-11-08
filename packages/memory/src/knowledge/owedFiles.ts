@@ -88,12 +88,14 @@ export function owedAfterRun(a: {
     finished: ReadonlySet<string>;
     carried: readonly string[];
     live: ReadonlyMap<string, string>;
+    /** Files whose read or extraction failed for a reason that says nothing final about them (same bytes as the manifest): owed even though their content did not change. */
+    unreadable?: ReadonlySet<string>;
     /** Calls a file this run reached but did not finish still costs. */
     measured: ReadonlyMap<string, number>;
 }): Map<string, number> {
     const out = new Map<string, number>();
     for (const f of a.changed) {
-        if ((f.owed || a.prior.get(f.path) !== f.hash) && !a.finished.has(f.path)) out.set(f.path, a.measured.get(f.path) ?? owedCalls(a.state, f.path));
+        if ((f.owed || a.prior.get(f.path) !== f.hash || a.unreadable?.has(f.path)) && !a.finished.has(f.path)) out.set(f.path, a.measured.get(f.path) ?? owedCalls(a.state, f.path));
     }
     for (const p of a.carried) if (a.live.has(p)) out.set(p, owedCalls(a.state, p));
     return out;

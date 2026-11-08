@@ -66,7 +66,7 @@ export async function backfillNoExtract(args: { store: KnowledgeStore; source: D
             continue;
         }
         const todo = files.filter((f) => !f.changed && detail.prior.get(f.path) === f.hash);
-        if (todo.length === 0) { done.add(hash); continue; } // a changed file is handled by this review
+        if (todo.length === 0) continue; // a changed file is handled by this review, which clears the request once its work is done (`settledRecheck`)
         // Pass 2 works only on `only`: a file it will not process is not queued here, and its hash stays asked for the run that will.
         if (args.only && !todo.some((t) => args.only!.includes(t.path))) continue;
         const f = todo[0]!;
@@ -75,7 +75,9 @@ export async function backfillNoExtract(args: { store: KnowledgeStore; source: D
             const doc = await source.read(f.path);
             binary = doc.content.kind === 'text' && isBinaryText(doc.content.text);
         } catch {
-            continue; // unreadable says nothing about the file: asked again next time
+            // Unreadable says nothing final about the file: it goes through the review's one failure path (reported, kept asked, made owed).
+            for (const t of todo) { t.changed = true; out.queued.push(t.path); }
+            continue;
         }
         if (binary) { await putNoExtract(store, hash); out.recorded += 1; done.add(hash); }
         else for (const t of todo) { t.changed = true; out.queued.push(t.path); } // asked for until the review has stored its body (see `settledRecheck`)

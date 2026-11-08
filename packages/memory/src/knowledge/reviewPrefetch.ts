@@ -14,7 +14,7 @@ import type { KnowledgePack, KnowledgeStore, NodeRef, ReviewArgs } from './model
 import { extractFileDetailed, type FileExtraction } from './extractFile.js';
 import { BinaryContent } from './extractJob.js';
 import { judgesPack } from './reviewJudge.js';
-import { createDeadlines } from './jobDeadline.js';
+import { createDeadlines, JobTimeout } from './jobDeadline.js';
 import { createModelLimiter } from './modelLimiter.js';
 import { Lanes, reasonOf, type ReviewStep } from './reviewRunModel.js';
 import { isBinaryText, type ComposedPacks } from './sources.js';
@@ -25,7 +25,7 @@ export type Prefetch = (
     | { kind: 'binary' }
     | { kind: 'none' }
     | { kind: 'extracted'; doc?: SourceDocument; extraction: FileExtraction }
-    | { kind: 'failed'; reason: string }
+    | { kind: 'failed'; reason: string; transient?: true }
 ) & { ms: number; lane: number; parts?: NonNullable<ReviewStep['parts']> };
 
 export interface PrefetchContext {
@@ -79,7 +79,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
 
     const run = async (f: { path: string; hash: string }, parts: NonNullable<ReviewStep['parts']>, held: { lane: number }): Promise<Outcome> => {
         // A stopped run starts nothing: a job that has not begun settles at once. Once the read has begun the job finishes (its slot wait below is signal-free for a file already read).
-        if (c.signal.aborted) return { kind: 'failed', reason: reasonOf(c.signal.reason) };
+        if (c.signal.aborted) return { kind: 'failed', reason: reasonOf(c.signal.reason), transient: true };
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
         if (!byPool) {
@@ -104,11 +104,12 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
             // stored, the bytes read must be the bytes planned: hashed once, from the text already in hand. The review writes the
             // extract cache only for an 'extracted' job, so nothing is stored under the stale hash.
             const hashOf = c.args.source.hashOf;
-            if (hashOf && doc && doc.content.kind === 'text' && hashOf(doc.content.text) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN };
+            if (hashOf && doc && doc.content.kind === 'text' && hashOf(doc.content.text) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN, transient: true };
             return { kind: 'extracted', ...(doc ? { doc } : {}), extraction };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };
-            return { kind: 'failed', reason: reasonOf(error) };
+            // A timeout or a stop says nothing final about the file; any other extraction error is deterministic.
+            return { kind: 'failed', reason: reasonOf(error), ...(error instanceof JobTimeout || c.signal.aborted ? { transient: true as const } : {}) };
         }
     };
 

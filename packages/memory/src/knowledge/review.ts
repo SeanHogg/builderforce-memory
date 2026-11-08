@@ -171,6 +171,8 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // Changed files this run finished (or had nothing to do for); an owed file not in it stays owed,
     // at the model calls it still costs where this run could measure that (see owedFiles.ts).
     const finished = new Set<string>();
+    /** Files that failed for a reason that says nothing final about them, at the manifest's own bytes: owed, so the next review retries them. */
+    const unreadable = new Set<string>();
     const measured = new Map<string, number>();
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
     // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
@@ -211,11 +213,15 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             if (job.kind === 'read-error') report.readErrors += 1; else report.extractErrors += 1;
             fail(f.path, 'extract', job.kind === 'read-error' ? `read: ${job.reason}` : job.reason);
             measured.set(f.path, owedCalls(detail.extractor, f.path)); // learns nothing: keep what it was owed
-            // The manifest keeps the file at its old hash, which is what a replica syncs: if no body is stored for it, say so once (a terminal
-            // answer, `[]` = nothing extracted), so the file is not held back and re-asked for forever. A later successful read replaces it.
-            // (`[]` rather than a sibling "failed" member: the reason is already in `report.failures`, and a new store member would have no reader.)
+            // A FINAL failure gets a terminal answer, so a replica does not hold the file back and ask for it forever: the manifest's bytes are
+            // gone (the hash moved), or the extraction failed deterministically (not a timeout, a stop or a changed-since-plan). Never when the
+            // run was stopped. A transient failure at the manifest's own bytes keeps the re-check request AND makes the file owed, so the next
+            // normal review retries it. (`[]` rather than a sibling member: the reason is already in `report.failures`.)
             const known = detail.prior.get(f.path);
-            if (known) { await putNoExtract(store, known); await settledRecheck(known); }
+            const transient = job.kind === 'read-error' || job.transient === true; // a read error says nothing final about the bytes
+            if (known && !runSignal.aborted) {
+                if (known !== f.hash || !transient) { await putNoExtract(store, known); await settledRecheck(known); } else unreadable.add(f.path);
+            }
             return true;
         }
         // Recorded, so a file found binary on read is not re-read by every later review.
@@ -228,7 +234,13 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             report.staleMarked += 1;
             return true;
         }
-        if (job.kind === 'none') { finished.add(f.path); return true; }
+        if (job.kind === 'none') {
+            // No pack accepts the file: nothing will ever be extracted for it, so say so (and answer any re-check of it).
+            finished.add(f.path);
+            await putNoExtract(store, f.hash);
+            await settledRecheck(f.hash);
+            return true;
+        }
         report.extracted += 1;
         // The extract cache is written HERE, in plan order, so the cache, the counts and the order match a sequential run.
         if (!job.extraction.cached) await putExtract(store, f.hash, job.extraction.extracted);
@@ -360,7 +372,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // After every run: today's version and every file still owed a re-extraction — the unfinished ones,
     // content-changed or not, and the owed paths the plan did not list that the manifest still holds.
     await saveExtractorState(manifest, rootId, owedAfterRun({
-        state: detail.extractor, changed, prior: detail.prior, finished, carried: detail.carried, live: filesNow, measured,
+        state: detail.extractor, changed, prior: detail.prior, finished, carried: detail.carried, live: filesNow, measured, unreadable,
     }));
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
