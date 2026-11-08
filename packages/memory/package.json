@@ -34,6 +34,10 @@
       "types": "./dist/working/index.d.ts",
       "import": "./dist/working/index.js"
     },
+    "./stats": {
+      "types": "./dist/stats/index.d.ts",
+      "import": "./dist/stats/index.js"
+    },
     "./distillation": {
       "types": "./dist/distillation/index.d.ts",
       "import": "./dist/distillation/index.js"
