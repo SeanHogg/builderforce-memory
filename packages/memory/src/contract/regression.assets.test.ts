@@ -10,6 +10,7 @@ import { assetExtracted } from '../knowledge/assetFile.js';
 import { buildGraph } from '../knowledge/build.js';
 import type { KnowledgePack, KnowledgeParser } from '../knowledge/model.js';
 import { DOCS_PACK } from '../knowledge/packs/docs.js';
+import { owedCalls } from '../knowledge/owedFiles.js';
 import { planDetail, planReview } from '../knowledge/plan.js';
 import { srcRef } from '../knowledge/refs.js';
 import { reviewDirectory } from '../knowledge/review.js';
@@ -202,5 +203,31 @@ describe('regression: the asset lifecycle', () => {
         expect(sent).toContain('blob.txt');
         expect((await store.getExtracted(hashText(PNG)))![0]!.nodes[0]).toMatchObject({ badges: { asset: 1, mediaType: 'image/png' } });
         expect((await store.getExtracted(hashText(nul)))![0]!.nodes[0]).toMatchObject({ badges: { asset: 1, mediaType: 'text/plain' } });
+    });
+});
+
+describe('regression: an oversized claimed document stays an asset', () => {
+    it('regression: a 3 MB claimed pdf is an asset node, not in skipped, owes no calls, and is extracted once it shrinks below the cap', async () => {
+        const big = 'x'.repeat(3 * 1024 * 1024);
+        const source = memSource({ 'a.pdf': big });
+        const manifest = new InMemoryIngestManifest();
+        const store = memStore();
+        const plan = await planDetail(source, manifest, [withPdf]);
+        expect(plan.plan.skipped).toEqual([]);
+        expect(plan.plan.assets).toBe(1);
+        expect(plan.files).toMatchObject([{ path: 'a.pdf', asset: true }]);
+        expect(owedCalls(plan.extractor, 'a.pdf')).toBe(0);
+        const report = await reviewDirectory(args(source, store, manifest, { packs: [withPdf] }));
+        expect(report.extracted).toBe(0);
+        expect(source.reads).not.toContain('a.pdf');
+        expect((await store.getExtracted(hashText(big)))![0]!.nodes[0]).toMatchObject({ kind: 'file', badges: { asset: 1, mediaType: 'application/pdf' } });
+
+        // A later shrink below the cap: the content hash moved, so the file is owed and now extracted.
+        source.files['a.pdf'] = 'small pdf text';
+        const shrunk = await planReview(source, manifest, [withPdf]);
+        expect(shrunk).toMatchObject({ changed: ['a.pdf'], assets: 0 });
+        const again = await reviewDirectory(args(source, store, manifest, { packs: [withPdf] }));
+        expect(again.extracted).toBe(1);
+        expect((await store.getExtracted(hashText('small pdf text')))![0]!.nodes[0]!.badges?.asset).toBeUndefined();
     });
 });

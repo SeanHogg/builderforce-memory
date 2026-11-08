@@ -76,7 +76,11 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
     const lanes = new Lanes(c.extractWidth ?? c.width);
     const extractSlots = createModelLimiter(c.extractWidth ?? c.width);
     const withDeadline = createDeadlines(c.signal);
-    const readMs = c.args.timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS;
+    const defaultReadMs = c.args.timeouts?.readMs ?? DEFAULT_READ_TIMEOUT_MS;
+    const readMsOf = (path: string): number => {
+        const ms = c.args.source.readTimeoutMs?.(path);
+        return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : defaultReadMs;
+    };
     const extractMs = c.args.timeouts?.extractMs ?? DEFAULT_EXTRACT_TIMEOUT_MS;
     // Judging is a later pass in a mechanical review: no sections are wanted from the pool.
     const wantsSections = (pack: KnowledgePack) => !c.args.mechanical && judgesPack(c.args.judgement, pack);
@@ -90,7 +94,7 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
         if (!byPool) {
-            try { doc = await withDeadline(readMs, (signal) => c.args.source.read(f.path, signal)); } catch (error) {
+            try { doc = await withDeadline(readMsOf(f.path), (signal) => c.args.source.read(f.path, signal)); } catch (error) {
                 return { kind: 'read-error', reason: reasonOf(error) };
             }
             parts.readMs = Date.now() - t0;
@@ -111,7 +115,7 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
             // stored, the bytes read must be the bytes planned: hashed once, from the text already in hand. The review writes the
             // extract cache only for an 'extracted' job, so nothing is stored under the stale hash.
             const hashOf = c.args.source.hashOf;
-            if (hashOf && doc && doc.content.kind === 'text' && hashOf(doc.content.text) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN, transient: true };
+            if (hashOf && doc && doc.content.kind === 'text' && hashOf.call(c.args.source, doc.content.text, f.path) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN, transient: true };
             return { kind: 'extracted', ...(doc ? { doc } : {}), extraction };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };

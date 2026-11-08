@@ -114,7 +114,8 @@ export async function planDetail(
     // left unfinished: those are owed a re-extraction. `prior` stays the real manifest (removals).
     // A file's asset-ness depends on the packs (a pdf is an asset until a host parser claims it): a change in the document types the
     // packs claim since the last run owes the files of those types a re-processing, whatever their hash (see withDocuments).
-    const extractor = withDocuments(await loadExtractorState(manifest, source.rootId), claimedDocumentExts(composed));
+    const oversized = new Set<string>();
+    const extractor: ExtractorState = { ...withDocuments(await loadExtractorState(manifest, source.rootId), claimedDocumentExts(composed)), oversized };
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
@@ -127,7 +128,9 @@ export async function planDetail(
         if (ignored(e.path)) { skipped.push({ path: e.path, reason: 'ignored' }); continue; }
         const document = isDocumentPath(e.path) ? resolveDocument(composed, e.path) : undefined;
         // An asset is never read, so the size cap does not apply: it is planned, hashed and diffed, and costs no model call.
-        if (isAssetPath(e.path, !!document)) {
+        // A claimed document over the cap stays an asset (as before host parsers existed): never read, no calls (owedFiles isAssetNow agrees via `oversized`).
+        if (document && e.size > maxBytes) oversized.add(e.path);
+        if (isAssetPath(e.path, !!document && e.size <= maxBytes)) {
             const { owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
             files.push({ path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true });
             assets += 1;
@@ -188,7 +191,10 @@ export async function planDetail(
  */
 export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
     const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
-    const extractor = withDocuments(await loadExtractorState(manifest, detail.plan.rootId), detail.extractor.documentsNow);
+    const extractor: ExtractorState = {
+        ...withDocuments(await loadExtractorState(manifest, detail.plan.rootId), detail.extractor.documentsNow),
+        ...(detail.extractor.oversized ? { oversized: detail.extractor.oversized } : {}),
+    };
     const files = detail.files.map((f) => {
         const { owed, changed } = classify(extractor, prior, f.path, f.hash);
         return { ...f, changed, owed };

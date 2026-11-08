@@ -52,6 +52,8 @@ export interface ExtractorState {
     documentsNow?: string;
     /** Document extensions whose asset-ness changed between `documents` and `documentsNow`: their files are owed a re-processing. */
     flipped?: ReadonlySet<string>;
+    /** Claimed documents over the plan's size cap: planned as assets (never read), so they owe no calls. Set by the plan, carried to *Continue*. */
+    oversized?: ReadonlySet<string>;
 }
 
 /**
@@ -111,6 +113,7 @@ export const isOwed = (state: ExtractorState, path: string): boolean =>
 const isAssetNow = (state: ExtractorState, path: string): boolean => {
     if (!isBinaryPath(path)) return false;
     if (!isDocumentPath(path)) return true;
+    if (state.oversized?.has(path)) return true; // claimed, but over the size cap: an asset like an unclaimed one
     const claimed = state.documentsNow;
     return claimed === undefined || claimed === NO_DOCUMENTS || !claimed.split(',').includes(extOf(path));
 };

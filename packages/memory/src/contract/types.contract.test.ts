@@ -13,7 +13,7 @@
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
 import type {
-    Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
+    DirectorySource, Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
     OutlineFile, OutlineCommunity, NodePlacement, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
     RowChange, RowPersistence,
@@ -96,6 +96,14 @@ export type ExtractFailed_is_an_Error = Expect<Equal<InstanceType<typeof Extract
 export type ExtractFailed_constructor = Expect<Equal<ConstructorParameters<typeof ExtractFailed>, [message: string, options?: { cause?: unknown }]>>;
 // ExtractorState.failures: consecutive transient failures by path at one hash; optional so a hand-built state stays valid.
 export type ExtractorState_failures = Expect<Equal<ExtractorState['failures'], ReadonlyMap<string, { hash: string; count: number }> | undefined>>;
+// ExtractorState.oversized: claimed documents over the size cap, planned as assets; optional so a hand-built state stays valid.
+export type ExtractorState_oversized = Expect<Equal<ExtractorState['oversized'], ReadonlySet<string> | undefined>>;
+
+/* ── DirectorySource: optional per-path hooks ──────────────────────────────────────────────────────────────── */
+// hashOf takes the path (a host whose read() transforms bytes returns the listing hash for it); a one-argument hashOf still satisfies it.
+export type DirectorySource_hashOf = Expect<Equal<DirectorySource['hashOf'], ((text: string, path: string) => string) | undefined>>;
+export type DirectorySource_hashOf_legacy_one_arg = Expect<Equal<((text: string) => string) extends NonNullable<DirectorySource['hashOf']> ? true : false, true>>;
+export type DirectorySource_readTimeoutMs = Expect<Equal<DirectorySource['readTimeoutMs'], ((path: string) => number | undefined) | undefined>>;
 
 /* ── KnowledgeStore: the port hosts implement ──────────────────────────────────────────────────────────────── */
 export type KnowledgeStore_methods = Expect<Equal<

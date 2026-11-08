@@ -441,3 +441,37 @@ describe('regression: a binary file is an asset with a node, not a skipped file'
         expect((await hosted.getExtracted(hashText('pdf text')))![0]!.nodes[0]!.badges?.asset).toBeUndefined();
     });
 });
+
+describe('regression: DirectorySource.hashOf and readTimeoutMs take the path', () => {
+    it('regression: hashOf receives the path being checked', async () => {
+        const source = memSource({ 'a.md': '# A\nalpha\n' });
+        const seen: Array<[string, string]> = [];
+        source.hashOf = (text, path) => { seen.push([text, path]); return hashText(text); };
+        const report = await reviewDirectory(args(source));
+        expect(report.extracted).toBe(1);
+        expect(seen).toEqual([['# A\nalpha\n', 'a.md']]);
+    });
+
+    it('regression: readTimeoutMs overrides the default read timeout for one path, and a slow read past the default succeeds when the override is longer', async () => {
+        const slowRead = (source: SpySource) => {
+            const read = source.read.bind(source);
+            source.read = async (path) => { if (path === 'slow.md') await new Promise((r) => setTimeout(r, 120)); return read(path); };
+            return source;
+        };
+        const files = { 'slow.md': '# S\nslow\n', 'fast.md': '# F\nfast\n' };
+        // Default (scaled down from 5 s): the slow read times out.
+        const base = await reviewDirectory(args(slowRead(memSource({ ...files })), memStore(), new InMemoryIngestManifest(), { timeouts: { readMs: 40 } }));
+        expect(base.failures).toEqual([{ path: 'slow.md', phase: 'extract', reason: 'read: timeout' }]);
+        // The override applies to slow.md only: it now succeeds.
+        const source = slowRead(memSource({ ...files }));
+        source.readTimeoutMs = (path) => (path === 'slow.md' ? 2_000 : undefined);
+        const report = await reviewDirectory(args(source, memStore(), new InMemoryIngestManifest(), { timeouts: { readMs: 40 } }));
+        expect(report.failures).toEqual([]);
+        expect(report.extracted).toBe(2);
+        // A non-finite or non-positive override keeps the default.
+        const bad = slowRead(memSource({ ...files }));
+        bad.readTimeoutMs = () => 0;
+        const kept = await reviewDirectory(args(bad, memStore(), new InMemoryIngestManifest(), { timeouts: { readMs: 40 } }));
+        expect(kept.failures).toEqual([{ path: 'slow.md', phase: 'extract', reason: 'read: timeout' }]);
+    });
+});
