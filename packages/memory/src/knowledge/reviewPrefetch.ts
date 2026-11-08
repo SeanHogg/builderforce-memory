@@ -78,7 +78,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
     const byPool = !!c.args.extractPool && !!c.args.deferRead;
 
     const run = async (f: { path: string; hash: string }, parts: NonNullable<ReviewStep['parts']>, held: { lane: number }): Promise<Outcome> => {
-        // A stopped run starts nothing: a queued read-ahead job settles at once.
+        // A stopped run starts nothing: a job that has not begun settles at once. Once the read has begun the job finishes (its slot wait below is signal-free for a file already read).
         if (c.signal.aborted) return { kind: 'failed', reason: reasonOf(c.signal.reason) };
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
@@ -98,7 +98,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
                 ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true } : {}) } : {}),
             })); } finally { lanes.free(held.lane); }
-            }, c.signal);
+            }, byPool ? c.signal : undefined);
             if (!extraction) return { kind: 'none' };
             // Binary and no-pack files are decided above and never hash-checked (as in the host worker). For a file that WILL be
             // stored, the bytes read must be the bytes planned: hashed once, from the text already in hand. The review writes the
@@ -118,8 +118,8 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
         const held = { lane: 0 };
         const out = await run(f, parts, held);
         const job = { ...out, ms: Date.now() - t0, lane: held.lane, parts } as Prefetch;
-        // A job that ended only because the run was stopped is not a failed file: one Stop must not emit hundreds of failed steps.
-        if (!c.signal.aborted) c.args.onStep?.(extractStepOf(f.path, job));
+        // A job that ended only because the run was stopped is not a failed file: one Stop must not emit hundreds of failed steps. A job that finished normally still reports.
+        if (!(c.signal.aborted && job.kind === 'failed')) c.args.onStep?.(extractStepOf(f.path, job));
         return job;
     };
 }

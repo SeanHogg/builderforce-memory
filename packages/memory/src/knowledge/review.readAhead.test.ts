@@ -21,9 +21,15 @@ function readingPool(source: ReturnType<typeof memSource>, hold: (job: ExtractJo
     let started = 0;
     return {
         started: () => started,
-        pool: async (job) => {
+        pool: async (job, signal) => {
             started += 1;
-            await hold(job, started);
+            // Like the host pool: a stopped review rejects the job with an AbortError.
+            const aborted = new Promise<never>((_, reject) => {
+                const stop = (): void => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+                if (signal?.aborted) stop(); else signal?.addEventListener('abort', stop, { once: true });
+            });
+            aborted.catch(() => undefined);
+            await Promise.race([hold(job, started), aborted]);
             const doc = await source.read(job.readByPool!.path);
             const { readByPool: _drop, ...rest } = job;
             return extractJob({ ...rest, doc } as ExtractJob, [DOCS_PACK]);
@@ -76,7 +82,7 @@ describe('read-ahead with a pool that reads', () => {
         jest.useFakeTimers();
         const source = memSource(files());
         const ctl = new AbortController();
-        // Every pool job hangs and ignores its signal: only the run's own stop can settle them.
+        // Every pool job hangs until its signal aborts (an AbortError, as the host pool does); queued limiter waiters must not hold up the settle.
         const { pool, started } = readingPool(source, () => new Promise<void>(() => undefined));
         const run = reviewDirectory(args(source, new LocalSnapshotStore(memPersistence()), new InMemoryIngestManifest(), {
             judgement: fakeJudge(), mechanical: true, extractPool: pool, deferRead: true, concurrency: 8, signal: ctl.signal,
