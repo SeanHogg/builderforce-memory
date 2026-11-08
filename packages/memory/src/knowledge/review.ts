@@ -31,7 +31,8 @@ import type { ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation 
 import { owedAfterRun, owedCalls, saveExtractorState } from './owedFiles.js';
 import { planDetail, refreshPlan } from './plan.js';
 import { composePacks, filesManifestKey, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
-import { knownKeysOfEntities, putExtract } from './extractFile.js';
+import { knownKeysOfEntities, putExtract, putNoExtract } from './extractFile.js';
+import { backfillCandidates, backfillNoExtract } from './backfillNoExtract.js';
 import { prefetchOrdered } from './orderedPool.js';
 import {
     DEFAULT_REVIEW_CONCURRENCY, DEFAULT_REVIEW_JUDGE_CONCURRENCY, DEFAULT_REVIEW_MODEL_CALLS, JUDGE_CONCURRENCY, JudgedBatch,
@@ -118,6 +119,13 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const judgedPrior = await manifestMap(manifest, judgedManifestKey(rootId));
     const judgedNow = new Map(judgedPrior);
     const filesNow = new Map(detail.prior);
+    // A root reviewed before binary files were recorded: settle files with no body: binary-by-extension ones (no read), and the ones a replica asked to re-check.
+    const asked = (await store.recheckHashes?.()) ?? [];
+    // ONE bulk fetch of the extract cache for the whole run instead of a round trip per file: the files this run extracts and the ones the backfill looks up.
+    const preChanged = detail.files.filter((f) => f.changed && (!args.only || args.only.includes(f.path)));
+    const preload = [...new Set([...preChanged.map((f) => f.hash), ...backfillCandidates(detail, asked)])];
+    if (preload.length > 0) await store.preloadExtracted?.(preload);
+    await backfillNoExtract({ store, source, detail, asked, only: args.only, signal });
     // Claims awaiting comparison: those a previous run could not compare, then this run's.
     const newClaims = await pendingClaims(manifest, rootId, stored.facts);
 
@@ -161,9 +169,6 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // at the model calls it still costs where this run could measure that (see owedFiles.ts).
     const finished = new Set<string>();
     const measured = new Map<string, number>();
-    // One bulk fetch of the extract cache for the whole run instead of a round trip per file.
-    const hashes = [...new Set(work.map((f) => f.hash))];
-    if (hashes.length > 0) await store.preloadExtracted?.(hashes);
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
     // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
     // Judging runs `judgeWidth` files at once; ONE writer (`applyFile`) consumes them strictly in plan order.
@@ -209,6 +214,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         if (job.kind === 'binary') {
             filesNow.set(f.path, f.hash);
             finished.add(f.path);
+            await putNoExtract(store, f.hash); // the explicit "nothing extracted", so a replica can tell it from "not extracted yet"
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
             return true;

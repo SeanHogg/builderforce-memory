@@ -10,11 +10,12 @@ import type { ReviewStep } from '../knowledge/reviewRunModel.js';
 import { extractJob, type ExtractJob, type ExtractPool } from '../knowledge/extractJob.js';
 import type { JudgementRequest, KnowledgePack, KnowledgeStore } from '../knowledge/model.js';
 import { DOCS_PACK } from '../knowledge/packs/docs.js';
+import { putNoExtract } from '../knowledge/extractFile.js';
 import { planReview } from '../knowledge/plan.js';
 import { srcRef } from '../knowledge/refs.js';
 import { reviewDirectory } from '../knowledge/review.js';
 import { applyRunEvent, failuresOf, failureTotal, REVIEW_RUN_FAILURE_CHUNK, startRun } from '../knowledge/reviewRun.js';
-import { extractorManifestKey, filesManifestKey, judgedManifestKey, manifestMap } from '../knowledge/sources.js';
+import { extractorManifestKey, filesManifestKey, judgedManifestKey, manifestMap, saveManifestMap } from '../knowledge/sources.js';
 import {
     ALL, args, fakeJudge, FILES, memSource, memStore, quietPack, ROOT, stateOf, type SpySource,
 } from '../knowledge/testkit.test-util.js';
@@ -232,5 +233,96 @@ describe('regression: changed since plan', () => {
         const report = await reviewDirectory(args(source, store, new InMemoryIngestManifest(), { extractPool: pool, deferRead: true }));
         expect(report.failures).toEqual([{ path: 'a.md', phase: 'extract', reason: 'changed since plan' }]);
         expect(await store.getExtracted(hashText(FILES['a.md']))).toBeUndefined();
+    });
+});
+
+describe('regression: a file with nothing to extract is told apart from one not extracted yet', () => {
+    it('regression: a file found binary on read has an explicit stored [] (and a stale mark), never an absent body', async () => {
+        const text = 'bin\u0000ary';
+        const store = memStore();
+        await reviewDirectory(args(memSource({ 'blob.txt': text }), store, new InMemoryIngestManifest()));
+        expect(await store.getExtracted(hashText(text))).toEqual([]);
+    });
+
+    it('regression: a text file that is not extracted (here: its review failed) has NO stored body, so it is never mistaken for binary', async () => {
+        const store = memStore();
+        const text = '# A\nalpha\n';
+        expect(await store.getExtracted(hashText(text))).toBeUndefined();
+        await store.markStale({ rootId: ROOT }, srcRef(ROOT, 'a.md'), hashText(text)); // staled before it is extracted
+        expect(await store.getExtracted(hashText(text))).toBeUndefined();
+    });
+
+    it('regression: recording "nothing extracted" never clobbers a hash that already has entries', async () => {
+        const store = memStore();
+        const text = '# A\nalpha\n';
+        await reviewDirectory(args(memSource({ 'a.md': text }), store, new InMemoryIngestManifest()));
+        const before = await store.getExtracted(hashText(text));
+        expect(before!.length).toBeGreaterThan(0);
+        await putNoExtract(store, hashText(text));
+        expect(await store.getExtracted(hashText(text))).toEqual(before);
+    });
+});
+
+describe('regression: a root reviewed before binary files were recorded is settled by its next review, without reading a file', () => {
+    const text = '# A\nalpha\n';
+
+    it('regression: a binary-by-extension file the manifest names, with no stored body, gets a stored [] and no file is read', async () => {
+        const source = memSource({ 'a.md': text, 'img.png': 'x' });
+        const manifest = new InMemoryIngestManifest();
+        await saveManifestMap(manifest, filesManifestKey(ROOT), new Map([['img.png', 'imghash']]));
+        const store = memStore();
+        await reviewDirectory(args(source, store, manifest));
+        expect(await store.getExtracted('imghash')).toEqual([]);
+        expect(source.reads).not.toContain('img.png');
+    });
+
+    it('regression: the review reads ONLY the files a replica asked to re-check: a NUL-binary gets [], a text file is extracted, the set is cleared', async () => {
+        const binary = 'bin\u0000ary';
+        const files = { 'blob.txt': binary, 'a.md': text, 'b.md': '# B\nbeta\n' };
+        const manifest = new InMemoryIngestManifest();
+        await reviewDirectory(args(memSource(files), memStore(), manifest));
+        const legacy = memStore(); // a root reviewed before: the manifest names the files, this store holds no bodies
+        await legacy.markRecheck([hashText(binary), hashText(text)]);
+
+        const source = memSource(files);
+        await reviewDirectory(args(source, legacy, manifest));
+        expect(new Set(source.reads)).toEqual(new Set(['blob.txt', 'a.md'])); // b.md was never named
+        expect(await legacy.getExtracted(hashText(binary))).toEqual([]);
+        expect((await legacy.getExtracted(hashText(text)))!.length).toBeGreaterThan(0);
+        expect(await legacy.getExtracted(hashText(files['b.md']))).toBeUndefined();
+        expect(await legacy.recheckHashes()).toEqual([]);
+
+        source.reads.length = 0;
+        await reviewDirectory(args(source, legacy, manifest)); // the set is empty now: nothing is read
+        expect(source.reads).toEqual([]);
+    });
+
+    it('regression: a re-checked hash only a SKIPPED manifest entry carries (here: ignored) is settled with [] and cleared, never left to loop', async () => {
+        const manifest = new InMemoryIngestManifest();
+        await saveManifestMap(manifest, filesManifestKey(ROOT), new Map([['skip.md', 'skiphash']]));
+        const legacy = memStore();
+        await legacy.markRecheck(['skiphash', 'gonehash']);
+        await reviewDirectory(args(memSource({ '.gitignore': 'skip.md\n', 'skip.md': '# S\nskipped\n', 'a.md': text }), legacy, manifest));
+        expect(await legacy.getExtracted('skiphash')).toEqual([]); // no review will ever extract an ignored file
+        expect(await legacy.getExtracted('gonehash')).toBeUndefined(); // carried by nothing: nothing to store
+        expect(await legacy.recheckHashes()).toEqual([]);
+    });
+
+    it('regression: an unchanged text file with no stored body is NOT given [] (it is "not extracted yet")', async () => {
+        const manifest = new InMemoryIngestManifest();
+        await reviewDirectory(args(memSource({ 'a.md': text }), memStore(), manifest));
+        const legacy = memStore();
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest));
+        expect(await legacy.getExtracted(hashText(text))).toBeUndefined();
+    });
+
+    it('regression: a healthy root performs no extra reads on an incremental review', async () => {
+        const source = memSource({ 'a.md': text, 'blob.txt': 'bin\u0000ary' });
+        const manifest = new InMemoryIngestManifest();
+        const store = memStore();
+        await reviewDirectory(args(source, store, manifest));
+        source.reads.length = 0;
+        await reviewDirectory(args(source, store, manifest));
+        expect(source.reads).toEqual([]);
     });
 });

@@ -225,6 +225,15 @@ export interface KnowledgeStore {
      */
     preloadExtracted?(hashes: readonly string[]): Promise<void>;
     /**
+     * The re-check channel between a replica and the review, through the one store both already share: a replica that
+     * is asked for the body of a hash it holds none of calls `markRecheck(hashes)`; the next review reads ONLY the
+     * manifest files with those hashes (binary → an explicit `[]`, text → extracted), then `clearRecheck`s them. A store
+     * that cannot persist the set keeps it in memory. Optional like the cache methods; a store without them has no channel.
+     */
+    markRecheck?(hashes: readonly string[]): Promise<void>;
+    recheckHashes?(): Promise<string[]>;
+    clearRecheck?(hashes: readonly string[]): Promise<void>;
+    /**
      * Runs `work` as one unit of many mutations. Inside it the store may hold persistence back
      * (a whole-snapshot store would otherwise rewrite everything per mutation); `flush` makes
      * everything so far durable; when `work` settles, resolved or rejected, the store is durable.

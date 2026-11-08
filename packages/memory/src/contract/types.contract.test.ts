@@ -26,7 +26,7 @@ type IsOptional<T, K extends keyof T> = Record<never, never> extends Pick<T, K> 
 
 /* ── KnowledgeSnapshot ─────────────────────────────────────────────────────────────────────────────────────── */
 // `extracted` became optional (the extract cache moved to the log); consumers read it ONLY through `extractedEntries()`.
-export type KnowledgeSnapshot_keys = Expect<Equal<keyof KnowledgeSnapshot, 'version' | 'scopes' | 'facts' | 'relations' | 'extracted'>>;
+export type KnowledgeSnapshot_keys = Expect<Equal<keyof KnowledgeSnapshot, 'version' | 'scopes' | 'facts' | 'relations' | 'extracted' | 'recheck'>>;
 export type KnowledgeSnapshot_extracted_is_optional = Expect<Equal<IsOptional<KnowledgeSnapshot, 'extracted'>, true>>;
 export type KnowledgeSnapshot_extracted_shape = Expect<Equal<KnowledgeSnapshot['extracted'], Record<string, Extracted[]> | undefined>>;
 export type KnowledgeSnapshot_rows_are_required = Expect<Equal<
@@ -93,18 +93,19 @@ export type ExtractJobResult_fields = Expect<Equal<ExtractJobResult, { binary?: 
 /* ── KnowledgeStore: the port hosts implement ──────────────────────────────────────────────────────────────── */
 export type KnowledgeStore_methods = Expect<Equal<
     keyof KnowledgeStore,
-    'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'putExtracted' | 'preloadExtracted' | 'batched'
+    'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'putExtracted' | 'preloadExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck' | 'batched'
 >>;
 export type KnowledgeStore_optional_methods = Expect<Equal<
-    [IsOptional<KnowledgeStore, 'getExtracted'>, IsOptional<KnowledgeStore, 'putExtracted'>, IsOptional<KnowledgeStore, 'preloadExtracted'>, IsOptional<KnowledgeStore, 'batched'>],
-    [true, true, true, true]
+    [IsOptional<KnowledgeStore, 'getExtracted'>, IsOptional<KnowledgeStore, 'putExtracted'>, IsOptional<KnowledgeStore, 'preloadExtracted'>, IsOptional<KnowledgeStore, 'batched'>,
+        IsOptional<KnowledgeStore, 'markRecheck'>, IsOptional<KnowledgeStore, 'recheckHashes'>, IsOptional<KnowledgeStore, 'clearRecheck'>],
+    [true, true, true, true, true, true, true]
 >>;
 export type KnowledgeStore_required_methods = Expect<Equal<
     [IsOptional<KnowledgeStore, 'scopes'>, IsOptional<KnowledgeStore, 'facts'>, IsOptional<KnowledgeStore, 'relations'>, IsOptional<KnowledgeStore, 'write'>, IsOptional<KnowledgeStore, 'markStale'>],
     [false, false, false, false, false]
 >>;
 export type KnowledgeStore_signatures = Expect<Equal<
-    Pick<KnowledgeStore, 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'putExtracted' | 'preloadExtracted'>,
+    Pick<KnowledgeStore, 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'putExtracted' | 'preloadExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck'>,
     {
         scopes(): Promise<ScopeRecord[]>;
         facts(scope: { rootId: string }): Promise<StoredFact[]>;
@@ -114,6 +115,9 @@ export type KnowledgeStore_signatures = Expect<Equal<
         getExtracted?(hash: string): Promise<Extracted[] | undefined>;
         putExtracted?(hash: string, extracted: Extracted[]): Promise<void>;
         preloadExtracted?(hashes: readonly string[]): Promise<void>;
+        markRecheck?(hashes: readonly string[]): Promise<void>;
+        recheckHashes?(): Promise<string[]>;
+        clearRecheck?(hashes: readonly string[]): Promise<void>;
     }
 >>;
 // A host store with only the required methods is still a KnowledgeStore (the optional ones stay optional).
@@ -133,7 +137,7 @@ export const batchedHostStore = {
 export type LocalSnapshotStore_is_a_KnowledgeStore = Expect<Equal<LocalSnapshotStore extends KnowledgeStore ? true : false, true>>;
 export type LocalSnapshotStore_public_methods = Expect<Equal<
     keyof LocalSnapshotStore,
-    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'putExtracted'
+    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'putExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck'
 >>;
 export type LocalSnapshotStore_extractedEntries = Expect<Equal<LocalSnapshotStore['extractedEntries'], () => Promise<Record<string, Extracted[]>>>>;
 export type LocalSnapshotStore_constructor = Expect<Equal<

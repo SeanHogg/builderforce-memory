@@ -22,6 +22,9 @@ import type {
     Extracted, KnowledgeStore, NodeRef, Scope, ScopeRecord, StoredFact, StoredRelation,
 } from '../model.js';
 import { canonicalJson, compareStr, pathOfRef } from '../refs.js';
+import { emptySnapshot, parse, parseLog, type KnowledgeSnapshot, type ParsedLog } from './snapshotFormat.js';
+
+export type { KnowledgeSnapshot } from './snapshotFormat.js';
 
 export interface SnapshotPersistence {
     read(): Promise<string | undefined>;
@@ -42,15 +45,6 @@ export interface ExtractedLogPersistence {
     replace?(text: string): Promise<void>;
 }
 
-export interface KnowledgeSnapshot {
-    version: 1;
-    scopes: ScopeRecord[];
-    facts: Record<string, StoredFact[]>;
-    relations: Record<string, StoredRelation[]>;
-    /** Present only when the store has no `extractedLog` (or in a snapshot written before the log existed). */
-    extracted?: Record<string, Extracted[]>;
-}
-
 export interface LocalSnapshotStoreOptions {
     /** When given, the extract cache lives in this log and the snapshot omits `extracted`. */
     extractedLog?: ExtractedLogPersistence;
@@ -64,57 +58,6 @@ export interface LocalSnapshotStoreOptions {
 
 const relKey = (r: Pick<StoredRelation, 'from' | 'to' | 'kind'>) => `${r.from}\u0000${r.to}\u0000${r.kind}`;
 
-function asRecord<T>(v: unknown): Record<string, T[]> {
-    return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, T[]> : {};
-}
-
-const emptySnapshot = (): KnowledgeSnapshot => ({ version: 1, scopes: [], facts: {}, relations: {} });
-
-/** Reads a snapshot's text. THROWS when it does not parse, so the caller can keep the bytes aside before starting empty. */
-function parse(text: string | undefined): KnowledgeSnapshot {
-    if (!text) return emptySnapshot();
-    const s = JSON.parse(text) as Partial<KnowledgeSnapshot>;
-    return {
-        version: 1,
-        scopes: Array.isArray(s.scopes) ? s.scopes : [],
-        facts: asRecord(s.facts),
-        relations: asRecord(s.relations),
-        ...(s.extracted && typeof s.extracted === 'object' ? { extracted: s.extracted } : {}),
-    };
-}
-
-interface ParsedLog {
-    entries: Map<string, Extracted[]>;
-    /** The live (last) line of each hash, newline-terminated, in log order. */
-    liveLines: Map<string, string>;
-    liveBytes: number;
-    /** Superseded lines, torn lines and blank lines. */
-    deadBytes: number;
-}
-
-/**
- * The log's entries, last line per hash winning. A line that does not parse (torn by a crash or a failed
- * append) is skipped on its own: it never costs the other lines.
- */
-function parseLog(text: string | undefined): ParsedLog {
-    const out: ParsedLog = { entries: new Map(), liveLines: new Map(), liveBytes: 0, deadBytes: 0 };
-    if (!text) return out;
-    for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-            const row = JSON.parse(line) as { h?: unknown; e?: unknown };
-            if (typeof row.h === 'string' && Array.isArray(row.e)) {
-                out.entries.set(row.h, row.e as Extracted[]);
-                out.liveLines.delete(row.h); // re-set below so the map stays in log order of last occurrence
-                out.liveLines.set(row.h, `${line}\n`);
-            }
-        } catch { /* torn line */ }
-    }
-    for (const l of out.liveLines.values()) out.liveBytes += l.length;
-    out.deadBytes = Math.max(0, text.length - out.liveBytes);
-    return out;
-}
-
 type Index = Map<string, Set<string>>;
 
 export class LocalSnapshotStore implements KnowledgeStore {
@@ -127,6 +70,8 @@ export class LocalSnapshotStore implements KnowledgeStore {
     /** Per root: source path → keys of the relations touching it (`from` or `to`). */
     private readonly relByPath = new Map<string, Index>();
     private readonly extracted = new Map<string, Extracted[]>();
+    /** Hashes the next review re-checks (persisted with the snapshot). */
+    private readonly recheck = new Set<string>();
     /** Extract entries not yet appended to the log. */
     private pending = new Map<string, Extracted[]>();
     /** The log's last line is torn (no newline), so the next append starts on a fresh line. */
@@ -173,6 +118,7 @@ export class LocalSnapshotStore implements KnowledgeStore {
         }
         const logText = this.log ? await this.log.read() : undefined;
         this.scopeList = snap.scopes;
+        for (const h of snap.recheck ?? []) this.recheck.add(h);
         for (const [rootId, rows] of Object.entries(snap.facts)) {
             const m = this.factsOf(rootId);
             if (Array.isArray(rows)) for (const f of rows) m.set(f.key, f);
@@ -387,6 +333,22 @@ export class LocalSnapshotStore implements KnowledgeStore {
         return this.extracted.get(hash);
     }
 
+    /** Asks the next review to re-check the files with these content hashes (persisted until {@link clearRecheck}). */
+    markRecheck(hashes: readonly string[]): Promise<void> {
+        // The snapshot is dirty only when the set really changed (a repeated mark costs no write).
+        return this.mutate(() => { for (const h of hashes) if (!this.recheck.has(h)) { this.recheck.add(h); this.dirty = true; } }, false);
+    }
+
+    async recheckHashes(): Promise<string[]> {
+        await this.load();
+        return [...this.recheck].sort(compareStr);
+    }
+
+    /** Forgets hashes a review has handled. */
+    clearRecheck(hashes: readonly string[]): Promise<void> {
+        return this.mutate(() => { for (const h of hashes) if (this.recheck.delete(h)) this.dirty = true; }, false);
+    }
+
     /** Every cached entry by content hash (the log's, else the snapshot's `extracted`), for a host that packs the cache. */
     async extractedEntries(): Promise<Record<string, Extracted[]>> {
         await this.load();
@@ -414,6 +376,7 @@ export class LocalSnapshotStore implements KnowledgeStore {
             facts: rows(this.factMaps, (a, b) => compareStr(a.key, b.key)),
             relations: rows(this.relMaps, (a, b) => compareStr(relKey(a), relKey(b))),
             ...(this.log ? {} : { extracted: Object.fromEntries(this.extracted) }),
+            ...(this.recheck.size > 0 ? { recheck: [...this.recheck].sort(compareStr) } : {}),
         });
     }
 }

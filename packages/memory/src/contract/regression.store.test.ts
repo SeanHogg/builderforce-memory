@@ -82,3 +82,16 @@ describe('regression: snapshot migration', () => {
         expect(Object.keys(JSON.parse(snap.value!).extracted).sort()).toEqual(['new', 'old']);
     });
 });
+
+describe('regression: re-check channel', () => {
+    it('regression: hashes marked for re-check survive a reload, and clearing them removes them from the snapshot', async () => {
+        const snap = memPersistence();
+        await new LocalSnapshotStore(snap).markRecheck(['b', 'a']);
+        const again = new LocalSnapshotStore(snap);
+        expect(await again.recheckHashes()).toEqual(['a', 'b']);
+        await again.clearRecheck(['a']);
+        expect(await new LocalSnapshotStore(snap).recheckHashes()).toEqual(['b']);
+        await again.clearRecheck(['b']);
+        expect(JSON.parse(snap.value!).recheck).toBeUndefined();
+    });
+});

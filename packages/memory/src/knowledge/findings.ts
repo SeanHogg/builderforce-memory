@@ -8,16 +8,15 @@
  * Fix-with-agent request, never a model call.
  */
 
-import { hashText } from '../ingest/hash.js';
+import { finding, findingId, MAX_FINDING_NODES, requestKeyFor } from './findingBuilder.js';
 import type { EdgeVerdict, Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
+import { godModuleFindings } from './godModule.js';
 import { possibleSameFindings } from './resolve.js';
 import { aboutTargets, compareStr, round6, srcRef } from './refs.js';
 
 /** Node badge naming the clone group (e.g. a jscpd issue id) its `duplicate` edges belong to. */
 export const CLONE_GROUP_BADGE = 'cloneGroup';
-/** Refs listed on one grouped finding, at most (the count rides in params). */
-export const MAX_FINDING_NODES = 50;
 
 const SEVERITY_RANK = { error: 0, warn: 1, info: 2 } as const;
 
@@ -26,30 +25,7 @@ export function partitionSeverity(verdict: EdgeVerdict): Finding['severity'] {
     return verdict === 'upward' ? 'error' : 'warn';
 }
 
-export function findingId(kind: string, refs: readonly string[]): string {
-    return `${kind}:${hashText([...refs].sort(compareStr).join('\u0000'))}`;
-}
-
-/** `clone-group` → `knowledgeGraph.fix.cloneGroup`. */
-export function requestKeyFor(kind: string): string {
-    return `knowledgeGraph.fix.${kind.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}`;
-}
-
-/**
- * The ONE finding builder: nodes deduped, sorted and capped at {@link MAX_FINDING_NODES}.
- * The id hashes `idRefs` (default: all the nodes) — pass a narrower set to keep it stable
- * while the listed nodes change.
- */
-export function finding(
-    kind: string, pack: string, nodes: readonly NodeRef[], severity: Finding['severity'], params: Finding['params'],
-    idRefs?: readonly string[],
-): Finding {
-    const sorted = [...new Set(nodes)].sort(compareStr);
-    return {
-        id: findingId(kind, idRefs ?? sorted), kind, pack, nodes: sorted.slice(0, MAX_FINDING_NODES), severity, params,
-        requestKey: requestKeyFor(kind),
-    };
-}
+export { finding, findingId, requestKeyFor, MAX_FINDING_NODES };
 
 /** Connected components over edges, each sorted; components sorted by first ref. */
 export function components(edges: readonly KEdge[]): NodeRef[][] {
@@ -135,6 +111,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
     }
 
     out.push(...staleFindings(g, byRef));
+    out.push(...godModuleFindings(g));
     return out;
 }
 

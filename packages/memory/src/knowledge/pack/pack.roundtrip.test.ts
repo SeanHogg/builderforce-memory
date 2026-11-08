@@ -41,7 +41,7 @@ describe('BFKP round trip', () => {
 
     it('round-trips awkward numbers exactly', async () => {
         const g = genPack(1, { files: 1 });
-        g.facts = [0, 1, 0.5, 1e-9, 0.1234567, 2 ** 40, 1e15 + 0.5, 123456789.123456789].map((importance, i) => ({
+        g.facts = [0, 1, 0.5, 1e-9, 0.1234567, 2 ** 40, 1e15 + 0.5, 123456789.12345679].map((importance, i) => ({
             key: `k${i}`, content: 'c', source: 's', importance, origin: 'model' as const, fileAnchors: [],
         }));
         const back = await decodePack(await encodePack(g));

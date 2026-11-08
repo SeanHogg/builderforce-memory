@@ -69,6 +69,15 @@ export async function putExtract(store: KnowledgeStore, hash: string, extracted:
     await store.putExtracted?.(hash, [...cached.filter((e) => e.sourceRef !== extracted.sourceRef), extracted]);
 }
 
+/**
+ * Records, once, that nothing is extracted for `hash` (a binary file): the cache holds an explicit `[]`, which a store keeps
+ * distinct from "absent" (a text file not extracted yet). A hash that already has entries is left alone.
+ */
+export async function putNoExtract(store: KnowledgeStore, hash: string): Promise<void> {
+    if (!store.putExtracted || !store.getExtracted || (await store.getExtracted(hash)) !== undefined) return;
+    await store.putExtracted(hash, []);
+}
+
 /** Extraction plus what produced it; undefined when no pack's parser accepts the file. */
 export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtraction | undefined> {
     // Pack resolution needs only the path and media type, so a file the pool reads is resolved from a content-free key.

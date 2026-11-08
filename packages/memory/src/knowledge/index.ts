@@ -34,6 +34,8 @@ export type { LanedTrace, TraceOptions } from './trace.js';
 export {
     computeFindings, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
 } from './findings.js';
+export { GOD_MODULE_LIMITS, GOD_MODULE_KIND, godModuleFindings } from './godModule.js';
+export type { GodModuleLimits } from './godModule.js';
 export {
     resolveEntities, knownKeysOf, possibleSameFindings, normalizeKey, entityName, entityKey,
 } from './resolve.js';
@@ -49,7 +51,7 @@ export { extractFile, extractFileDetailed, knownKeysOfEntities } from './extract
 export type { ExtractFileArgs, FileExtraction } from './extractFile.js';
 export { extractJob, jobOf } from './extractJob.js';
 export type { ExtractJob, ExtractJobResult, ExtractPool } from './extractJob.js';
-export { putExtract } from './extractFile.js';
+export { putExtract, putNoExtract } from './extractFile.js';
 export { createModelLimiter, isRateLimit } from './modelLimiter.js';
 export type { ModelLimiter } from './modelLimiter.js';
 export { reasonOf } from './reviewRunModel.js';
