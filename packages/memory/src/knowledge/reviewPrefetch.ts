@@ -105,7 +105,7 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
             if (doc && doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
             const extraction = await extractSlots.run(async () => {
                 held.lane = lanes.take();
-                try { return await withDeadline(byPool ? extractMs + readMsOf(f.path) : extractMs, (signal) => extractFileDetailed({
+                try { return await withDeadline(byPool ? extractMs + (readOverrideOf(f.path) ?? 0) : extractMs,(signal) => extractFileDetailed({
                 rootId: c.rootId, path: f.path, hash: f.hash, ...(doc ? { doc } : {}), packs: c.packs, store: c.store, composed: c.composed,
                 knownKeys: c.knownKeys, writeCache: false,
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
