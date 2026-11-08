@@ -92,7 +92,8 @@ class ExtractBuilder {
     /** A `links` edge to the target, unless it is the root itself (or a folder above it). */
     link(from: NodeRef, target: string, byName?: string): void {
         const clean = target.split('#')[0]!.split('?')[0]!.trim();
-        if (!clean || /^[a-z][a-z0-9+.-]*:/i.test(clean)) return;
+        // A scheme (`https:`, `data:`, `mailto:`) or a protocol-relative `//cdn/x.png` is external, never a file of the root.
+        if (!clean || clean.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(clean)) return;
         let decoded = clean;
         try { decoded = decodeURI(clean); } catch { /* keep the raw target */ }
         // Written as directory navigation (`.`, `./`, `..`, `/`, `docs/`): a folder, not a file link.
@@ -234,10 +235,11 @@ export function withoutCode(text: string, opts: { indented?: boolean } = {}): st
     return out.join('\n').replace(INLINE_CODE, ' ');
 }
 
-const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+/** `[text](target)` and the image form `![alt](target)`: both reference the target (an image file is an asset node). */
+const MD_LINK = /\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 /** `[id]: target` definitions (reference-style links); the use is `[text][id]` or `[id][]`. */
 const MD_REF_DEF = /^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+["'(].*)?[ \t\r]*$/gm;
-const MD_REF_USE = /(?<!!)\[([^\]]*)\]\[([^\]]*)\]/g;
+const MD_REF_USE = /\[([^\]]*)\]\[([^\]]*)\]/g;
 
 /** Reference-link definitions of a whole markdown text, by lower-cased label. */
 function refDefinitions(text: string): Map<string, string> {
@@ -308,11 +310,14 @@ export function extractMarkdown(source: SourceDocument, sections: ParsedSection[
     return b.build();
 }
 
+/** The first `href` / `src` / `xlink:href` of an `<a>`, `<img>`, `<source>`, `<link>` or svg `<image>` tag: a file the page references. */
+const HTML_REF = /<(?:a|img|source|link|image)(?=\s)[^>]*?\s(?:xlink:)?(?:href|src)\s*=\s*["']([^"']+)["']/gi;
+
 export function extractHtml(source: SourceDocument, sections: ParsedSection[], ctx: Ctx): Extracted {
     const title = sections[0]?.metadata?.['htmlTitle'];
     const b = new ExtractBuilder(source, ctx, typeof title === 'string' ? title : undefined);
     if (typeof title === 'string' && title) b.key(b.fileRef, normalizeKey(title));
-    for (const m of textOf(source).matchAll(/<a\s[^>]*href\s*=\s*["']([^"']+)["']/gi)) {
+    for (const m of textOf(source).matchAll(HTML_REF)) {
         if (!m[1]!.startsWith('#')) b.link(b.fileRef, m[1]!);
     }
     sections.forEach((section, index) => b.mentions(b.bodySection(index, section.text), section.text));

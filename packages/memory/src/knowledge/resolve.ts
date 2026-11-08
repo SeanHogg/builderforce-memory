@@ -9,7 +9,7 @@
 import type { Finding, NodeRef } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { hashText } from '../ingest/hash.js';
-import { compareStr, normalizeKey, round6 } from './refs.js';
+import { compareStr, FALLBACK_PACK_ID, normalizeKey, round6 } from './refs.js';
 
 export { normalizeKey };
 
@@ -46,7 +46,7 @@ export function knownKeysOf(resolved: readonly ResolvedEntity[]): Map<string, No
  * `possible-same` findings from near-duplicate pairs between two DIFFERENT entities (pairs
  * already merged by key, or naming a non-entity, are not reported).
  */
-export function possibleSameFindings(pairs: readonly SimilarPair[], pack = 'memory'): Finding[] {
+export function possibleSameFindings(pairs: readonly SimilarPair[], pack = FALLBACK_PACK_ID): Finding[] {
     const seen = new Set<string>();
     const out: Finding[] = [];
     for (const p of pairs) {

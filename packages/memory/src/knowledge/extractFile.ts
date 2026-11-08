@@ -11,7 +11,7 @@ import type { Extracted, KnowledgePack, KnowledgeParser, KnowledgeStore, NodeRef
 import { BinaryContent, CHANGED_SINCE_PLAN, ExtractFailed, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
 import { srcRef } from './refs.js';
 import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
-import { asPathSource, composePacks, EXTRACTOR_VERSION, resolveRelativePath, stubSource, type ComposedPacks } from './sources.js';
+import { asPathSource, composePacks, EXTRACTOR_VERSION, isAssetExtract, resolveRelativePath, stubSource, type ComposedPacks } from './sources.js';
 
 /** The normalized entity keys of `ent:` fact keys, for `mentions`. */
 export function knownKeysOfEntities(keys: Iterable<string>): ReadonlyMap<string, NodeRef> {
@@ -94,8 +94,9 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     const tLookup = Date.now();
     const cached = await a.store.getExtracted?.(a.hash);
     const lookupMs = Date.now() - tLookup;
-    // A cached entry of another extractor version is ignored: its output may differ from today's.
-    const found = cached?.find((e) => e.sourceRef === ref && e.extractorVersion === EXTRACTOR_VERSION);
+    // A cached entry of another extractor version is ignored: its output may differ from today's. So is an asset's entry
+    // (a document stored as an asset before a host parser claimed it): it holds no extraction.
+    const found = cached?.find((e) => e.sourceRef === ref && e.extractorVersion === EXTRACTOR_VERSION && !isAssetExtract(e));
     if (found) {
         const tSections = Date.now();
         if (a.pool && wants) {

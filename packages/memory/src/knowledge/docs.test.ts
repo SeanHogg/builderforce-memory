@@ -59,12 +59,15 @@ describe('docs extract', () => {
         expect(guide.nodes[0]!.label).toBe('The Guide');
     });
 
-    it('resolves relative and wiki links; skips external links and images', () => {
+    it('resolves relative and wiki links and image references; skips external links', () => {
         expect(kinds(extract('README.md'), 'links')).toEqual([
             `${ref('README.md')}#home -> ${ref('docs/guide.md')}`,
             `${ref('README.md')}#home -> ${ref('notes.md')}`,
         ]);
-        expect(kinds(extract('docs/guide.md'), 'links')).toEqual([`${ref('docs/guide.md')}#guide/setup -> ${ref('docs/nope.md')}`]);
+        expect(kinds(extract('docs/guide.md'), 'links')).toEqual([
+            `${ref('docs/guide.md')}#guide/setup -> ${ref('docs/nope.md')}`,
+            `${ref('docs/guide.md')}#guide/setup -> ${ref('docs/pic.png')}`,
+        ]);
         expect(kinds(extract('docs/page.html'), 'links')).toEqual([`${ref('docs/page.html')} -> ${ref('docs/guide.md')}`]);
         expect(kinds(extract('docs/plain.txt'), 'links')).toEqual([`${ref('docs/plain.txt')}#body -> ${ref('docs/guide.md')}`]);
     });

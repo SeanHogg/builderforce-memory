@@ -13,7 +13,7 @@ import type { EdgeVerdict, Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack,
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { godModuleFindings } from './godModule.js';
 import { possibleSameFindings } from './resolve.js';
-import { aboutTargets, compareStr, round6, srcRef } from './refs.js';
+import { aboutTargets, compareStr, FALLBACK_PACK_ID, round6, srcRef } from './refs.js';
 
 /** Node badge naming the clone group (e.g. a jscpd issue id) its `duplicate` edges belong to. */
 export const CLONE_GROUP_BADGE = 'cloneGroup';
@@ -53,7 +53,7 @@ export function components(edges: readonly KEdge[]): NodeRef[][] {
 
 export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<string, PartitionRegistry>): Finding[] {
     const byRef = new Map(g.nodes.map((n) => [n.ref, n] as const));
-    const packOf = (ref: NodeRef) => byRef.get(ref)?.pack ?? 'memory';
+    const packOf = (ref: NodeRef) => byRef.get(ref)?.pack ?? FALLBACK_PACK_ID;
     const out: Finding[] = [];
 
     for (const refs of components(g.edges.filter((e) => e.cycle))) {
@@ -95,7 +95,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
     // A copy of another system in the same root (PRD 41 A9): its refs name the two systems' folders.
     for (const s of g.meta?.systems ?? []) {
         if (s.copyOf === undefined) continue;
-        out.push(finding('duplicate-copy', 'memory', [srcRef(g.scope.rootId, s.path), srcRef(g.scope.rootId, s.copyOf)], 'warn', {
+        out.push(finding('duplicate-copy', FALLBACK_PACK_ID, [srcRef(g.scope.rootId, s.path), srcRef(g.scope.rootId, s.copyOf)], 'warn', {
             copy: s.path, original: s.copyOf, similarity: s.copySimilarity ?? 1, reason: s.copyReason ?? 'later-name',
         }, [s.path, s.copyOf]));
     }
@@ -127,7 +127,7 @@ function staleFindings(g: KnowledgeGraph, byRef: ReadonlyMap<NodeRef, KNode>): F
         bySource.set(target, list);
     }
     return [...bySource].map(([source, refs]) =>
-        finding('stale', byRef.get(source)?.pack ?? 'memory', [source, ...refs], 'warn', { count: refs.length }));
+        finding('stale', byRef.get(source)?.pack ?? FALLBACK_PACK_ID, [source, ...refs], 'warn', { count: refs.length }));
 }
 
 /** Generic + possible-same + every pack's rules; deduped by id; severity, then id. */

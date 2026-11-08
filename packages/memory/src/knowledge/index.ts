@@ -68,12 +68,12 @@ export {
     DEFAULT_REVIEW_MODEL_CALLS, DEFAULT_REVIEW_JUDGE_CONCURRENCY, REVIEW_FACT_SOURCE,
 } from './judge.js';
 export {
-    composePacks, ignoreMatcher, ignoreSourcesOf, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,
+    composePacks, ignoreMatcher, ignoreSourcesOf, isAssetPath, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,
     resolveDocument, resolveRelativePath,
     DEFAULT_MAX_FILE_BYTES, EXTRACTOR_VERSION, filesManifestKey, extractorManifestKey, judgedManifestKey, compareManifestKey,
 } from './sources.js';
 export {
-    srcRef, pathOfRef, fileRefOf, factRef, factKeyOf, slugOf, canonicalJson, compareStr, nameResolver, aboutTargets,
+    srcRef, FALLBACK_PACK_ID, pathOfRef, fileRefOf, factRef, factKeyOf, slugOf, canonicalJson, compareStr, nameResolver, aboutTargets,
 } from './refs.js';
 export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule, contradictionRule } from './packs/docs.js';
 export { frontMatterOf, SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';

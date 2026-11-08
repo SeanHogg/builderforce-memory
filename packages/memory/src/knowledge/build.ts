@@ -28,7 +28,7 @@ import { applyCommunities } from './communities.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
 import {
-    basenameOf, canonicalJson, compareStr, factRef, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
+    basenameOf, canonicalJson, compareStr, factRef, FALLBACK_PACK_ID, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
 } from './refs.js';
 import { buildOutline } from './outline.js';
 import { truncateGraph } from './truncate.js';
@@ -62,8 +62,13 @@ export function graphDigest(input: BuildGraphInput): string {
 /** The systems with the file nodes each holds (the graph's own count, before any cut). */
 function systemsMeta(systems: readonly GraphSystem[], nodes: readonly KNode[]): GraphSystem[] {
     const files = new Map<string, number>();
-    for (const n of nodes) if (n.kind === 'file' && n.system !== undefined) files.set(n.system, (files.get(n.system) ?? 0) + 1);
-    return systems.map((s) => ({ ...s, files: files.get(s.path) ?? 0 }));
+    const assets = new Map<string, number>();
+    for (const n of nodes) {
+        if (n.kind !== 'file' || n.system === undefined) continue;
+        const into = n.badges?.['asset'] !== undefined ? assets : files;
+        into.set(n.system, (into.get(n.system) ?? 0) + 1);
+    }
+    return systems.map((s) => ({ ...s, files: files.get(s.path) ?? 0, ...(assets.has(s.path) ? { assets: assets.get(s.path)! } : {}) }));
 }
 
 /** An absent list and an empty list mean the same input, so they hash the same. */
@@ -128,7 +133,7 @@ function factNode(f: StoredFact, rootId: string, g: GraphBuilder, sources: Reado
     const kind = f.key.startsWith('ent:') ? 'entity' : f.key.startsWith('claim:') ? 'claim' : 'fact';
     const anchors = sortBy(f.fileAnchors, (a) => a.path);
     const anchoredPack = anchors.map((a) => g.nodes.get(srcRef(rootId, a.path))?.pack).find(Boolean);
-    const pack = kind === 'entity' ? f.key.split(':')[1] || 'memory' : anchoredPack ?? 'memory';
+    const pack = kind === 'entity' ? f.key.split(':')[1] || FALLBACK_PACK_ID : anchoredPack ?? FALLBACK_PACK_ID;
     const stale = f.origin === 'model' && anchors.some((a) => {
         if (!a.contentHash) return false;
         const ref = srcRef(rootId, a.path);
@@ -262,7 +267,7 @@ function closeEndpoints(g: GraphBuilder): void {
             const path = pathOfRef(end)!;
             const other = g.nodes.get(end === e.from ? e.to : e.from);
             g.node({
-                ref: end, kind: 'missing', label: basenameOf(path) || path, pack: other?.pack ?? 'memory',
+                ref: end, kind: 'missing', label: basenameOf(path) || path, pack: other?.pack ?? FALLBACK_PACK_ID,
                 importance: 0, origin: 'extracted', badges: { missing: 1 },
             });
         }

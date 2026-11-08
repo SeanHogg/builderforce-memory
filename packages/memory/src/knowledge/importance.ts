@@ -58,6 +58,14 @@ export function byImportance(a: Pick<KNode, 'importance' | 'ref'>, b: Pick<KNode
     return b.importance - a.importance || compareStr(a.ref, b.ref);
 }
 
+/**
+ * The order "top N" means when a cut must not be filled by assets: non-assets first (by importance), then assets
+ * (by importance). An asset is a binary file's node (`badges.asset`, assetFile.ts) — a folder of icons never crowds out the code and docs.
+ */
+export function byImportanceAssetsLast(a: Pick<KNode, 'importance' | 'ref' | 'badges'>, b: Pick<KNode, 'importance' | 'ref' | 'badges'>): number {
+    return Number(a.badges?.['asset'] !== undefined) - Number(b.badges?.['asset'] !== undefined) || byImportance(a, b);
+}
+
 /** Area importance: the sum of its members' importance, renormalized so the top area is 1. */
 export function areaImportance(members: ReadonlyMap<NodeRef, readonly number[]>): Map<NodeRef, number> {
     const sums = new Map<NodeRef, number>();

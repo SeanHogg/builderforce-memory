@@ -7,7 +7,7 @@
 import { htmlParser, markdownParser, ParserRegistry, plainTextParser } from '../ingest/parsers.js';
 import { isBinaryDocumentType, mediaTypeOf } from '../ingest/parserSupport.js';
 import { CONTENT_HASH_FIELD, type ChunkFingerprint, type IngestManifest, type SourceDocument } from '../ingest/types.js';
-import type { KnowledgePack, KnowledgeParser } from './model.js';
+import type { Extracted, KnowledgePack, KnowledgeParser } from './model.js';
 import { matchGlob } from './partitions.js';
 import { compareStr, walkRelative } from './refs.js';
 
@@ -20,9 +20,13 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
  * re-extraction (judged sections with unchanged text are re-anchored, not judged again; see
  * owedFiles.ts for how an unfinished one is carried to the next review).
  */
-export const EXTRACTOR_VERSION = 3;
-/** Always ignored: VCS internals, installed dependencies, builderforce config. */
-const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore'];
+export const EXTRACTOR_VERSION = 4;
+/**
+ * Always ignored: VCS internals, installed dependencies, builderforce config, and lockfiles (`yarn.lock`, `Cargo.lock` …): generated,
+ * huge, and plain text — extracted they would cost judgement calls for nothing; they were never stored (once skipped as binary).
+ * A `.builderforce/ignore` rule can still re-include one (`!yarn.lock`).
+ */
+const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore', '*.lock'];
 
 const MEDIA_TYPES: Record<string, string> = {
     md: 'text/markdown', markdown: 'text/markdown', mdx: 'text/markdown',
@@ -38,9 +42,20 @@ const MEDIA_TYPES: Record<string, string> = {
     odt: 'application/vnd.oasis.opendocument.text',
     ods: 'application/vnd.oasis.opendocument.spreadsheet',
     odp: 'application/vnd.oasis.opendocument.presentation',
+    // Assets (BINARY_EXT below): standard IANA types. A binary extension with none here is `application/octet-stream`.
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+    ico: 'image/vnd.microsoft.icon', icns: 'image/icns', tif: 'image/tiff', tiff: 'image/tiff', psd: 'image/vnd.adobe.photoshop',
+    avif: 'image/avif', heic: 'image/heic', svg: 'image/svg+xml',
+    mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', m4a: 'audio/mp4',
+    mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska', webm: 'video/webm',
+    zip: 'application/zip', gz: 'application/gzip', tgz: 'application/gzip', bz2: 'application/x-bzip2', xz: 'application/x-xz',
+    '7z': 'application/x-7z-compressed', rar: 'application/vnd.rar', tar: 'application/x-tar',
+    jar: 'application/java-archive', war: 'application/java-archive', wasm: 'application/wasm',
+    ttf: 'font/ttf', otf: 'font/otf', woff: 'font/woff', woff2: 'font/woff2', eot: 'application/vnd.ms-fontobject',
+    sqlite: 'application/vnd.sqlite3', exe: 'application/vnd.microsoft.portable-executable', dll: 'application/vnd.microsoft.portable-executable',
 };
 
-/** Binary documents whose text a HOST extractor may supply (§4.5); otherwise skipped as binary. */
+/** Binary documents whose text a HOST extractor may supply (§4.5); otherwise stored as an asset (never read). */
 const DOCUMENT_EXT = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp']);
 
 const BINARY_EXT = new Set([
@@ -49,24 +64,37 @@ const BINARY_EXT = new Set([
     'zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'tar', 'jar', 'war',
     'exe', 'dll', 'so', 'dylib', 'bin', 'o', 'a', 'class', 'wasm', 'node', 'pyc',
     'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
-    'ttf', 'otf', 'woff', 'woff2', 'eot', 'sqlite', 'db', 'vsix', 'lock',
+    'ttf', 'otf', 'woff', 'woff2', 'eot', 'sqlite', 'db', 'vsix',
 ]);
 
 /** Shell and batch scripts are code, never documents (their `[[ … ]]` tests are not links). */
 const SCRIPT_EXT = new Set(['sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd']);
 
-const extOf = (path: string): string => {
+export const extOf = (path: string): string => {
     const m = /\.([A-Za-z0-9]+)$/.exec(path);
     return m ? m[1]!.toLowerCase() : '';
 };
 
+/** The ONE media-type lookup: the table, else `application/octet-stream` for a binary extension, else `text/plain`. */
 export function mediaTypeOfPath(path: string): string {
-    return MEDIA_TYPES[extOf(path)] ?? 'text/plain';
+    const ext = extOf(path);
+    return MEDIA_TYPES[ext] ?? (BINARY_EXT.has(ext) ? 'application/octet-stream' : 'text/plain');
 }
+
+/** Whether a cached extract is an asset's (assetFile.ts): one file node marked `badges.asset`, no text was extracted — never a hit for a file a parser now extracts. */
+export const isAssetExtract = (e: Extracted): boolean => e.nodes.some((n) => n.badges?.['asset'] !== undefined);
 
 /** By extension — the plan never reads a file to decide. (pdf/office text needs a host extractor.) */
 export function isBinaryPath(path: string): boolean {
     return BINARY_EXT.has(extOf(path));
+}
+
+/**
+ * The ONE decision "this listed file is an asset": binary by extension and not claimed as a document by a host parser.
+ * An asset is planned, hashed and diffed like any file but never read, extracted or judged (assetFile.ts writes its node).
+ */
+export function isAssetPath(path: string, claimedAsDocument: boolean): boolean {
+    return isBinaryPath(path) && !claimedAsDocument;
 }
 
 export function isDocumentPath(path: string): boolean {
@@ -81,6 +109,14 @@ export function isDocumentPath(path: string): boolean {
  */
 export function resolveDocument(composed: ComposedPacks, path: string): ReturnType<ComposedPacks['resolve']> {
     return composed.resolve(stubSource(path));
+}
+
+/**
+ * The document extensions (pdf/office) some composed pack's parser claims, sorted and comma-joined (`-` for none). A document is an
+ * asset exactly when its extension is not in this list, so this ONE string is all a root must remember about asset-ness (owedFiles.ts).
+ */
+export function claimedDocumentExts(composed: ComposedPacks): string {
+    return [...DOCUMENT_EXT].filter((ext) => resolveDocument(composed, `x.${ext}`)).sort(compareStr).join(',') || '-';
 }
 
 /** A NUL in the first 8 KB means binary, whatever the extension said. */

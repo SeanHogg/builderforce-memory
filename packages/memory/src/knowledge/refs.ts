@@ -13,6 +13,9 @@
 
 import type { KEdge, NodeRef } from './model.js';
 
+/** The generic pack id: what a node or finding belongs to when no real pack owns it (memory facts, `missing` placeholders, asset files). */
+export const FALLBACK_PACK_ID = 'memory';
+
 /** Code-unit ordering — never `localeCompare`, whose result depends on the host's ICU. */
 export function compareStr(a: string, b: string): number {
     return a < b ? -1 : a > b ? 1 : 0;

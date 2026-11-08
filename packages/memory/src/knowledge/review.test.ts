@@ -35,12 +35,14 @@ describe('planReview', () => {
         const plan = await planReview(source, manifest, [DOCS_PACK]);
         expect(source.reads).toEqual(['.gitignore']);
         expect(plan.changed).toEqual(['a.md']);
-        expect(plan.unchanged).toBe(1);
+        expect(plan.unchanged).toBe(2); // b.md and the img.png asset
         expect(plan.byPack).toEqual({ docs: 2 });
+        expect(plan.assets).toBe(1);
         expect(plan.estimatedModelCalls).toBeGreaterThan(0);
         expect(plan.skipped).toEqual(expect.arrayContaining([
-            { path: '.gitignore', reason: 'ignored' }, { path: 'img.png', reason: 'binary' }, { path: 'skip/x.md', reason: 'ignored' },
+            { path: '.gitignore', reason: 'ignored' }, { path: 'skip/x.md', reason: 'ignored' },
         ]));
+        expect(plan.skipped.map((s) => s.path)).not.toContain('img.png');
 
         source.reads.length = 0;
         await reviewDirectory(args(source, memStore(), manifest));

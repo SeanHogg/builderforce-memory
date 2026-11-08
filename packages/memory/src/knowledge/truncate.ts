@@ -8,8 +8,8 @@
  */
 
 import type { EdgeVerdict, KEdge, KNode, KnowledgeGraph, NodeRef } from './model.js';
-import { areaImportance, byImportance } from './importance.js';
-import { aboutTargets, compareStr, pathOfRef, srcRef } from './refs.js';
+import { areaImportance, byImportanceAssetsLast } from './importance.js';
+import { aboutTargets, compareStr, FALLBACK_PACK_ID, pathOfRef, srcRef } from './refs.js';
 
 /** Hard cap on nodes, however many the keep rules ask for. */
 export const TRUNCATION_HARD_CAP = 2000;
@@ -47,10 +47,11 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
     for (const s of seeds) keep(s);
     const seeded = [...kept];
     for (const s of seeded) {
-        const around = [...(neighbours.get(s) ?? [])].map((r) => byRef.get(r)!).filter(Boolean).sort(byImportance);
+        // An asset beside a seed is not worth a slot (a page that references 3k icons would keep them all): it folds into its area unless it is a seed itself.
+        const around = [...(neighbours.get(s) ?? [])].map((r) => byRef.get(r)!).filter((n) => n && n.badges?.['asset'] === undefined).sort(byImportanceAssetsLast);
         for (const n of around) keep(n.ref);
     }
-    for (const n of [...g.nodes].sort(byImportance).slice(0, opts.maxNodes)) keep(n.ref);
+    for (const n of [...g.nodes].sort(byImportanceAssetsLast).slice(0, opts.maxNodes)) keep(n.ref);
 
     // Fold the rest into areas.
     const aboutTarget = aboutTargets(g.edges);
@@ -76,7 +77,7 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
         const ms = members.get(area)!;
         const partition = mostCommon(ms.map((n) => n.partition));
         return {
-            ref: area, kind: 'area', label: pathOfRef(area) ?? area, pack: mostCommon(ms.map((n) => n.pack)) ?? 'memory',
+            ref: area, kind: 'area', label: pathOfRef(area) ?? area, pack: mostCommon(ms.map((n) => n.pack)) ?? FALLBACK_PACK_ID,
             ...(partition !== undefined ? { partition } : {}),
             importance: imp.get(area) ?? 0, origin: 'extracted' as const,
             badges: { members: ms.length },

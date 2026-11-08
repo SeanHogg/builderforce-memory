@@ -10,7 +10,7 @@ export type ReviewStepOutcome = 'ok' | 'cached' | 'skipped' | 'failed';
 
 /**
  * One file in one phase. `cached` = reused prior knowledge or an extract-cache hit; `skipped` = binary
- * or too large; `failed` carries `reason`. `lane` is the worker/lane id (0..width-1) where known.
+ * on read or too large; an asset (a binary file never read) is `ok` with reason `asset`; `failed` carries `reason`. `lane` is the worker/lane id (0..width-1) where known.
  */
 export interface ReviewStep {
     path: string;

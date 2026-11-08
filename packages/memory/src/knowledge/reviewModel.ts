@@ -30,10 +30,16 @@ export interface ReviewPlan {
     rootId: string;
     files: number;
     byPack: Record<string, number>;
+    /**
+     * Files in `files` that are assets (binary, never read): stored as a file node with `mediaType` and `size`, not counted in `byPack`.
+     * `files` includes them (the plan diffs them like any file), so a host's ETA and "files to read" figures subtract `assets`
+     * (absent on a plan from an older host or built by hand: read it as 0).
+     */
+    assets?: number;
     unchanged: number;
     changed: string[];
     removed: string[];
-    skipped: Array<{ path: string; reason: 'ignored' | 'binary' | 'too-large' | 'no-pack' }>;
+    skipped: Array<{ path: string; reason: 'ignored' | 'too-large' | 'no-pack' }>;
     /** ≈ judgement calls for changed files (sections of judged kinds). */
     estimatedModelCalls: number;
     /** The file budget of the judge pass this run will run after the map is complete (PRD 41 A10); set by the host, so the confirm chip states it. */

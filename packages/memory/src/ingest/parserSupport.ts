@@ -12,13 +12,13 @@ export const mediaTypeOf = (source: SourceDocument): string =>
     source.content.kind === 'text' ? (source.content.mediaType ?? 'text/plain').toLowerCase() : '';
 
 /**
- * Binary documents — pdf, legacy and OOXML/OpenDocument office files. Their bytes are not
- * text. The ingest pipeline's builtin parsers are unchanged (the html/xml and plain-text
+ * Binary documents — pdf, legacy (`vnd.ms-excel|powerpoint|word`, not other `vnd.ms-*` such as a font object) and OOXML/OpenDocument office
+ * files. Their bytes are not text. The ingest pipeline's builtin parsers are unchanged (the html/xml and plain-text
  * matchers still accept these types); the knowledge composition (`composePacks`) is what
  * makes the builtin docs parsers refuse them, so only a host extractor that turns them into
  * text claims them there, in any pack order.
  */
 export function isBinaryDocumentType(mediaType: string): boolean {
-    return /^application\/(?:pdf|msword|vnd\.(?:openxmlformats-officedocument\.|ms-|oasis\.opendocument\.))/
+    return /^application\/(?:pdf|msword|vnd\.(?:openxmlformats-officedocument\.|ms-(?:excel|powerpoint|word)|oasis\.opendocument\.))/
         .test(mediaType.trim().toLowerCase());
 }

@@ -58,9 +58,10 @@ describe('binary documents', () => {
         expect(isBinaryDocumentType('application/vnd.api+json')).toBe(false);
     });
 
-    it('a docx with no host parser is skipped as binary', async () => {
+    it('a docx with no host parser is planned as an asset, not skipped', async () => {
         const plan = await planReview(memSource({ 'a.docx': 'x', 'b.md': '# B\n' }), new InMemoryIngestManifest(), [DOCS_PACK]);
-        expect(plan.skipped).toContainEqual({ path: 'a.docx', reason: 'binary' });
+        expect(plan.skipped.map((s) => s.path)).not.toContain('a.docx');
+        expect(plan.assets).toBe(1);
     });
 
     it('a host pdf pack placed AFTER the docs pack still claims the pdf', async () => {

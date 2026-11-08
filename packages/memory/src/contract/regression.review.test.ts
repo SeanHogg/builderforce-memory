@@ -5,20 +5,21 @@
  */
 
 import { hashText } from '../ingest/hash.js';
+import { buildGraph } from '../knowledge/build.js';
 import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
 import type { ReviewProgress } from '../knowledge/model.js';
 import type { ReviewStep } from '../knowledge/reviewRunModel.js';
 import { extractJob, type ExtractJob, type ExtractPool } from '../knowledge/extractJob.js';
-import type { JudgementRequest, KnowledgePack, KnowledgeStore } from '../knowledge/model.js';
+import type { JudgementRequest, KnowledgePack, KnowledgeParser, KnowledgeStore } from '../knowledge/model.js';
 import { DOCS_PACK } from '../knowledge/packs/docs.js';
 import { putNoExtract } from '../knowledge/extractFile.js';
 import { planReview } from '../knowledge/plan.js';
 import { srcRef } from '../knowledge/refs.js';
 import { reviewDirectory } from '../knowledge/review.js';
 import { applyRunEvent, failuresOf, failureTotal, REVIEW_RUN_FAILURE_CHUNK, startRun } from '../knowledge/reviewRun.js';
-import { extractorManifestKey, filesManifestKey, judgedManifestKey, manifestMap } from '../knowledge/sources.js';
+import { extractorManifestKey, filesManifestKey, judgedManifestKey, manifestMap, mediaTypeOfPath } from '../knowledge/sources.js';
 import {
-    ALL, args, fakeJudge, FILES, memSource, memStore, quietPack, ROOT, stateOf, type SpySource,
+    ALL, args, fakeJudge, FILES, graphOf, memSource, memStore, quietPack, ROOT, stateOf, type SpySource,
 } from '../knowledge/testkit.test-util.js';
 
 const sixFiles = () => Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`d${i}.md`, `# T${i}\nbody ${i}\n`]));
@@ -292,11 +293,13 @@ describe('regression: changed since plan', () => {
 });
 
 describe('regression: a file with nothing to extract is told apart from one not extracted yet', () => {
-    it('regression: a file found binary on read has an explicit stored [] (and a stale mark), never an absent body', async () => {
+    it('regression: a file found binary on read has a stored asset node (and a stale mark), never an absent body', async () => {
         const text = 'bin\u0000ary';
         const store = memStore();
         await reviewDirectory(args(memSource({ 'blob.txt': text }), store, new InMemoryIngestManifest()));
-        expect(await store.getExtracted(hashText(text))).toEqual([]);
+        const stored = await store.getExtracted(hashText(text));
+        expect(stored).toHaveLength(1);
+        expect(stored![0]!.nodes).toMatchObject([{ kind: 'file', badges: { asset: 1, mediaType: 'text/plain', size: text.length } }]);
     });
 
     it('regression: a text file that is not extracted (here: its review failed) has NO stored body, so it is never mistaken for binary', async () => {
@@ -315,5 +318,126 @@ describe('regression: a file with nothing to extract is told apart from one not 
         expect(before!.length).toBeGreaterThan(0);
         await putNoExtract(store, hashText(text));
         expect(await store.getExtracted(hashText(text))).toEqual(before);
+    });
+});
+
+describe('regression: a binary file is an asset with a node, not a skipped file', () => {
+    const PNG = 'PNGDATA';
+
+    it('regression: a .png in a reviewed directory has a file node with mediaType, size and asset, is never read, and is not in plan.skipped', async () => {
+        const source = memSource({ 'a.md': '# A\nalpha\n', 'icons/icon128.png': PNG });
+        const store = memStore();
+        const manifest = new InMemoryIngestManifest();
+        const plan = await planReview(source, manifest, [DOCS_PACK]);
+        expect(plan.skipped.map((s) => s.path)).not.toContain('icons/icon128.png');
+        expect(plan).toMatchObject({ files: 2, assets: 1, byPack: { docs: 1 }, changed: ['a.md', 'icons/icon128.png'] });
+
+        const report = await reviewDirectory(args(source, store, manifest));
+        expect(report.failures).toEqual([]);
+        expect(source.reads).not.toContain('icons/icon128.png');
+        const stored = await store.getExtracted(hashText(PNG));
+        expect(stored).toHaveLength(1);
+        expect(stored![0]!.nodes).toEqual([expect.objectContaining({
+            ref: srcRef(ROOT, 'icons/icon128.png'), kind: 'file', label: 'icon128.png',
+            badges: { asset: 1, mediaType: 'image/png', size: PNG.length },
+        })]);
+        expect((await manifestMap(manifest, filesManifestKey(ROOT))).get('icons/icon128.png')).toBe(hashText(PNG));
+
+        // Diffed like any file: unchanged is not reviewed again, a new byte string is.
+        expect((await planReview(source, manifest, [DOCS_PACK])).changed).toEqual([]);
+        source.files['icons/icon128.png'] = 'OTHER';
+        expect((await planReview(source, manifest, [DOCS_PACK])).changed).toEqual(['icons/icon128.png']);
+    });
+
+    it('regression: an asset over maxFileBytes is still an asset, and costs no model call', async () => {
+        const plan = await planReview(memSource({ 'big.zip': 'x'.repeat(50) }), new InMemoryIngestManifest(), [DOCS_PACK], { maxFileBytes: 10 });
+        expect(plan).toMatchObject({ files: 1, assets: 1, skipped: [], estimatedModelCalls: 0 });
+    });
+
+    it('regression: mediaTypeOfPath knows the image, font and archive types; an unknown binary extension is octet-stream; text stays text/plain', () => {
+        expect(mediaTypeOfPath('x.png')).toBe('image/png');
+        expect(mediaTypeOfPath('a/b/favicon.ICO')).toBe('image/vnd.microsoft.icon');
+        expect(mediaTypeOfPath('f.woff2')).toBe('font/woff2');
+        expect(mediaTypeOfPath('a.zip')).toBe('application/zip');
+        expect(mediaTypeOfPath('lib.so')).toBe('application/octet-stream');
+        expect(mediaTypeOfPath('notes.txt')).toBe('text/plain');
+        expect(mediaTypeOfPath('Makefile')).toBe('text/plain');
+    });
+
+    it('regression: a document linking to an asset path has a links edge to the asset node, not to a missing placeholder', async () => {
+        // The docs pack resolves written links; a host code pack resolves its path references through the same `ctx.resolvePath` and srcRef.
+        const source = memSource({ 'README.md': '# R\nSee [the logo](icons/icon128.png).\n', 'icons/icon128.png': PNG, 'other.md': '# O\n[gone](icons/gone.png)\n' });
+        const store = memStore();
+        await reviewDirectory(args(source, store, new InMemoryIngestManifest()));
+        const g = await graphOf(source, store);
+        const asset = g.nodes.find((n) => n.ref === srcRef(ROOT, 'icons/icon128.png'));
+        expect(asset).toMatchObject({ kind: 'file', badges: { asset: 1, mediaType: 'image/png' } });
+        const into = g.edges.filter((e) => e.kind === 'links' && e.to === asset!.ref);
+        expect(into).toHaveLength(1);
+        expect(into[0]!.from.startsWith(srcRef(ROOT, 'README.md'))).toBe(true); // from the file or the section holding the link
+        expect(g.nodes.find((n) => n.ref === srcRef(ROOT, 'icons/gone.png'))?.kind).toBe('missing'); // a truly absent target still is
+    });
+
+    it('regression: a markdown image ![alt](path) references its target like a link, so it lands on the asset node', async () => {
+        const source = memSource({ 'README.md': '# R\n![logo](icons/icon128.png) and ![ref][shot]\n\n[shot]: shots/s.png\n', 'icons/icon128.png': PNG, 'shots/s.png': 'SHOT' });
+        const store = memStore();
+        await reviewDirectory(args(source, store, new InMemoryIngestManifest()));
+        const g = await graphOf(source, store);
+        for (const p of ['icons/icon128.png', 'shots/s.png']) {
+            const to = srcRef(ROOT, p);
+            expect(g.nodes.find((n) => n.ref === to)).toMatchObject({ kind: 'file', badges: { asset: 1 } });
+            expect(g.edges.filter((e) => e.kind === 'links' && e.to === to)).toHaveLength(1);
+        }
+    });
+
+    it('regression: an outlined, truncated graph keeps the asset badges (asset, mediaType, size) of its files', async () => {
+        const files: Record<string, string> = { 'icons/icon128.png': PNG };
+        for (let i = 0; i < 12; i++) files[`d${i}.md`] = `# T${i}\nbody ${i}\n`;
+        const source = memSource(files);
+        const store = memStore();
+        await reviewDirectory(args(source, store, new InMemoryIngestManifest()));
+        const extracted = [];
+        for await (const f of source.list()) {
+            const hit = (await store.getExtracted(f.hash))?.find((e) => e.sourceRef === srcRef(ROOT, f.path));
+            if (hit) extracted.push(hit);
+        }
+        const g = buildGraph({ rootId: ROOT, extracted, packs: [DOCS_PACK], facts: [], relations: [] }, { maxNodes: 3 });
+        expect(g.stats.truncated).toBe(true);
+        const png = g.outline!.files.find((f) => f.path === 'icons/icon128.png');
+        expect(png?.badges).toEqual({ asset: 1, mediaType: 'image/png', size: PNG.length });
+    });
+
+    it('regression: an .svg stays text: its title and text become a section and its href a link; it is not an asset', async () => {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Logo</title><text>Hello brand</text><a href="icons/icon128.png"><rect width="1" height="1"/></a></svg>';
+        const source = memSource({ 'logo.svg': svg, 'icons/icon128.png': PNG });
+        const store = memStore();
+        const manifest = new InMemoryIngestManifest();
+        expect((await planReview(source, manifest, [DOCS_PACK])).assets).toBe(1); // only the png
+        await reviewDirectory(args(source, store, manifest));
+        const ex = (await store.getExtracted(hashText(svg)))!.find((e) => e.sourceRef === srcRef(ROOT, 'logo.svg'))!;
+        expect(mediaTypeOfPath('logo.svg')).toBe('image/svg+xml');
+        expect(ex.nodes[0]).toMatchObject({ kind: 'file', pack: 'docs' });
+        expect(ex.nodes[0]!.badges?.asset).toBeUndefined();
+        expect(ex.nodes.some((n) => n.kind === 'section' && String(n.badges?.excerpt).includes('Hello brand'))).toBe(true);
+        expect(ex.edges.filter((e) => e.kind === 'links').map((e) => e.to)).toEqual([srcRef(ROOT, 'icons/icon128.png')]);
+    });
+
+    it('regression: a pdf with no host parser becomes an asset node; with a host parser it is still extracted', async () => {
+        const pdf: KnowledgeParser = {
+            id: 'pdf-text',
+            accepts: (s) => s.content.kind === 'text' && s.content.mediaType === 'application/pdf',
+            parse: (s) => [{ text: s.content.kind === 'text' ? s.content.text : '' }],
+        };
+        const files = { 'doc.pdf': 'pdf text' };
+        const bare = memStore();
+        const bareReport = await reviewDirectory(args(memSource({ ...files }), bare, new InMemoryIngestManifest()));
+        expect(bareReport.extracted).toBe(0);
+        expect((await bare.getExtracted(hashText('pdf text')))![0]!.nodes[0]).toMatchObject({ kind: 'file', badges: { asset: 1, mediaType: 'application/pdf' } });
+
+        const hosted = memStore();
+        const withPdf: KnowledgePack = { ...DOCS_PACK, parsers: [pdf, ...DOCS_PACK.parsers] };
+        const hostedReport = await reviewDirectory(args(memSource({ ...files }), hosted, new InMemoryIngestManifest(), { packs: [withPdf] }));
+        expect(hostedReport.extracted).toBe(1);
+        expect((await hosted.getExtracted(hashText('pdf text')))![0]!.nodes[0]!.badges?.asset).toBeUndefined();
     });
 });

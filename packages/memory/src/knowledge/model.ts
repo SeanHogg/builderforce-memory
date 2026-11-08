@@ -267,8 +267,10 @@ export interface GraphReadSkip { reason: string; count: number }
 export interface GraphSystem {
     path: string;
     name: string;
-    /** File nodes the graph holds under it. */
+    /** File nodes the graph holds under it, not counting assets (binary files, see `assets`). */
     files: number;
+    /** Asset file nodes (images, fonts, archives …) under it; absent when it has none. Not part of `files`. */
+    assets?: number;
     apps: GraphApp[];
     /** The repo graph did not read every file of it (see `graphRead.skipped`). */
     truncated?: boolean;

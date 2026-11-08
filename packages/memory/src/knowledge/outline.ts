@@ -6,7 +6,7 @@
 
 import type { EdgeVerdict, GraphOutline, KnowledgeGraph, NodeRef, OutlineFile } from './model.js';
 import { communityTable } from './communities.js';
-import { byImportance } from './importance.js';
+import { byImportanceAssetsLast } from './importance.js';
 import { compareStr, fileRefOf } from './refs.js';
 
 export const OUTLINE_MAX_FILES = 20000;
@@ -19,6 +19,8 @@ export const OUTLINE_BADGE_KEYS: readonly string[] = [
     'complexity', 'maxComplexity', 'coverage', 'churn', 'owner', 'patterns', 'cloneGroup', 'unused', 'unusedExports',
     'entry', 'layerRule', 'unusedDependencies', 'externals', 'added', 'removed', 'changed', 'status',
     'communityId', 'communityConfidence',
+    // An asset file (assetFile.ts): a binary file the review stores as a node, never read.
+    'asset', 'mediaType', 'size',
 ];
 /** Verdict codes of a link, least to worst; code 0 is "no verdict". */
 export const OUTLINE_VERDICTS: readonly ('none' | EdgeVerdict)[] = ['none', 'same', 'allowed', 'skips', 'upward'];
@@ -51,7 +53,7 @@ export function buildOutline(full: KnowledgeGraph): GraphOutline {
     let capped = false;
     let fileNodes = full.nodes.filter((n) => n.kind === 'file');
     if (fileNodes.length > OUTLINE_MAX_FILES) {
-        fileNodes = [...fileNodes].sort(byImportance).slice(0, OUTLINE_MAX_FILES);
+        fileNodes = [...fileNodes].sort(byImportanceAssetsLast).slice(0, OUTLINE_MAX_FILES);
         capped = true;
     }
     fileNodes = [...fileNodes].sort((a, b) => compareStr(a.ref, b.ref));

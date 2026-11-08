@@ -4,18 +4,19 @@
  * A walk plus a manifest diff by hash, nothing more: a file whose hash is unchanged is
  * never read. The only reads are the ignore files (`.builderforce/ignore` and every
  * `.gitignore`, a nested one scoped to its folder) when the listing has them. Binary files
- * (by extension — pdf/office only when a host parser claims their media type), oversized
- * files and files no pack accepts are skipped with a reason.
+ * (by extension — pdf/office only when a host parser claims their media type) are planned as
+ * ASSETS (never read; the review writes their file node); oversized files and files no pack
+ * accepts are skipped with a reason.
  */
 
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
-import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls } from './owedFiles.js';
+import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls, withDocuments } from './owedFiles.js';
 import {
-    compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf, isBinaryPath,
-    isDocumentPath, manifestMap, resolveDocument, stubSource,
+    claimedDocumentExts, compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf,
+    isAssetPath, isDocumentPath, manifestMap, resolveDocument, stubSource,
 } from './sources.js';
-import { compareStr, sortBy } from './refs.js';
+import { compareStr, FALLBACK_PACK_ID, sortBy } from './refs.js';
 
 /** ≈ bytes per judged section, for the estimate (the plan does not read changed files). */
 export const AVG_SECTION_BYTES = 1500;
@@ -55,6 +56,11 @@ export interface PlannedFile {
      * whether or not its content moved. See owedFiles.ts.
      */
     owed: boolean;
+    /**
+     * An asset: binary by extension and not claimed as a document by a host parser. Counted in `files` (and in `ReviewPlan.assets`,
+     * not in `byPack`), diffed by hash like any file, but never read, extracted or judged; the review writes its file node (assetFile.ts).
+     */
+    asset?: true;
 }
 
 export interface PlanDetail {
@@ -106,18 +112,27 @@ export async function planDetail(
     const prior = await manifestMap(manifest, filesManifestKey(source.rootId));
     // Another extractor version than the one that reviewed these files, or files an earlier run
     // left unfinished: those are owed a re-extraction. `prior` stays the real manifest (removals).
-    const extractor = await loadExtractorState(manifest, source.rootId);
+    // A file's asset-ness depends on the packs (a pdf is an asset until a host parser claims it): a change in the document types the
+    // packs claim since the last run owes the files of those types a re-processing, whatever their hash (see withDocuments).
+    const extractor = withDocuments(await loadExtractorState(manifest, source.rootId), claimedDocumentExts(composed));
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
     const skipped: ReviewPlan['skipped'] = [];
     const byPack: Record<string, number> = {};
+    let assets = 0;
     let estimatedSections = 0;
     let compareSections = 0;
     for (const e of entries) {
         if (ignored(e.path)) { skipped.push({ path: e.path, reason: 'ignored' }); continue; }
         const document = isDocumentPath(e.path) ? resolveDocument(composed, e.path) : undefined;
-        if (isBinaryPath(e.path) && !document) { skipped.push({ path: e.path, reason: 'binary' }); continue; }
+        // An asset is never read, so the size cap does not apply: it is planned, hashed and diffed, and costs no model call.
+        if (isAssetPath(e.path, !!document)) {
+            const { owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
+            files.push({ path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true });
+            assets += 1;
+            continue;
+        }
         if (e.size > maxBytes) { skipped.push({ path: e.path, reason: 'too-large' }); continue; }
         const hit = document ?? composed.resolve(stubSource(e.path));
         if (!hit) { skipped.push({ path: e.path, reason: 'no-pack' }); continue; }
@@ -152,6 +167,7 @@ export async function planDetail(
             rootId: source.rootId,
             files: files.length,
             byPack: sortedByPack,
+            assets,
             unchanged: files.length - changed.length,
             changed,
             removed,
@@ -172,7 +188,7 @@ export async function planDetail(
  */
 export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
     const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
-    const extractor = await loadExtractorState(manifest, detail.plan.rootId);
+    const extractor = withDocuments(await loadExtractorState(manifest, detail.plan.rootId), detail.extractor.documentsNow);
     const files = detail.files.map((f) => {
         const { owed, changed } = classify(extractor, prior, f.path, f.hash);
         return { ...f, changed, owed };

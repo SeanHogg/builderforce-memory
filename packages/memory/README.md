@@ -144,7 +144,7 @@ Abort is honoured between files and inside judgement. A file is written whole or
 - **`PlanOptions.compare`** (default `true`) says whether the run will compare near-duplicate claims. **A host that will not pass `similar` must pass `compare: false`.** Otherwise the estimate counts compare calls, including the waiting backlog of up to 2000 claims, that the run never spends.
 - **`refreshPlan(detail, manifest)`** is *Continue*: it re-reads `changed` and `owed` against the manifest as the last run left it, without walking the directory. A file finished since is not reviewed again. A file the last run left owed is picked up.
 
-`PlannedFile` is `{ path, hash, size, pack, changed, owed }`. `skipped` entries carry a reason: `ignored`, `binary`, `too-large` (default cap `DEFAULT_MAX_FILE_BYTES`, 2 MB, set with `maxFileBytes`) or `no-pack`.
+`PlannedFile` is `{ path, hash, size, pack, changed, owed, asset? }`. A binary file (image, font, archive, a pdf/office file no host parser claims) is an asset: it is in `files` and `plan.assets` (not `byPack`), diffed by hash, never read or judged, and the review writes its file node with badges `{ asset: 1, mediaType, size }`. `skipped` entries carry a reason: `ignored`, `too-large` (default cap `DEFAULT_MAX_FILE_BYTES`, 2 MB, set with `maxFileBytes`) or `no-pack`.
 
 `estimatedModelCalls` counts:
 
@@ -163,7 +163,7 @@ The review keeps its state in the `IngestManifest` you pass, under four keys per
 | `knowledge:<root>:compare` | `compareManifestKey` | `{ id: claimRef, hash: '<age>:<fileHash>' }` for claims awaiting comparison. Age 0 is the oldest. |
 | `knowledge:<root>:extractor` | `extractorManifestKey` | The extractor version and the owed files. |
 
-The `:extractor` entry holds `{ id: 'version', hash: '<EXTRACTOR_VERSION>' }` plus one `{ id: 'owed:<path>', hash: '<calls>' }` per file still owed a re-extraction, where `<calls>` is the number of model calls the file is expected to cost. A file is owed when the stored version differs from `EXTRACTOR_VERSION`, or when an earlier run left it unfinished: cut by the budget, a failed judge call, a read error, or an abort before it. Every run writes the entry, including a run that aborts. Unchanged sections re-anchor for free after an upgrade; only new sections cost a call. `ExtractorState` is the parsed form.
+The `:extractor` entry holds `{ id: 'version', hash: '<EXTRACTOR_VERSION>' }` plus one `{ id: 'owed:<path>', hash: '<calls>' }` per file still owed a re-extraction, where `<calls>` is the number of model calls the file is expected to cost. A file is owed when the stored version differs from `EXTRACTOR_VERSION`, or when an earlier run left it unfinished: cut by the budget, a failed judge call, a read error, or an abort before it. Every run writes the entry, including a run that aborts. Unchanged sections re-anchor for free after an upgrade; only new sections cost a call. The entry also records, when any is claimed, `{ id: 'documents', hash: '<pdf,docx,…>' }`: the pdf/office types the packs' parsers claim. A type whose claim changed since the last run (a host parser arrived or left) owes every file of that type a re-processing, since it flips between asset and extracted text whatever its hash. Known limit: two hosts with different pack sets sharing one manifest thrash (each switch re-extracts those files, with no model calls); every Builderforce host is wired with the same documents pack, so the sets agree. `ExtractorState` is the parsed form.
 
 The compare backlog keeps the age in each row because a host manifest may return rows sorted by id. The review trims the backlog only after a compare actually ran. It is capped at 2000 claims, oldest dropped first. Only packs whose `judgement.contradictions` is true queue claims. A run without ports leaves the backlog as it found it.
 
@@ -198,7 +198,7 @@ Both are idempotent, and `clampClaim` passes judge output through unchanged.
 
 ### Parsers, packs and the docs pack
 
-`composePacks(packs)` builds the one `ParserRegistry` a review and a plan share and resolves each file to a `{ parser, pack }`. The built-in text parsers decline PDF and Office media types. Those files are reviewed only when a host parser claims their media type; otherwise they are skipped as `binary`. `.builderforce/ignore` and every `.gitignore` apply, a nested one to its own folder.
+`composePacks(packs)` builds the one `ParserRegistry` a review and a plan share and resolves each file to a `{ parser, pack }`. The built-in text parsers decline PDF and Office media types. Those files are reviewed only when a host parser claims their media type; otherwise they are stored as assets (a file node, no text). `.builderforce/ignore` and every `.gitignore` apply, a nested one to its own folder.
 
 The built-in `DOCS_PACK` extracts:
 

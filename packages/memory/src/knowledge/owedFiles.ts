@@ -12,7 +12,8 @@
  * retired it drops out.
  *
  * Stored under {@link extractorManifestKey} as fingerprints: `{ id: 'version', hash: '<version>' }`
- * plus one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
+ * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments})
+ * and one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
  * decimal number of model calls the file is still expected to cost (the plan's estimate):
  *   • a file the run reached but did not finish: the sections the budget or a failed call left
  *     unjudged; for a content-changed file, every section it had to judge plus what it was
@@ -27,9 +28,12 @@
 
 import type { IngestManifest } from '../ingest/types.js';
 import { compareStr } from './refs.js';
-import { EXTRACTOR_VERSION, extractorManifestKey } from './sources.js';
+import { EXTRACTOR_VERSION, extOf, extractorManifestKey, isBinaryPath, isDocumentPath } from './sources.js';
 
 const VERSION_ID = 'version';
+const DOCUMENTS_ID = 'documents';
+/** No document type claimed — also what an entry with no `documents` record means, so a root that never had a host parser stores nothing extra. */
+const NO_DOCUMENTS = '-';
 const OWED_PREFIX = 'owed:';
 const FAIL_PREFIX = 'fail:';
 /** What a version upgrade costs per file: the one new section a re-extraction may add (an upper bound). */
@@ -42,16 +46,48 @@ export interface ExtractorState {
     owed: ReadonlyMap<string, number>;
     /** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. Optional: a caller that builds a state by hand need not know it. */
     failures?: ReadonlyMap<string, { hash: string; count: number }>;
+    /** The document extensions the packs claimed when the files were last reviewed (see {@link claimedDocumentExts}); undefined when never recorded. */
+    documents?: string;
+    /** The ones the packs claim now: set by the plan (and carried to *Continue*), saved by the run. */
+    documentsNow?: string;
+    /** Document extensions whose asset-ness changed between `documents` and `documentsNow`: their files are owed a re-processing. */
+    flipped?: ReadonlySet<string>;
+}
+
+/**
+ * Whether a file is an asset depends on the packs (a pdf is an asset until a host parser claims it), but the files manifest records only
+ * content hashes. So the extractor entry also records ONE string, the claimed document extensions (`documents:<pdf,docx|->`); the document
+ * types whose claim changed since — in either direction — are `flipped`, and every file of those types is owed (its hash may not have moved).
+ * No record reads as "none claimed" (and is not written), so a root reviewed before any host parser existed sees the document types a parser
+ * claims later as flipped, and a root from before this existed is owed everything by its version anyway.
+ *
+ * KNOWN LIMIT: two hosts with DIFFERENT pack sets sharing one manifest thrash — each switch flips every pdf/office file and re-extracts it
+ * (no model calls: judged sections re-anchor, but the work is real). Every Builderforce host is wired with the same documents pack, so the
+ * sets agree; this is deliberately not solved with per-pack-set cache entries.
+ */
+export function withDocuments(state: ExtractorState, now: string | undefined): ExtractorState {
+    if (now === undefined) return state;
+    const list = (s: string) => new Set(s === NO_DOCUMENTS ? [] : s.split(','));
+    const flipped = new Set<string>();
+    if (state.documents !== undefined && state.documents !== now) {
+        const was = list(state.documents), is = list(now);
+        for (const e of was) if (!is.has(e)) flipped.add(e);
+        for (const e of is) if (!was.has(e)) flipped.add(e);
+    }
+    return { ...state, documentsNow: now, flipped };
 }
 
 export async function loadExtractorState(manifest: IngestManifest, rootId: string): Promise<ExtractorState> {
     let version: number | undefined;
+    let documents: string | undefined;
     const owed = new Map<string, number>();
     const failures = new Map<string, { hash: string; count: number }>();
     for (const { id, hash } of (await manifest.get(extractorManifestKey(rootId))) ?? []) {
         if (id === VERSION_ID) {
             const v = Number(hash);
             if (Number.isFinite(v)) version = v;
+        } else if (id === DOCUMENTS_ID) {
+            documents = hash;
         } else if (id.startsWith(FAIL_PREFIX)) {
             const at = hash.indexOf(':');
             const count = Number(hash.slice(0, at));
@@ -61,16 +97,30 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
             owed.set(id.slice(OWED_PREFIX.length), Number.isFinite(calls) && calls >= 0 ? calls : UPGRADE_CALLS);
         }
     }
-    return { version, owed, failures };
+    return { version, owed, failures, documents: documents ?? NO_DOCUMENTS };
 }
 
-/** True when `path` is owed a re-extraction: another extractor version than today's, or left unfinished before. */
-export const isOwed = (state: ExtractorState, path: string): boolean =>
-    state.version !== EXTRACTOR_VERSION || state.owed.has(path);
+/** The file's document extension when its asset-ness flipped (a host parser arrived or left since the last run). */
+const isFlipped = (state: ExtractorState, path: string): boolean => !!state.flipped?.size && state.flipped.has(extOf(path));
 
-/** Model calls an owed `path` is expected to cost: its recorded count, plus one while an upgrade is pending. */
+/** True when `path` is owed a re-extraction: another extractor version than today's, left unfinished before, or its asset-ness flipped. */
+export const isOwed = (state: ExtractorState, path: string): boolean =>
+    state.version !== EXTRACTOR_VERSION || state.owed.has(path) || isFlipped(state, path);
+
+/** Whether `path` is an asset under the packs the plan was made with: binary, and not a document some parser claims. */
+const isAssetNow = (state: ExtractorState, path: string): boolean => {
+    if (!isBinaryPath(path)) return false;
+    if (!isDocumentPath(path)) return true;
+    const claimed = state.documentsNow;
+    return claimed === undefined || claimed === NO_DOCUMENTS || !claimed.split(',').includes(extOf(path));
+};
+
+/**
+ * Model calls an owed `path` is expected to cost: its recorded count, plus one while an upgrade is pending or its asset-ness flipped.
+ * An asset costs none (it is never read or judged); a file that flipped TO a document does.
+ */
 export const owedCalls = (state: ExtractorState, path: string): number =>
-    (state.version !== EXTRACTOR_VERSION ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
+    isAssetNow(state, path) ? 0 : (state.version !== EXTRACTOR_VERSION || isFlipped(state, path) ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
 
 /**
  * Paths in the files manifest that the plan does not list yet are owed: ignored, claimed by
@@ -112,9 +162,11 @@ export function owedAfterRun(a: {
 /** Records today's version and exactly the files still owed after this run. */
 export async function saveExtractorState(
     manifest: IngestManifest, rootId: string, owed: ReadonlyMap<string, number>, failures: ReadonlyMap<string, { hash: string; count: number }> = new Map(),
+    documents?: string,
 ): Promise<void> {
     await manifest.set(extractorManifestKey(rootId), [
         { id: VERSION_ID, hash: String(EXTRACTOR_VERSION) },
+        ...(documents !== undefined && documents !== NO_DOCUMENTS ? [{ id: DOCUMENTS_ID, hash: documents }] : []),
         ...[...owed].sort((a, b) => compareStr(a[0], b[0])).map(([path, calls]) => ({ id: `${OWED_PREFIX}${path}`, hash: String(calls) })),
         ...[...failures].filter(([path]) => owed.has(path)).sort((a, b) => compareStr(a[0], b[0])).map(([path, f]) => ({ id: `${FAIL_PREFIX}${path}`, hash: `${f.count}:${f.hash}` })),
     ]);

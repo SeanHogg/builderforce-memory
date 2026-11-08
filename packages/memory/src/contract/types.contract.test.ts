@@ -193,7 +193,7 @@ export type KNode_system_fields = Expect<Equal<
 export type GraphSystem_fields = Expect<Equal<
     GraphSystem,
     {
-        path: string; name: string; files: number; apps: GraphApp[]; truncated?: boolean; copyOf?: string; copySimilarity?: number;
+        path: string; name: string; files: number; assets?: number; apps: GraphApp[]; truncated?: boolean; copyOf?: string; copySimilarity?: number;
         copyReason?: 'no-git' | 'name-mismatch' | 'later-name'; graphRead?: { read: number; skipped: GraphReadSkip[] };
     }
 >>;

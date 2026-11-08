@@ -26,7 +26,7 @@ describe('regression: a root reviewed before binary files were recorded is settl
         expect(source.reads).not.toContain('img.png');
     });
 
-    it('regression: the review reads ONLY the files a replica asked to re-check: a NUL-binary gets [], a text file is extracted, the set is cleared', async () => {
+    it('regression: the review reads ONLY the files a replica asked to re-check: a NUL-binary gets its asset node, a text file is extracted, the set is cleared', async () => {
         const binary = 'bin\u0000ary';
         const files = { 'blob.txt': binary, 'a.md': text, 'b.md': '# B\nbeta\n' };
         const manifest = new InMemoryIngestManifest();
@@ -37,7 +37,7 @@ describe('regression: a root reviewed before binary files were recorded is settl
         const source = memSource(files);
         await reviewDirectory(args(source, legacy, manifest));
         expect(new Set(source.reads)).toEqual(new Set(['blob.txt', 'a.md'])); // b.md was never named
-        expect(await legacy.getExtracted(hashText(binary))).toEqual([]);
+        expect((await legacy.getExtracted(hashText(binary)))![0]!.nodes[0]!.badges).toMatchObject({ asset: 1, size: binary.length });
         expect((await legacy.getExtracted(hashText(text)))!.length).toBeGreaterThan(0);
         expect(await legacy.getExtracted(hashText(files['b.md']))).toBeUndefined();
         expect(await legacy.recheckHashes()).toEqual([]);
@@ -86,12 +86,12 @@ describe('regression: a root reviewed before binary files were recorded is settl
         return legacy;
     };
 
-    it('regression: a review stopped mid-way (after the backfill queued the file) keeps the re-check request and records no terminal [], and a complete one clears it', async () => {
+    it('regression: a review stopped mid-way (on the read of the file the backfill queued) keeps the re-check request and records no terminal [], and a complete one clears it', async () => {
         const manifest = new InMemoryIngestManifest();
         const legacy = await legacyStore(manifest);
         const stop = new AbortController();
-        // Read 1 is the backfill's, read 2 is the review's: the run is stopped there and the read rejects.
-        const source = watched((n) => { if (n === 2) { stop.abort(); throw new Error('aborted'); } });
+        // The backfill only queues the file (it reads nothing); read 1 is the review's: the run is stopped there and the read rejects.
+        const source = watched((n) => { if (n === 1) { stop.abort(); throw new Error('aborted'); } });
         await reviewDirectory(args(source, legacy, manifest, { signal: stop.signal })).catch(() => undefined);
         expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
         expect(await legacy.getExtracted(hashText(text))).toBeUndefined();

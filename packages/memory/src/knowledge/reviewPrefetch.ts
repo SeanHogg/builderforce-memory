@@ -23,6 +23,8 @@ import { isBinaryText, type ComposedPacks } from './sources.js';
 export type Prefetch = (
     | { kind: 'read-error'; reason: string }
     | { kind: 'binary' }
+    /** Planned as an asset (binary by extension): decided without a read, the review writes its file node. */
+    | { kind: 'asset' }
     | { kind: 'none' }
     | { kind: 'extracted'; doc?: SourceDocument; extraction: FileExtraction }
     | { kind: 'failed'; reason: string; transient?: true }
@@ -53,6 +55,7 @@ export function extractStepOf(path: string, job: Prefetch): ReviewStep {
         case 'read-error': return { ...base, outcome: 'failed', reason: `read: ${job.reason}` };
         case 'failed': return { ...base, outcome: 'failed', reason: job.reason };
         case 'binary': return { ...base, outcome: 'skipped', reason: 'binary' };
+        case 'asset': return { ...base, outcome: 'ok', reason: 'asset' }; // its node is written: the file is stored, just not read
         case 'none': return { ...base, outcome: 'skipped', reason: 'no-pack' };
         case 'extracted': return { ...base, outcome: job.extraction.cached ? 'cached' : 'ok' };
     }
@@ -64,7 +67,10 @@ export { CHANGED_SINCE_PLAN };
 export const DEFAULT_READ_TIMEOUT_MS = 5_000;
 export const DEFAULT_EXTRACT_TIMEOUT_MS = 10_000;
 
-export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: string }) => Promise<Prefetch> {
+/** A changed file as the prefetch sees it: a `PlannedFile`'s path, hash, size and asset flag. */
+export type PrefetchFile = { path: string; hash: string; size: number; asset?: true };
+
+export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise<Prefetch> {
     // A lane is a worker: taken while the file holds an extract slot. The extract stage holds at most `extractWidth` at once, so the
     // extract deadline counts from the moment a job holds a slot, never from its wait in line (the limiter is used as a plain semaphore).
     const lanes = new Lanes(c.extractWidth ?? c.width);
@@ -76,9 +82,11 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
     const wantsSections = (pack: KnowledgePack) => !c.args.mechanical && judgesPack(c.args.judgement, pack);
     const byPool = !!c.args.extractPool && !!c.args.deferRead;
 
-    const run = async (f: { path: string; hash: string }, parts: NonNullable<ReviewStep['parts']>, held: { lane: number }): Promise<Outcome> => {
+    const run = async (f: PrefetchFile, parts: NonNullable<ReviewStep['parts']>, held: { lane: number }): Promise<Outcome> => {
         // A stopped run starts nothing: a job that has not begun settles at once. Once the read has begun the job finishes (its slot wait below is signal-free for a file already read).
         if (c.signal.aborted) return { kind: 'failed', reason: reasonOf(c.signal.reason), transient: true };
+        // The plan decided it (isAssetPath): no read, no extract slot.
+        if (f.asset) return { kind: 'asset' };
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
         if (!byPool) {

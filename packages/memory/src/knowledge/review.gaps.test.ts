@@ -95,10 +95,11 @@ describe('planReview — ignores and documents', () => {
         expect(plan.changed).toContain('draft.md');
     });
 
-    it('skips pdf/office as binary unless a host parser claims the media type', async () => {
+    it('plans pdf/office as an asset unless a host parser claims the media type', async () => {
         const source = memSource({ 'a.pdf': 'text', 'b.md': '# B\n' });
-        expect((await planReview(source, new InMemoryIngestManifest(), [DOCS_PACK])).skipped)
-            .toContainEqual({ path: 'a.pdf', reason: 'binary' });
+        const bare = await planReview(source, new InMemoryIngestManifest(), [DOCS_PACK]);
+        expect(bare.skipped.map((s) => s.path)).not.toContain('a.pdf');
+        expect(bare.assets).toBe(1);
         const pdf: KnowledgeParser = {
             id: 'pdf-text',
             accepts: (s) => s.content.kind === 'text' && s.content.mediaType === 'application/pdf',
@@ -107,6 +108,7 @@ describe('planReview — ignores and documents', () => {
         const withPdf: KnowledgePack = { ...DOCS_PACK, parsers: [pdf, ...DOCS_PACK.parsers] };
         const plan = await planReview(source, new InMemoryIngestManifest(), [withPdf]);
         expect(plan.changed).toContain('a.pdf');
+        expect(plan.assets).toBe(0);
     });
 });
 

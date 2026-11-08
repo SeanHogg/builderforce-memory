@@ -43,7 +43,8 @@ import {
 import { createModelLimiter } from './modelLimiter.js';
 import { JudgeBreaker } from './judgeCalls.js';
 import { applyJudge, judgesPack, splitSections, startJudge, type JudgeJob } from './reviewJudge.js';
-import { createPrefetch, type Prefetch } from './reviewPrefetch.js';
+import { createPrefetch, type Prefetch, type PrefetchFile } from './reviewPrefetch.js';
+import { putAsset } from './assetFile.js';
 import { Lanes } from './reviewRunModel.js';
 import { compareNew, pendingClaims, saveAwaiting } from './reviewCompare.js';
 import { factsWithoutAnchor, StoredIndex } from './reviewStored.js';
@@ -67,7 +68,7 @@ function readAheadOf(args: ReviewArgs, concurrency: number): number {
 
 /** One changed file between dispatch and the ordered writer: what its prefetch found and its judging in flight. */
 interface Slot {
-    f: { path: string; hash: string };
+    f: PrefetchFile;
     i: number;
     job: Prefetch;
     judge: JudgeJob | undefined;
@@ -121,13 +122,13 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const judgedPrior = await manifestMap(manifest, judgedManifestKey(rootId));
     const judgedNow = new Map(judgedPrior);
     const filesNow = new Map(detail.prior);
-    // A root reviewed before binary files were recorded: settle files with no body: binary-by-extension ones (no read), and the ones a replica asked to re-check.
+    // Files with no stored body: assets the manifest names (queued so their node is written, no read) and the ones a replica asked to re-check (queued; this review stores their body or asset node).
     const asked = (await store.recheckHashes?.()) ?? [];
     // ONE bulk fetch of the extract cache for the whole run instead of a round trip per file: the files this run extracts and the ones the backfill looks up.
     const preChanged = detail.files.filter((f) => f.changed && (!args.only || args.only.includes(f.path)));
     const preload = [...new Set([...preChanged.map((f) => f.hash), ...backfillCandidates(detail, asked)])];
     if (preload.length > 0) await store.preloadExtracted?.(preload);
-    await backfillNoExtract({ store, source, detail, asked, only: args.only, signal });
+    await backfillNoExtract({ store, detail, asked, only: args.only, signal });
     // A re-check request is answered only when the work it asked for is done: the body stored, the binary recorded, or the failure recorded.
     const askedSet = new Set(asked);
     const settledRecheck = async (hash: string): Promise<void> => { if (askedSet.has(hash)) await store.clearRecheck?.([hash]); };
@@ -223,11 +224,13 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             return true;
         }
         failures.delete(f.path); // it read and extracted (or was decided): the run of failures at this hash ends
+        // An asset (planned binary, or a text-extension file found binary on read): never extracted, but it IS a file of the root, so
+        // its file node is stored (assetFile.ts) — a replica tells it from "not extracted yet", and references to its path resolve.
         // Recorded, so a file found binary on read is not re-read by every later review.
-        if (job.kind === 'binary') {
+        if (job.kind === 'binary' || job.kind === 'asset') {
             filesNow.set(f.path, f.hash);
             finished.add(f.path);
-            await putNoExtract(store, f.hash); // the explicit "nothing extracted", so a replica can tell it from "not extracted yet"
+            await putAsset(store, rootId, f);
             await settledRecheck(f.hash);
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
@@ -395,7 +398,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     // content-changed or not, and the owed paths the plan did not list that the manifest still holds.
     await saveExtractorState(manifest, rootId, owedAfterRun({
         state: detail.extractor, changed, prior: detail.prior, finished, carried: detail.carried, live: filesNow, measured, unreadable,
-    }), failures);
+    }), failures, detail.extractor.documentsNow);
     await write(report.aborted ? scopeRecord : { ...scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(now()).toISOString() });
     report.durationMs = now() - started;
     progress({ phase: 'done', done: work.length, total: work.length });
