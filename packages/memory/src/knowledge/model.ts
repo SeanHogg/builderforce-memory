@@ -233,6 +233,8 @@ export interface KnowledgeStore {
     markRecheck?(hashes: readonly string[]): Promise<void>;
     recheckHashes?(): Promise<string[]>;
     clearRecheck?(hashes: readonly string[]): Promise<void>;
+    /** Whether a hash is on the re-check set (a cheap membership test for a store that observes every put). */
+    hasRecheck?(hash: string): Promise<boolean>;
     /**
      * Runs `work` as one unit of many mutations. Inside it the store may hold persistence back
      * (a whole-snapshot store would otherwise rewrite everything per mutation); `flush` makes

@@ -11,7 +11,8 @@
  *   - binary by CONTENT (a NUL): unknowable without reading. A replica that holds a file back, or is told by the server that a
  *     body is missing, calls `store.markRecheck(hashes)`; the review reads ONLY the unchanged planned files with those hashes.
  *     Binary → `[]`. Anything else (text, a document) → queued for extraction this run (`changed`). A hash only a SKIPPED
- *     prior entry carries is never extracted by any review: `[]`. The handled hashes are cleared.
+ *     prior entry carries is never extracted by any review: `[]`. Hashes settled HERE are cleared here; a queued one is cleared by the review
+ *     once its body (or the failure) is stored, so an aborted run keeps the request.
  *
  * A healthy root has no body missing and an empty recheck set: it reads nothing and costs only in-memory lookups.
  */
@@ -76,8 +77,8 @@ export async function backfillNoExtract(args: { store: KnowledgeStore; source: D
         } catch {
             continue; // unreadable says nothing about the file: asked again next time
         }
-        if (binary) { await putNoExtract(store, hash); out.recorded += 1; } else { for (const t of todo) { t.changed = true; out.queued.push(t.path); } }
-        done.add(hash);
+        if (binary) { await putNoExtract(store, hash); out.recorded += 1; done.add(hash); }
+        else for (const t of todo) { t.changed = true; out.queued.push(t.path); } // asked for until the review has stored its body (see `settledRecheck`)
     }
     if (done.size > 0 && !signal?.aborted) await store.clearRecheck?.([...done]);
     return out;

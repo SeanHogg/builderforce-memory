@@ -126,6 +126,9 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     const preload = [...new Set([...preChanged.map((f) => f.hash), ...backfillCandidates(detail, asked)])];
     if (preload.length > 0) await store.preloadExtracted?.(preload);
     await backfillNoExtract({ store, source, detail, asked, only: args.only, signal });
+    // A re-check request is answered only when the work it asked for is done: the body stored, the binary recorded, or the failure recorded.
+    const askedSet = new Set(asked);
+    const settledRecheck = async (hash: string): Promise<void> => { if (askedSet.has(hash)) await store.clearRecheck?.([hash]); };
     // Claims awaiting comparison: those a previous run could not compare, then this run's.
     const newClaims = await pendingClaims(manifest, rootId, stored.facts);
 
@@ -208,6 +211,11 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             if (job.kind === 'read-error') report.readErrors += 1; else report.extractErrors += 1;
             fail(f.path, 'extract', job.kind === 'read-error' ? `read: ${job.reason}` : job.reason);
             measured.set(f.path, owedCalls(detail.extractor, f.path)); // learns nothing: keep what it was owed
+            // The manifest keeps the file at its old hash, which is what a replica syncs: if no body is stored for it, say so once (a terminal
+            // answer, `[]` = nothing extracted), so the file is not held back and re-asked for forever. A later successful read replaces it.
+            // (`[]` rather than a sibling "failed" member: the reason is already in `report.failures`, and a new store member would have no reader.)
+            const known = detail.prior.get(f.path);
+            if (known) { await putNoExtract(store, known); await settledRecheck(known); }
             return true;
         }
         // Recorded, so a file found binary on read is not re-read by every later review.
@@ -215,6 +223,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             filesNow.set(f.path, f.hash);
             finished.add(f.path);
             await putNoExtract(store, f.hash); // the explicit "nothing extracted", so a replica can tell it from "not extracted yet"
+            await settledRecheck(f.hash);
             await store.markStale(scope, srcRef(rootId, f.path), f.hash);
             report.staleMarked += 1;
             return true;
@@ -223,6 +232,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
         report.extracted += 1;
         // The extract cache is written HERE, in plan order, so the cache, the counts and the order match a sequential run.
         if (!job.extraction.cached) await putExtract(store, f.hash, job.extraction.extracted);
+        await settledRecheck(f.hash);
         let complete = true;
         let deferred = false;
         if (args.mechanical && judgesPack(args.judgement, job.extraction.pack)) {

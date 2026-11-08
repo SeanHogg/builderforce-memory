@@ -308,6 +308,34 @@ describe('regression: a root reviewed before binary files were recorded is settl
         expect(await legacy.recheckHashes()).toEqual([]);
     });
 
+    it('regression: a file whose read fails gets a terminal [] under the hash the manifest holds, so it is never held back forever (and a later read replaces it)', async () => {
+        const manifest = new InMemoryIngestManifest();
+        await saveManifestMap(manifest, filesManifestKey(ROOT), new Map([['locked.md', 'oldhash']]));
+        const store = memStore();
+        const inner = memSource({ 'locked.md': '# L\nlocked\n' });
+        const locked = { ...inner, read: async () => { throw new Error('EBUSY'); } };
+        const report = await reviewDirectory(args(locked as never, store, manifest));
+        expect(report.readErrors).toBe(1);
+        expect(await store.getExtracted('oldhash')).toEqual([]);
+        // The file becomes readable at a new hash: the real body is stored under it, and the terminal answer for the old hash stays harmless.
+        await reviewDirectory(args(inner, store, manifest));
+        expect((await store.getExtracted(hashText('# L\nlocked\n')))!.length).toBeGreaterThan(0);
+    });
+
+    it('regression: a review that is aborted before it did the work keeps the re-check request, and one that completes it clears it', async () => {
+        const manifest = new InMemoryIngestManifest();
+        await reviewDirectory(args(memSource({ 'a.md': text }), memStore(), manifest));
+        const legacy = memStore();
+        await legacy.markRecheck([hashText(text)]);
+        const stop = new AbortController();
+        stop.abort();
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest, { signal: stop.signal })).catch(() => undefined);
+        expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest));
+        expect(await legacy.recheckHashes()).toEqual([]);
+        expect((await legacy.getExtracted(hashText(text)))!.length).toBeGreaterThan(0);
+    });
+
     it('regression: an unchanged text file with no stored body is NOT given [] (it is "not extracted yet")', async () => {
         const manifest = new InMemoryIngestManifest();
         await reviewDirectory(args(memSource({ 'a.md': text }), memStore(), manifest));

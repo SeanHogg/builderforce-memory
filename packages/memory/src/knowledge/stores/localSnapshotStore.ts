@@ -339,6 +339,11 @@ export class LocalSnapshotStore implements KnowledgeStore {
         return this.mutate(() => { for (const h of hashes) if (!this.recheck.has(h)) { this.recheck.add(h); this.dirty = true; } }, false);
     }
 
+    async hasRecheck(hash: string): Promise<boolean> {
+        await this.load();
+        return this.recheck.has(hash);
+    }
+
     async recheckHashes(): Promise<string[]> {
         await this.load();
         return [...this.recheck].sort(compareStr);
