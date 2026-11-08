@@ -175,7 +175,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
     /** Files that failed for a reason that says nothing final about them, at the manifest's own bytes: owed, so the next review retries them. */
     const unreadable = new Set<string>();
     /** Consecutive transient failures by path at one hash (saved beside the owed record). */
-    const failures = new Map(detail.extractor.failures);
+    const failures = new Map(detail.extractor.failures ?? []);
     const measured = new Map<string, number>();
     // Read + binary check + extract run ahead with bounded concurrency (extraction only reads `knownKeys`,
     // fixed above, and the content-hash extract cache); with `args.extractPool` the width is the pool's.
@@ -218,7 +218,7 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
             measured.set(f.path, owedCalls(detail.extractor, f.path)); // learns nothing: keep what it was owed
             // The ONE failure path (reviewFailure.ts): a transient failure keeps the re-check request and makes the file owed; only a proven-final
             // one (or the third in a row at the same bytes) is answered with a terminal `[]`.
-            await recordFailure({ store, detail, stopped: () => runSignal.aborted, unreadable, failures, settledRecheck }, f, job);
+            if (await recordFailure({ store, detail, stopped: () => runSignal.aborted, unreadable, failures, settledRecheck }, f, job)) finished.add(f.path); // final: settled, not re-read while its bytes stand
             return true;
         }
         failures.delete(f.path); // it read and extracted (or was decided): the run of failures at this hash ends

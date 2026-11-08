@@ -5,11 +5,12 @@
 
 import { hashText } from '../ingest/hash.js';
 import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
-import { ExtractFailed, type ExtractPool } from '../knowledge/extractJob.js';
+import { ExtractFailed, extractJob, type ExtractJob, type ExtractPool } from '../knowledge/extractJob.js';
+import { CHANGED_SINCE_PLAN } from '../knowledge/reviewPrefetch.js';
 import { DOCS_PACK } from '../knowledge/packs/docs.js';
 import type { KnowledgePack } from '../knowledge/model.js';
 import { reviewDirectory } from '../knowledge/review.js';
-import { filesManifestKey, saveManifestMap } from '../knowledge/sources.js';
+import { extractorManifestKey, filesManifestKey, manifestMap, saveManifestMap } from '../knowledge/sources.js';
 import { args, memSource, memStore, ROOT, stateOf, type SpySource } from '../knowledge/testkit.test-util.js';
 
 describe('regression: a root reviewed before binary files were recorded is settled by its next review, without reading a file', () => {
@@ -159,7 +160,7 @@ describe('regression: a root reviewed before binary files were recorded is settl
         await expectTransient(legacy, manifest);
     });
 
-    it('regression: an in-thread read that does not match the planned hash (changed since plan) at the same hash is transient', async () => {
+    it('guard: an in-thread read that does not match the planned hash (changed since plan) at the same hash is transient', async () => {
         const manifest = new InMemoryIngestManifest();
         const legacy = await legacyStore(manifest);
         const drifting = { ...memSource({ 'a.md': text }), hashOf: () => 'some-other-hash' } as SpySource;
@@ -168,7 +169,7 @@ describe('regression: a root reviewed before binary files were recorded is settl
         await expectTransient(legacy, manifest);
     });
 
-    it('regression: an extraction past its ceiling (a slow pool under a tiny extractMs) is transient', async () => {
+    it('guard: an extraction past its ceiling (a slow pool under a tiny extractMs) is transient', async () => {
         const manifest = new InMemoryIngestManifest();
         const legacy = await legacyStore(manifest);
         const slow: ExtractPool = () => new Promise(() => undefined);
@@ -176,10 +177,11 @@ describe('regression: a root reviewed before binary files were recorded is settl
         await expectTransient(legacy, manifest);
     });
 
-    it('regression: the third transient failure in a row at the same hash is recorded as final', async () => {
+    it('regression: the third transient failure in a row at the same hash is recorded as final, and STICKY: the file is not re-read while its bytes stand', async () => {
         const manifest = new InMemoryIngestManifest();
         const legacy = await legacyStore(manifest);
-        const busy: ExtractPool = async () => { throw new Error('EBUSY'); };
+        let calls = 0;
+        const busy: ExtractPool = async () => { calls += 1; throw new Error('EBUSY'); };
         const run = () => reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest, { extractPool: busy, deferRead: true }));
         await run();
         await run();
@@ -187,9 +189,69 @@ describe('regression: a root reviewed before binary files were recorded is settl
         await run();
         expect(await legacy.getExtracted(hashText(text))).toEqual([]); // the third: final
         expect(await legacy.recheckHashes()).toEqual([]);
+        const settledAt = calls;
+        const report = await run();
+        expect(calls).toBe(settledAt);                // sticky: not re-read ...
+        expect(report.failures).toEqual([]);          // ... and not reported failed again
+        expect((await stateOf(manifest)).owed).toEqual([]);
     });
 
-    it('regression: a forced review whose read fails keeps the request (the backfill does not clear a changed file\'s hash)', async () => {
+    it('regression: a pool that rejects with "changed since plan" is transient (it was terminal before)', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const legacy = await legacyStore(manifest);
+        const drifting: ExtractPool = async () => { throw new Error(CHANGED_SINCE_PLAN); };
+        await reviewDirectory(args(memSource({ 'a.md': text }), legacy, manifest, { extractPool: drifting, deferRead: true }));
+        await expectTransient(legacy, manifest);
+    });
+
+    it('regression: the failure count resets on a success: fail, fail, succeed, then fail, fail is still transient and `fail:a.md` is gone after the success', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const source = memSource({ 'a.md': text });
+        await reviewDirectory(args(source, memStore(), manifest));
+        const busy: ExtractPool = async () => { throw new Error('EBUSY'); };
+        const reading: ExtractPool = async (job) => extractJob({ ...job, doc: await source.read(job.path) } as ExtractJob, [DOCS_PACK]);
+        const failIds = async () => ((await manifest.get(extractorManifestKey(ROOT))) ?? []).map((f) => f.id).filter((id) => id.startsWith('fail:'));
+        const withPool = (store: ReturnType<typeof memStore>, pool: ExtractPool, extra = {}) =>
+            reviewDirectory(args(source, store, manifest, { extractPool: pool, deferRead: true, ...extra }));
+        await withPool(memStore(), busy, { force: true });
+        await withPool(memStore(), busy, { force: true });
+        expect(await failIds()).toEqual(['fail:a.md']);
+        await withPool(memStore(), reading, { force: true }); // a success
+        expect(await failIds()).toEqual([]);
+        const last = memStore();
+        await withPool(last, busy, { force: true });
+        await withPool(last, busy, { force: true });
+        expect(await last.getExtracted(hashText(text))).toBeUndefined(); // two since the success: not final (it would be the fourth without the reset)
+        expect((await stateOf(manifest)).owed).toContain('a.md');
+    });
+
+    it('regression: two paths share a hash; the unchanged one stays readable content, so a final failure of the other stores no [] under it and the request stays asked', async () => {
+        const manifest = new InMemoryIngestManifest();
+        await reviewDirectory(args(memSource({ 'x.md': text, 'y.md': text }), memStore(), manifest)); // both at hash H
+        const legacy = memStore();
+        await legacy.markRecheck([hashText(text)]);
+        const inner = memSource({ 'x.md': text, 'y.md': '# Y\nchanged\n' });
+        const source = { ...inner, read: async (p: string) => { if (p === 'y.md') throw new Error('EBUSY'); return inner.read(p); } } as SpySource;
+        await reviewDirectory(args(source, legacy, manifest, { only: ['y.md'] })); // y.md moved off H and cannot be read
+        expect(await legacy.getExtracted(hashText(text))).toBeUndefined();
+        expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
+    });
+
+    it('regression: a Stop that lands during the LAST file still applies it, but retires nothing, runs no analyzers and stamps no digest', async () => {
+        const manifest = new InMemoryIngestManifest();
+        const store = memStore();
+        await reviewDirectory(args(memSource({ 'a.md': text, 'gone.md': '# G\nbye\n' }), store, manifest));
+        const stamped = (await store.scopes()).find((s) => s.rootId === ROOT)!.lastDigest;
+        const stop = new AbortController();
+        const report = await reviewDirectory(args(memSource({ 'a.md': '# A\nedited\n' }), store, manifest, {
+            signal: stop.signal, onProgress: (p) => { if (p.phase === 'write') stop.abort(); },
+        }));
+        expect(report.aborted).toBe(true);
+        expect([...(await manifestMap(manifest, filesManifestKey(ROOT))).keys()]).toContain('gone.md'); // not retired
+        expect((await store.scopes()).find((s) => s.rootId === ROOT)!.lastDigest).toBe(stamped);
+    });
+
+    it('guard: a forced review whose read fails keeps the request (the backfill does not clear a changed file\'s hash)', async () => {
         const manifest = new InMemoryIngestManifest();
         const legacy = await legacyStore(manifest);
         const failing = { ...memSource({ 'a.md': text }), read: async () => { throw new Error('EBUSY'); } } as SpySource;
@@ -197,7 +259,7 @@ describe('regression: a root reviewed before binary files were recorded is settl
         expect(await legacy.recheckHashes()).toEqual([hashText(text)]);
     });
 
-    it('regression: a file the packs accept at plan time but not once read (job "none") is recorded as nothing-to-extract and its request is answered', async () => {
+    it('guard: a file the packs accept at plan time but not once read (job "none") is recorded as nothing-to-extract and its request is answered', async () => {
         const picky: KnowledgePack = { ...DOCS_PACK, parsers: [{ ...DOCS_PACK.parsers[0]!, accepts: (s) => s.content.kind === 'text' && s.content.text === '' }] };
         const manifest = new InMemoryIngestManifest();
         await reviewDirectory(args(memSource({ 'a.md': text }), memStore(), manifest, { packs: [picky] }));

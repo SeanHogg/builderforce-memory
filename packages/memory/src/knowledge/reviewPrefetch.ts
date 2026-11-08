@@ -109,7 +109,7 @@ export function createPrefetch(c: PrefetchContext): (f: { path: string; hash: st
             if (error instanceof BinaryContent) return { kind: 'binary' };
             // Transient UNLESS proven final: only the parser or extractor throwing on these bytes (ExtractFailed) is. A read, a timeout, a crashed or
             // disposed worker, a failing store, a stop: all say nothing final about the file.
-            return { kind: 'failed', reason: reasonOf(error), ...(error instanceof ExtractFailed && !c.signal.aborted ? {} : { transient: true as const }) };
+            return { kind: 'failed', reason: reasonOf(error), ...((error instanceof ExtractFailed || (error as { name?: unknown } | null)?.name === 'ExtractFailed') && !c.signal.aborted ? {} : { transient: true as const }) };
         }
     };
 

@@ -7,7 +7,8 @@
  *   - final: the manifest's bytes are gone (the hash moved), or the parser/extractor threw on them. `[]` is stored under the manifest's hash
  *     and the request is settled — unless an unchanged planned file still carries that hash (its content is readable: do not hide it);
  *   - transient at the manifest's own bytes: the request is kept and the path is made OWED, so the next normal review retries it;
- *     after {@link MAX_TRANSIENT_FAILURES} in a row at the same hash it is treated as final, so a file that never reads cannot hold a root forever;
+ *     after {@link MAX_TRANSIENT_FAILURES} in a row at the same hash it is treated as final, so a file that never reads cannot hold a root forever.
+ *     A final failure is STICKY: the review counts the file as settled, so it is not re-read (or re-reported) until its bytes change or the extractor version moves;
  *   - never anything when the run was stopped.
  */
 
@@ -30,9 +31,10 @@ export interface FailureContext {
     settledRecheck: (hash: string) => Promise<void>;
 }
 
-export async function recordFailure(ctx: FailureContext, f: { path: string; hash: string }, job: Extract<Prefetch, { kind: 'read-error' | 'failed' }>): Promise<void> {
+/** True when the failure was recorded as FINAL: the review then counts the file as settled, so it is not re-read (and re-reported) while its bytes stay as they are. */
+export async function recordFailure(ctx: FailureContext, f: { path: string; hash: string }, job: Extract<Prefetch, { kind: 'read-error' | 'failed' }>): Promise<boolean> {
     const known = ctx.detail.prior.get(f.path);
-    if (!known || ctx.stopped()) return;
+    if (!known || ctx.stopped()) return false;
     const transient = job.kind === 'read-error' || job.transient === true;
     if (known === f.hash && transient) {
         const prev = ctx.failures.get(f.path);
@@ -40,12 +42,13 @@ export async function recordFailure(ctx: FailureContext, f: { path: string; hash
         if (count < MAX_TRANSIENT_FAILURES) {
             ctx.failures.set(f.path, { hash: known, count });
             ctx.unreadable.add(f.path);
-            return;
+            return false;
         }
     }
     ctx.failures.delete(f.path);
     // An unchanged planned file that still carries `known` is readable content: a terminal `[]` would hide it.
-    if (ctx.detail.files.some((g) => g.path !== f.path && !g.changed && g.hash === known)) return;
+    if (ctx.detail.files.some((g) => g.path !== f.path && !g.changed && g.hash === known)) return true;
     await putNoExtract(ctx.store, known);
     await ctx.settledRecheck(known);
+    return true;
 }

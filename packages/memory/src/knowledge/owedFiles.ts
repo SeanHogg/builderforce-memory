@@ -40,7 +40,8 @@ export interface ExtractorState {
     version: number | undefined;
     /** Paths a previous run left unfinished under that version → model calls each still costs. */
     owed: ReadonlyMap<string, number>;
-/** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. */    failures: ReadonlyMap<string, { hash: string; count: number }>;
+    /** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. Optional: a caller that builds a state by hand need not know it. */
+    failures?: ReadonlyMap<string, { hash: string; count: number }>;
 }
 
 export async function loadExtractorState(manifest: IngestManifest, rootId: string): Promise<ExtractorState> {

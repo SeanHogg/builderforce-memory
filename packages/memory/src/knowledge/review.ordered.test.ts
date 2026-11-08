@@ -78,6 +78,10 @@ async function runTwice(shape: Shape) {
     return { first, second, inFlight: max };
 }
 
+// Each case runs four full reviews of the fixture (two widths, first + incremental); under a
+// parallel jest run that exceeds the 5 s default, so the budget is explicit.
+const ORDERED_REVIEW_TIMEOUT_MS = 30_000;
+
 describe('parallel review, ordered writer', () => {
     it('stores the same bytes and manifests at 8/4 as at 1/1, on a first and an incremental review', async () => {
         const wide = await runTwice({ concurrency: 8, judgeConcurrency: 4, modelCalls: 500 });
@@ -90,7 +94,7 @@ describe('parallel review, ordered writer', () => {
         expect(wide.second.bytes).not.toBe(wide.first.bytes);
         expect(wide.second.bytes).toBe(narrow.second.bytes);
         expect(wide.second.manifests).toBe(narrow.second.manifests);
-    });
+    }, ORDERED_REVIEW_TIMEOUT_MS);
 
     it('stores the same bytes through an extraction pool at width as in-thread at 1/1', async () => {
         const pooled = await runTwice({ concurrency: 8, judgeConcurrency: 4, modelCalls: 500, pool: true });
@@ -98,7 +102,7 @@ describe('parallel review, ordered writer', () => {
         expect(pooled.first.bytes).toBe(narrow.first.bytes);
         expect(pooled.second.bytes).toBe(narrow.second.bytes);
         expect(pooled.second.manifests).toBe(narrow.second.manifests);
-    });
+    }, ORDERED_REVIEW_TIMEOUT_MS);
 
     it('spends a short model-call budget in plan order whatever the widths', async () => {
         const wide = await runTwice({ concurrency: 8, judgeConcurrency: 4, modelCalls: 17 });
@@ -110,5 +114,5 @@ describe('parallel review, ordered writer', () => {
         expect(wide.first.bytes).toBe(narrow.first.bytes);
         expect(wide.second.bytes).toBe(narrow.second.bytes);
         expect(wide.second.manifests).toBe(narrow.second.manifests);
-    });
+    }, ORDERED_REVIEW_TIMEOUT_MS);
 });
