@@ -149,9 +149,12 @@ export interface JudgementPort {
     judge(req: JudgementRequest): Promise<JudgementResult>;
 }
 
-/** Host-run tools for a pack (code: dependency-cruiser/jscpd/knip). Returns extra extracted edges/badges. */
+/** Progress an analyzer reports while it runs (files listed/read, tools finished). */
+export interface AnalyzerProgress { done: number; total: number; path?: string }
+
+/** Host-run tools for a pack (code: dependency-cruiser/jscpd/knip). Returns extra extracted edges/badges. `onProgress` is optional to call and to honour. */
 export interface AnalyzerPort {
-    analyse(rootId: string, signal?: AbortSignal): Promise<Extracted[]>;
+    analyse(rootId: string, signal?: AbortSignal, onProgress?: (p: AnalyzerProgress) => void): Promise<Extracted[]>;
 }
 
 /** A host-supplied parser that also extracts graph structure. `extract` is the optional ingest extension. */

@@ -9,7 +9,7 @@
 export type {
     NodeRef, Origin, StoredOrigin, KNode, EdgeVerdict, KEdge, Extracted, ExtractContext, Finding, FindingRule,
     PartitionRule, PartitionRegistry, JudgementSpec, JudgementRequest, JudgedClaim, JudgedEntity, JudgementResult,
-    JudgementPort, AnalyzerPort, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
+    JudgementPort, AnalyzerPort, AnalyzerProgress, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
     ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile, OutlineCommunity,
     GraphSystem, GraphApp, GraphReadSkip,

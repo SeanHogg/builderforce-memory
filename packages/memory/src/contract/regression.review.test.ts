@@ -6,6 +6,7 @@
 
 import { hashText } from '../ingest/hash.js';
 import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
+import type { ReviewProgress } from '../knowledge/model.js';
 import type { ReviewStep } from '../knowledge/reviewRunModel.js';
 import { extractJob, type ExtractJob, type ExtractPool } from '../knowledge/extractJob.js';
 import type { JudgementRequest, KnowledgePack, KnowledgeStore } from '../knowledge/model.js';
@@ -156,6 +157,60 @@ describe('regression: pass 2 and pass 1', () => {
         await reviewDirectory(args(source, store, manifest, { judgement: fakeJudge(), packs: [pack] }));
         expect(analysed).toBe(2);
         expect(retired).toEqual([srcRef(ROOT, 'c.md')]);
+    });
+
+    it('regression: the review leaves "write" for an "analyse" phase the moment the last file is written, and forwards analyzer progress', async () => {
+        const pack: KnowledgePack = {
+            ...quietPack,
+            analyzers: { async analyse(_root, _signal, onProgress) { onProgress?.({ done: 1, total: 2 }); onProgress?.({ done: 2, total: 2 }); return []; } },
+        };
+        const events: Array<{ phase: string; done: number; total: number }> = [];
+        const source = memSource({ ...FILES });
+        await reviewDirectory(args(source, memStore(), new InMemoryIngestManifest(), {
+            judgement: fakeJudge(), packs: [pack], onProgress: (p) => events.push({ phase: p.phase, done: p.done, total: p.total }),
+        }));
+        const lastWrite = events.map((e) => e.phase).lastIndexOf('write');
+        const analyse = events.map((e, i) => (e.phase === 'analyse' ? i : -1)).filter((i) => i >= 0);
+        const firstResolve = events.findIndex((e) => e.phase === 'resolve');
+        expect(analyse.length).toBe(4);
+        expect(analyse[0]!).toBeGreaterThan(lastWrite);
+        expect(analyse[3]!).toBeLessThan(firstResolve);
+        expect(analyse.map((i) => [events[i]!.done, events[i]!.total])).toEqual([[0, 1], [1, 2], [2, 2], [2, 2]]); // open, two forwarded, close
+    });
+
+    it('regression: an analyzer that never reports keeps the "analyse" row active while it runs, and the row ends before resolve', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => { release = r; });
+        let entered!: () => void;
+        const inside = new Promise<void>((r) => { entered = r; });
+        const pack: KnowledgePack = { ...quietPack, analyzers: { async analyse() { entered(); await gate; return []; } } };
+        const events: ReviewProgress[] = [];
+        const done = reviewDirectory(args(memSource({ ...FILES }), memStore(), new InMemoryIngestManifest(), {
+            judgement: fakeJudge(), packs: [pack], onProgress: (p) => events.push(p),
+        }));
+        await inside;
+        const fold = () => events.reduce((run, progress) => applyRunEvent(run, { type: 'progress', progress }, 1), startRun({ id: 'r', root: 'r', kind: 'review', at: 0 }));
+        const during = fold().phases.find((p) => p.phase === 'analyse');
+        expect(during).toBeDefined();
+        expect(during!.endedAt).toBeUndefined();
+        release();
+        await done;
+        const after = fold().phases.find((p) => p.phase === 'analyse')!;
+        expect(after.endedAt).toBeDefined();
+        expect(after.done).toBe(after.total);
+        expect(events.findIndex((e) => e.phase === 'resolve')).toBeGreaterThan(events.map((e) => e.phase).lastIndexOf('analyse'));
+    });
+
+    it('regression: a Stop while the analyzers run ends the review as aborted and never reaches resolve', async () => {
+        const stop = new AbortController();
+        const pack: KnowledgePack = { ...quietPack, analyzers: { async analyse() { stop.abort(); return []; } } };
+        const phases: string[] = [];
+        const report = await reviewDirectory(args(memSource({ ...FILES }), memStore(), new InMemoryIngestManifest(), {
+            judgement: fakeJudge(), packs: [pack], signal: stop.signal, onProgress: (p) => phases.push(p.phase),
+        }));
+        expect(report.aborted).toBe(true);
+        expect(phases).toContain('analyse');
+        expect(phases).not.toContain('resolve');
     });
 
     it('regression: pass 1 neither owes nor stale-marks a file whose sections are all reused', async () => {

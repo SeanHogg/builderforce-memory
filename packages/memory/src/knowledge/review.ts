@@ -4,7 +4,8 @@
  *
  *   plan (walk + manifest diff) → per changed file: read · parse (the ONE ParserRegistry,
  *   composed from the packs) · extract (cached by content hash) · judge (changed sections
- *   of judged kinds, within budget) · write · markStale → analyzers → compare near-duplicate
+ *   of judged kinds, within budget) · write · markStale → retire · analyse (analyzers, own `analyse`
+ *   progress phase) → compare near-duplicate
  *   claims → manifest + scope digest. Claims whose compare pairs were skipped wait in the
  *   compare manifest for *Continue*.
  *   Read + extract are prefetched with bounded concurrency (`args.concurrency`; through `args.extractPool`
@@ -27,7 +28,7 @@
  */
 
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
-import type { ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
+import type { AnalyzerProgress, ReviewArgs, ReviewReport, ScopeRecord, StoredFact, StoredRelation } from './model.js';
 import { owedAfterRun, owedCalls, saveExtractorState } from './owedFiles.js';
 import { planDetail, refreshPlan } from './plan.js';
 import { composePacks, filesManifestKey, judgedManifestKey, manifestMap, saveManifestMap } from './sources.js';
@@ -317,22 +318,43 @@ async function reviewRun(args: ReviewArgs, flush: () => Promise<void>): Promise<
 
     // Pass 2 (`only`) is judging alone: the map pass already retired the removed files and ran the analyzers.
     if (!report.aborted && !args.only) {
+        // The last file is written: leave "write" now, the analyzers below can take minutes.
+        // Opened as 0/1 (not 0/0, which would close the row at once) so the row stays active until the final event below.
+        progress({ phase: 'analyse', done: 0, total: 1 });
         await retire(detail.plan.removed);
         // Analyzers run in parallel and a failing one never aborts the review — its extracted
         // output is simply not stored (the file-level facts above are already durable), so a
-        // single bad pack cannot sink the whole run.
+        // single bad pack cannot sink the whole run. Each pack's latest count is kept and summed; only `done` is
+        // monotonic (a total may grow as a pack discovers more work). A callback after its pack settled is dropped.
+        const latest = new Map<number, AnalyzerProgress>();
+        const sum = () => {
+            let done = 0; let total = 0;
+            for (const v of latest.values()) { done += v.done; total += v.total; }
+            return { done, total: Math.max(1, total) };
+        };
         const analysed = await Promise.all(
-            packs.filter((p) => p.analyzers).map(async (p) => {
-                try { return await p.analyzers!.analyse(rootId, signal); } catch { return []; }
+            packs.filter((p) => p.analyzers).map(async (p, k) => {
+                let settled = false;
+                const onProgress = (a: AnalyzerProgress) => {
+                    if (settled) return;
+                    latest.set(k, { done: a.done, total: a.total });
+                    progress({ phase: 'analyse', ...sum(), ...(a.path !== undefined ? { path: a.path } : {}) });
+                };
+                try { return await p.analyzers!.analyse(rootId, signal, onProgress); } catch { return []; } finally { settled = true; }
             }),
         );
+        // Close the row whatever the analyzers reported (none, short, or a throw).
+        const closing = Math.max(1, sum().total);
+        progress({ phase: 'analyse', done: closing, total: closing });
+        // A Stop during the analyzers ends the run like one during the write loop (`runSignal` no longer follows `signal` here).
+        report.aborted ||= runSignal.aborted || !!signal?.aborted;
         for (const packResults of analysed) {
             for (const ex of packResults) {
                 await store.putExtracted?.(ex.sourceHash, [ex]);
                 report.extracted += 1;
             }
         }
-        progress({ phase: 'resolve', done: 0, total: newClaims.size });
+        if (!report.aborted) progress({ phase: 'resolve', done: 0, total: newClaims.size });
     }
 
     // The compare phase needs a pack asking for it AND both ports.

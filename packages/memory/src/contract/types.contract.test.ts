@@ -74,7 +74,7 @@ export type ReviewStep_fields = Expect<Equal<
     { path: string; phase: ReviewPhase; ms: number; reason?: string; lane?: number }
 >>;
 // `mapped` is the end of the mechanical pass: a view that switches on phases must know it.
-export type ReviewPhase_values = Expect<Equal<ReviewPhase, 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'index' | 'mapped' | 'done'>>;
+export type ReviewPhase_values = Expect<Equal<ReviewPhase, 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'analyse' | 'index' | 'mapped' | 'done'>>;
 
 /* ── ExtractJob: a union of "the review read it" (doc) and "the pool reads it" (readByPool) ──────────────────── */
 const aDocument: SourceDocument = { id: 'a.md', tenantId: 't', content: { kind: 'text', text: '# A\n' } };

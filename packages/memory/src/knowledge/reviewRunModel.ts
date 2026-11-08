@@ -4,7 +4,7 @@
  */
 
 /** `mapped` (PRD 41 A10): the mechanical pass is over and the map is complete; judging, if any is owed, follows. */
-export type ReviewPhase = 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'index' | 'mapped' | 'done';
+export type ReviewPhase = 'plan' | 'extract' | 'resolve' | 'judge' | 'compare' | 'write' | 'analyse' | 'index' | 'mapped' | 'done';
 
 export type ReviewStepOutcome = 'ok' | 'cached' | 'skipped' | 'failed';
 
