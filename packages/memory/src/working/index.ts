@@ -54,6 +54,7 @@ export {
   buildWorkingTranscript,
 } from './transcript.js';
 export type { TranscriptMessage, CompactMemo, WorkingTranscriptState, TranscriptFold } from './transcript.js';
+export { NARRATION_OVERLAP, PROGRESS_NOTE, supersededReadMarker, foldSupersededReads, foldRepeatedNarration, foldWorkingTranscript } from './fold.js';
 export { TRANSCRIPT_SUMMARY_PROMPT, TRANSCRIPT_SUMMARY_MAX_TOKENS, TRANSCRIPT_SUMMARY_INPUT_TOKENS, renderForSummary, summaryChunks, summarizeTranscript } from './summary.js';
 export type { SummaryCompletion } from './summary.js';
 export {

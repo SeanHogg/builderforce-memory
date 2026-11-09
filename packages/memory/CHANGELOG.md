@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.63
+
+### Advisory folds of the working transcript (`./working`, PRD 45 §4.7 B6/B7)
+
+- **`foldSupersededReads`** (B6): when an edit/write to path P succeeds at step N, every earlier `read_file` result for P in the model transcript becomes `"(read of P superseded by the edit at step N — re-read if needed)"`. A failed edit supersedes nothing; a read re-made after the edit is not superseded by it.
+- **`foldRepeatedNarration`** (B7): assistant text preceding tool calls whose word-set overlap (Jaccard) with the previous such narration is ≥ 0.8 (`NARRATION_OVERLAP`) becomes `"(progress note)"`. A final answer and a turn without tool calls are never folded; a folded note does not become the comparison text.
+- **`foldWorkingTranscript`** runs both folds over the working transcript a host sends the model. The folds are compression only: the run's own transcript and its trace keep every message at full fidelity.
+- New exports on `./working`: `foldSupersededReads`, `foldRepeatedNarration`, `foldWorkingTranscript`, `supersededReadMarker`, `PROGRESS_NOTE`, `NARRATION_OVERLAP`.
+
 ## 2026.10.48
 
 ### Fixed (`./knowledge/pack`)
