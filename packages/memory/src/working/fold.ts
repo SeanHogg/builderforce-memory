@@ -213,12 +213,14 @@ export function foldRepeatedNarration<M extends TranscriptMessage>(msgs: readonl
   let changed = false;
   const out = msgs.map((m) => {
     if (m.role !== 'assistant') return m;
-    // A narration that introduced a read B6 folded narrates stale content the model is
-    // about to re-read — it is not a repeat, so it never folds (and is not the
-    // comparison text either).
-    if (callsOf(m).some((call) => SUPERSEDED_CALL.has(call))) return m;
     const narration = narrationOf(m);
     if (narration == null) return m; // no tool calls, or no narration: never folded
+    // A narration that introduced a read B6 folded is the model's only record of why it
+    // read — it never folds itself, but it IS what a later repeat is compared against.
+    if (callsOf(m).some((call) => SUPERSEDED_CALL.has(call))) {
+      lastKept = narration;
+      return m;
+    }
     if (lastKept != null && (wordOverlap(narration, lastKept) >= overlap || wordContained(narration, lastKept))) {
       changed = true;
       return { ...m, content: PROGRESS_NOTE } as M;

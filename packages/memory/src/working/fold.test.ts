@@ -51,7 +51,7 @@ describe('B6 — fold superseded reads', () => {
     expect(msgs[3]!.content).toBe('the whole file text');
   });
 
-  it('a read re-made after the edit is not superseded by that edit', () => {
+  it('regression: a read re-made after the edit is not superseded by that edit', () => {
     const msgs: TranscriptMessage[] = [
       { role: 'assistant', content: '', tool_calls: [readCall('r1', 'p.ts')] },
       { role: 'tool', tool_call_id: 'r1', content: 'v1' },
