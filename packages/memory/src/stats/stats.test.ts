@@ -34,6 +34,9 @@ import {
     popt,
     prAuc,
     psi,
+    RATE_CREDIBLE_MASS,
+    RATE_PRIOR,
+    rateInterval,
     shannonEntropy,
     signTestSprt,
     thompsonRank,
@@ -290,5 +293,28 @@ describe("policies", () => {
         ];
         const rank = thompsonRank(arms, createRng(3));
         expect([...rank].sort()).toEqual([0, 1, 2]);
+    });
+});
+
+describe("rateInterval", () => {
+    const r6 = (x: number) => Math.round(x * 1e6) / 1e6;
+
+    it("is the 90% equal-tailed Jeffreys interval", () => {
+        expect([RATE_PRIOR, RATE_CREDIBLE_MASS]).toEqual([0.5, 0.9]);
+        const { low, high } = rateInterval(3, 4);
+        expect([r6(low), r6(high)]).toEqual([0.349293, 0.953993]);
+    });
+
+    it("pins the boundary: low 0 at k = 0, high 1 at k = n, so it always holds k/n", () => {
+        expect(rateInterval(0, 5).low).toBe(0);
+        expect(rateInterval(5, 5).high).toBe(1);
+        expect(rateInterval(5, 5).low).toBeLessThan(1);
+        expect(rateInterval(0, 5).high).toBeGreaterThan(0);
+    });
+
+    it("narrows as n grows at the same rate", () => {
+        const width = (k: number, n: number) => { const i = rateInterval(k, n); return i.high - i.low; };
+        expect(width(30, 40)).toBeLessThan(width(3, 4));
+        expect(width(300, 400)).toBeLessThan(width(30, 40));
     });
 });

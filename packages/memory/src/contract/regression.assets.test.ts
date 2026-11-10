@@ -172,6 +172,10 @@ describe('regression: the asset lifecycle', () => {
         expect((await stateOf(manifest)).version).toBe(EXTRACTOR_VERSION);
     });
 
+    it('regression: EXTRACTOR_VERSION is 6, so cached code extracts re-run after the PRD 43 P0c code-pack changes', () => {
+        expect(EXTRACTOR_VERSION).toBe(6);
+    });
+
     it('regression: a removed asset is retired like any removed file', async () => {
         const source = memSource({ 'icons/a.png': PNG, 'a.md': '# A\n' });
         const manifest = new InMemoryIngestManifest();

@@ -77,6 +77,11 @@ export function detectCommunities(
     return { members, modularity: modularityOf(adj, comm), method };
 }
 
+/** THE test of "this edge is a reference between files" (a live edge of COMMUNITY_EDGE_KINDS); coChange.ts reads it too. */
+export function isReferenceEdge(e: Pick<KEdge, 'kind' | 'stale'>): boolean {
+    return COMMUNITY_EDGE_KINDS.includes(e.kind) && !e.stale;
+}
+
 /**
  * File-to-file links of the chosen kinds, merged per ordered pair. The weights of a pair are summed in ascending
  * order, so the total never depends on the order the edges arrive in (the sort across pairs is `buildAdjacency`'s).
@@ -84,7 +89,7 @@ export function detectCommunities(
 function fileLinks(files: ReadonlySet<NodeRef>, edges: Iterable<KEdge>): Array<{ from: NodeRef; to: NodeRef; weight: number }> {
     const pairs = new Map<string, { from: NodeRef; to: NodeRef; weights: number[] }>();
     for (const e of edges) {
-        if (!COMMUNITY_EDGE_KINDS.includes(e.kind) || e.stale) continue;
+        if (!isReferenceEdge(e)) continue;
         const from = fileRefOf(e.from), to = fileRefOf(e.to);
         if (!files.has(from) || !files.has(to)) continue;
         const key = `${from}\u0000${to}`;

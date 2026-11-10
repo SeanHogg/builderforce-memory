@@ -27,6 +27,12 @@ import type {
     comparable, compareAnalysis, identityOf, matchLineage, isBinaryBytes,
 } from '../knowledge/index.js';
 import { placementOf } from '../knowledge/index.js';
+import type {
+    applyCoChangeHidden, coChangePartners, coChangeRecallAtK, decodeCoChange, encodeCoChange, mostLikelyWalk, stationTransitions, transitionOf,
+    transitionsFromSequences, transitionsFromWeights, CoChangeBadgeEntry, CoChangeCommit, CoChangeOptions, CoChangePartner, CoChangeRecall,
+    NodeRef, StationTransition, TransitionRow, TransitionSource, TransitionTable,
+} from '../knowledge/index.js';
+import type { rateInterval } from '../stats/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -258,6 +264,46 @@ export type GraphOutline_communities = Expect<Equal<GraphOutline['communities'],
 export type OutlineCommunity_fields = Expect<Equal<OutlineCommunity, { id: number; label: string; size: number }>>;
 export type NodePlacement_shape = Expect<Equal<NodePlacement, { kind: 'partition'; id: string } | { kind: 'community'; id: number }>>;
 export type placementOf_signature = Expect<Equal<ReturnType<typeof placementOf>, NodePlacement | undefined>>;
+// PRD 38 P4: co-change partners. The `coChange` badge is a string read ONLY through decodeCoChange.
+export type CoChangeCommit_fields = Expect<Equal<CoChangeCommit, { at?: string; refs: readonly NodeRef[]; fileCount?: number }>>;
+export type CoChangeOptions_fields = Expect<Equal<
+    CoChangeOptions, { minSupport?: number; minLift?: number; maxCommitFiles?: number; maxPartners?: number; maxCommits?: number }
+>>;
+export type CoChangePartner_fields = Expect<Equal<
+    CoChangePartner, { ref: NodeRef; together: number; ofSelf: number; confidence: number; lift: number; low: number; high: number }
+>>;
+export type CoChangeBadgeEntry_fields = Expect<Equal<CoChangeBadgeEntry, { ref: NodeRef; together: number; ofSelf: number; low: number; high: number }>>;
+export type CoChangeRecall_shape = Expect<Equal<CoChangeRecall, { recall: number; cases: number; skipped: number } | { status: 'insufficient-data' }>>;
+export type coChangePartners_signature = Expect<Equal<
+    typeof coChangePartners, (commits: ReadonlyArray<CoChangeCommit>, opts?: CoChangeOptions) => Map<NodeRef, CoChangePartner[]>
+>>;
+export type encodeCoChange_signature = Expect<Equal<typeof encodeCoChange, (partners: readonly CoChangePartner[]) => string>>;
+export type decodeCoChange_signature = Expect<Equal<typeof decodeCoChange, (value: unknown) => CoChangeBadgeEntry[]>>;
+export type coChangeRecallAtK_signature = Expect<Equal<
+    typeof coChangeRecallAtK, (commits: ReadonlyArray<CoChangeCommit>, k?: number, heldOutShare?: number, opts?: CoChangeOptions) => CoChangeRecall
+>>;
+export type applyCoChangeHidden_signature = Expect<Equal<typeof applyCoChangeHidden, (nodes: Iterable<KNode>, edges: Iterable<KEdge>) => void>>;
+// The one interval of a shown rate (PRD 41 D3), shared by co-change confidence and trace hops.
+export type rateInterval_signature = Expect<Equal<typeof rateInterval, (k: number, n: number) => { low: number; high: number }>>;
+// PRD 38 P7: station transitions (the view groups stations; memory owns the formula). Reference rows carry no interval.
+export type TransitionSource_values = Expect<Equal<TransitionSource, 'traces' | 'references'>>;
+export type StationTransition_fields = Expect<Equal<StationTransition, { to: string; p: number; k: number; n: number; low?: number; high?: number }>>;
+export type TransitionRow_fields = Expect<Equal<TransitionRow, { source: TransitionSource; transitions: readonly StationTransition[] }>>;
+export type TransitionTable_shape = Expect<Equal<TransitionTable, ReadonlyMap<string, TransitionRow>>>;
+type WeightedEdges = ReadonlyArray<{ from: string; to: string; weight: number }>;
+export type transitionsFromWeights_signature = Expect<Equal<typeof transitionsFromWeights, (edges: WeightedEdges) => TransitionTable>>;
+export type transitionsFromSequences_signature = Expect<Equal<
+    typeof transitionsFromSequences, (sequences: ReadonlyArray<readonly string[]>) => TransitionTable
+>>;
+export type stationTransitions_signature = Expect<Equal<
+    typeof stationTransitions, (input: { sequences?: ReadonlyArray<readonly string[]>; weights: WeightedEdges }) => TransitionTable
+>>;
+export type transitionOf_signature = Expect<Equal<
+    typeof transitionOf, (table: TransitionTable, from: string, to: string) => StationTransition | undefined
+>>;
+export type mostLikelyWalk_signature = Expect<Equal<
+    typeof mostLikelyWalk, (table: TransitionTable, start: string, maxHops: number) => { stops: string[]; hops: StationTransition[] }
+>>;
 export type KEdge_verdict = Expect<Equal<KEdge['verdict'], 'allowed' | 'same' | 'skips' | 'upward' | undefined>>;
 
 /* ── Symbol-level edges (PRD 43 P0b): `calls` edges carry their call sites ─────────────────────────────────── */

@@ -106,9 +106,12 @@ export function basenameOf(path: string): string {
     return i < 0 ? path : path.slice(i + 1);
 }
 
+/** Bound once: a bare `Math.round` is a global lookup per call, ~1 µs inside a vm context (jest) on hot paths. */
+const mathRound = Math.round;
+
 /** Rounds to 6 decimals so floating noise never reaches the JSON. */
 export function round6(n: number): number {
-    return Math.round(n * 1e6) / 1e6;
+    return mathRound(n * 1e6) / 1e6;
 }
 
 /** JSON with object keys sorted and `undefined` members dropped — the canonical form for digests. */

@@ -9,7 +9,9 @@
  *      (an exact `duplicate` between the same pair wins); live changes badge nodes and
  *      `runFiles` become `co-changed` edges;
  *   4. partitions, areas, verdicts; PageRank importance; communities (`communityId` /
- *      `communityConfidence` badges, Q in the stats); findings; then truncation.
+ *      `communityConfidence` badges, Q in the stats); hidden co-change (`coChangeHidden` on files
+ *      whose caller-stamped `coChange` badge names partners no reference edge explains, PRD 38 P4);
+ *      findings; then truncation.
  *
  * Deterministic: equal input ⇒ byte-identical JSON. Every list is sorted, every sort ends
  * on ref, objects are built with a fixed key order.
@@ -25,6 +27,7 @@ import { crossesSystems, placeInSystem } from './systems.js';
 import { computeFindings } from './findings.js';
 import { pageRank } from './importance.js';
 import { applyCommunities } from './communities.js';
+import { applyCoChangeHidden } from './coChange.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
 import { isSymbolEdgeKind } from './symbolEdges.js';
@@ -205,6 +208,7 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     const rank = pageRank([...g.nodes.keys()], [...g.edges.values()].filter((e) => !isSymbolEdgeKind(e.kind)));
     for (const n of g.nodes.values()) n.importance = rank.get(n.ref) ?? 0;
     const { modularity, method: communityMethod } = applyCommunities(g.nodes.values(), g.edges.values());
+    applyCoChangeHidden(g.nodes.values(), g.edges.values());
 
     const allNodes = [...g.nodes.values()].map(finalNode).sort((a, b) => compareStr(a.ref, b.ref));
     const allEdges = [...g.edges.values()].map(finalEdge).sort(compareEdges);

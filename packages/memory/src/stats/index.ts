@@ -14,6 +14,9 @@ export {
     gammaQuantile,
     garwoodPoissonInterval,
     inverseRegularizedIncompleteBeta,
+    RATE_CREDIBLE_MASS,
+    RATE_PRIOR,
+    rateInterval,
     regularizedIncompleteBeta,
     regularizedIncompleteGamma,
 } from "./distributions.js";

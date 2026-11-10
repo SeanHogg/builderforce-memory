@@ -32,6 +32,13 @@ export {
     COMMUNITY_MAX_PASSES, COMMUNITY_MAX_ITERATIONS, COMMUNITY_LP_ITERATIONS,
 } from './communities.js';
 export type { CommunityMembership, CommunityMethod, CommunityResult, NodePlacement } from './communities.js';
+export {
+    coChangePartners, encodeCoChange, decodeCoChange, coChangeRecallAtK, applyCoChangeHidden, COCHANGE_MIN_SUPPORT, COCHANGE_MIN_LIFT,
+    COCHANGE_MAX_COMMIT_FILES, COCHANGE_MAX_PARTNERS, COCHANGE_MAX_COMMITS, COCHANGE_BADGE, COCHANGE_HIDDEN_BADGE,
+} from './coChange.js';
+export type { CoChangeBadgeEntry, CoChangeCommit, CoChangeOptions, CoChangePartner, CoChangeRecall } from './coChange.js';
+export { transitionsFromWeights, transitionsFromSequences, stationTransitions, transitionOf, mostLikelyWalk } from './transitions.js';
+export type { StationTransition, TransitionRow, TransitionSource, TransitionTable } from './transitions.js';
 export { pageRank, byImportance, areaImportance, PAGERANK_DAMPING, PAGERANK_ITERATIONS } from './importance.js';
 export {
     loadPartitions, partitionOf, partitionOrder, verdictOf, globToRegExp, matchGlob, TOP_LEVEL_FOLDER,

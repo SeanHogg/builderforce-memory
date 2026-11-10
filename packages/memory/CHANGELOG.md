@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added — predicted measures P4 co-change and P7 transitions (`./knowledge`, PRD 38)
+
+- **`coChangePartners(commits, opts?)`** (P4): per file, the files changed with it — `{ ref, together, ofSelf, confidence = P(B|A), lift, low, high }`, with the confidence's credible interval — kept at support ≥ `COCHANGE_MIN_SUPPORT` (3) and lift ≥ `COCHANGE_MIN_LIFT` (2), at most `COCHANGE_MAX_PARTNERS` (8) ranked confidence, lift, ref. A commit over `COCHANGE_MAX_COMMIT_FILES` (50) files — its whole-repo `fileCount` when given, else its distinct refs — is excluded as bulk; the newest `COCHANGE_MAX_COMMITS` (5000) are counted (by parsed `at` when every commit is dated, else input order, oldest first). Deterministic in any input order.
+- **`encodeCoChange` / `decodeCoChange`**: the ONLY writer and reader of the `coChange` badge string — a `v1` line, then `together\tofSelf\tlow\thigh\tref` per partner; decode gives `[]` for a missing or unknown version and anything malformed. **`coChangeRecallAtK`**: the accept measure, `{ recall, cases, skipped }` (recall@k on held-out commits; `skipped` = held-out files with no partners) or `{ status: 'insufficient-data' }`.
+- **`applyCoChangeHidden`**: `buildGraph` now stamps `coChangeHidden` on files carrying a caller-stamped `coChange` badge: partners (that are graph nodes) sharing no live `references`/`links` edge either way, both ends rolled up to their file (symbol refs and out-of-root placeholders explain coupling). Absent when 0; cleared from a file without `coChange`.
+- **`OUTLINE_BADGE_KEYS` gains `coChange`, `coChangeHidden`**, so the outline carries both.
+- **Station transitions** (P7): `transitionsFromWeights`, `transitionsFromSequences`, `stationTransitions({ sequences?, weights })`, `transitionOf`, `mostLikelyWalk` (greedy per-hop argmax, not Viterbi). A table row is `{ source: 'traces' | 'references', transitions: StationTransition[] }`; `stationTransitions` picks per station (its trace row when it has trace hops, else its reference row). A hop is `{ to, p, k, n, low?, high? }`: trace hops carry the interval, reference hops (not observations) do not.
+- **`./stats`: `rateInterval(k, n)`, `RATE_PRIOR` (0.5), `RATE_CREDIBLE_MASS` (0.9)**: THE interval of a shown rate — the equal-tailed 90% Jeffreys interval with the boundary rule (low 0 at k = 0, high 1 at k = n). Used by co-change confidence and trace hops.
+- Minor, non-breaking: new names only.
+
+### Changed
+
+- EXTRACTOR_VERSION 5 → 6, so cached code extracts re-run after the agent-tools code-pack changes (PRD 43 P0c).
+
 ## 2026.10.70
 
 ### Added — truncated analyses and the binary rule (`./knowledge`, PRD 41 WS2/WS6)

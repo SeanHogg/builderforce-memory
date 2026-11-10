@@ -19,6 +19,8 @@ export const OUTLINE_BADGE_KEYS: readonly string[] = [
     'complexity', 'maxComplexity', 'coverage', 'churn', 'owner', 'patterns', 'cloneGroup', 'unused', 'unusedExports',
     'entry', 'layerRule', 'unusedDependencies', 'externals', 'added', 'removed', 'changed', 'status',
     'communityId', 'communityConfidence',
+    // PRD 38 P4 (coChange.ts): the encoded co-change partners (read with decodeCoChange) and how many no reference explains.
+    'coChange', 'coChangeHidden',
     // An asset file (assetFile.ts): a binary file the review stores as a node, never read.
     'asset', 'mediaType', 'size', 'oversized',
 ];
