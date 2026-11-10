@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.10.65
+
+- New light subpath `./ml/tasks/check-scheduler` (`CHECK_SCHEDULER_TASK`, `CHECK_SCHEDULER_MODEL_CARD`,
+  `checkSchedulerFeatures`, `CHECK_SCHEDULER_FEATURES`), exported like `./ml/classical`: it never loads the engine
+  root, a package, a `node:` builtin, the LM or the WGSL kernels (`tests/regression.checkSchedulerSubpath.test.ts`),
+  so browser and Worker bundles can read the card. `logScale` / `clampRatio` moved to the leaf `ml/scale.ts`;
+  `ml/features.ts` and the root still export them.
+
 ## 2026.10.64
 
 - `ml/tasks`: new host row `run.check-scheduler` (`CHECK_SCHEDULER_TASK`, `checkSchedulerFeatures`,

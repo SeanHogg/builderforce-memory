@@ -16,8 +16,11 @@
  *
  * A host row: not in `BUILTIN_ML_TASKS` (no local runner asks it yet); a host that
  * trains the upgrade registers it (`createMlRegistry().register(CHECK_SCHEDULER_TASK)`).
+ *
+ * Also the package's light `./ml/tasks/check-scheduler` subpath: browser and Worker bundles read the card from here
+ * without the engine root. Keep its imports to leaves (`scale.ts`, types) — `tests/regression.checkSchedulerSubpath`.
  */
-import { logScale } from "../features.js";
+import { logScale } from "../scale.js";
 import type { MlPrediction, MlTask } from "../types.js";
 
 /** The optional checks the scheduler decides. */

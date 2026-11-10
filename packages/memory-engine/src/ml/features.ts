@@ -46,16 +46,5 @@ export async function extractFeatureMatrix<I>(
   return out;
 }
 
-/**
- * A count or size on a fixed log scale: log1p(max(v, 0)) / log1p(ref). `ref` is
- * the value that maps to 1 (e.g. 100k tokens), so the scale is the same everywhere.
- */
-export function logScale(v: number, ref: number): number {
-  return Math.log1p(Math.max(0, v)) / Math.log1p(Math.max(ref, 1));
-}
-
-/** A ratio clamped to [0, max] — fill fractions, success rates. */
-export function clampRatio(numerator: number, denominator: number, max = 4): number {
-  if (!(denominator > 0)) return 0;
-  return Math.max(0, Math.min(max, numerator / denominator));
-}
+/** The fixed scales live in the leaf `scale.ts` (a light entry imports them without this module's embedder types). */
+export { clampRatio, logScale } from "./scale.js";
