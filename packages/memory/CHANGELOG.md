@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.10.70
+
 ### Added — truncated analyses and the binary rule (`./knowledge`, PRD 41 WS2/WS6)
 
 - **`CodeAnalysisSnapshot.truncated?: true`**: set when the analyzed scope was cut short. `analysisMeta` carries it (only when set), so `comparable()` gives reason `truncated` and `compareAnalysis` reports no `added` or `resolved` issues for a truncated side — an issue missing from a partial scan is never a fix. Hosts no longer wrap `compareAnalysis` for it.
