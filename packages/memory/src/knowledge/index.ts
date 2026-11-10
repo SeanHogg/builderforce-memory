@@ -73,7 +73,7 @@ export {
     DEFAULT_MAX_FILE_BYTES, EXTRACTOR_VERSION, filesManifestKey, extractorManifestKey, judgedManifestKey, compareManifestKey,
 } from './sources.js';
 export {
-    srcRef, FALLBACK_PACK_ID, pathOfRef, fileRefOf, factRef, factKeyOf, slugOf, canonicalJson, compareStr, nameResolver, aboutTargets,
+    srcRef, splitSourceRef, FALLBACK_PACK_ID, pathOfRef, fileRefOf, factRef, factKeyOf, slugOf, canonicalJson, compareStr, nameResolver, aboutTargets,
 } from './refs.js';
 export { DOCS_PACK, DOCS_PACK_ID, brokenLinkRule, orphanDocumentRule, contradictionRule } from './packs/docs.js';
 export { frontMatterOf, SECTION_INDEX_BADGE } from '../ingest/docsExtract.js';

@@ -25,20 +25,38 @@ export function srcRef(rootId: string, path: string): NodeRef {
     return `src:${rootId}::${path}`;
 }
 
-/** The root-relative path of a `src:` ref (the section suffix dropped), else undefined. */
-export function pathOfRef(ref: string): string | undefined {
+/**
+ * Splits `src:<rootId>::<path>` into its root and its FULL path (never section-stripped: `src/C#/a.cs` stays whole). A root id
+ * may end in ':' (the linked repo's `cloud:<id>:`), so the colons after the first `::` that directly follow it belong to the
+ * root: `src:cloud:5:::docs/a.md` is root `cloud:5:`, path `docs/a.md`. (A path that itself starts with ':' is read as part of
+ * the root — root ids never hold '::' nor end in ':' when built by `rootIdFor`, so only a foreign id can make it ambiguous.)
+ * Pass `knownRootIds` where the root is known: a ref of one of them is split by its exact prefix, so even a path that starts
+ * with ':' is exact. Undefined when `ref` is not a source ref. THE grammar: every reader of a `src:` ref goes through this.
+ */
+export function splitSourceRef(ref: string, knownRootIds: readonly string[] = []): { rootId: string; path: string } | undefined {
     if (!ref.startsWith('src:')) return undefined;
-    const at = ref.indexOf('::');
-    if (at < 0) return undefined;
-    const rest = ref.slice(at + 2);
+    for (const rootId of knownRootIds) if (ref.startsWith(`src:${rootId}::`)) return { rootId, path: ref.slice(`src:${rootId}::`.length) };
+    const at = ref.indexOf('::', 4);
+    if (at <= 4) return undefined;
+    let end = at;
+    while (ref[end + 2] === ':') end += 1;
+    return { rootId: ref.slice(4, end), path: ref.slice(end + 2) };
+}
+
+/** The root-relative path of a `src:` ref (the section suffix dropped), else undefined. Splits by {@link splitSourceRef}. */
+export function pathOfRef(ref: string): string | undefined {
+    const rest = splitSourceRef(ref)?.path;
+    if (rest === undefined) return undefined;
     const hash = rest.indexOf('#');
     return hash < 0 ? rest : rest.slice(0, hash);
 }
 
-/** The ref of the file a `src:` ref belongs to (itself for a file). */
+/** The ref of the file a `src:` ref belongs to (itself for a file): the ref cut at the first '#' of its path ({@link splitSourceRef}). */
 export function fileRefOf(ref: NodeRef): NodeRef {
-    const hash = ref.startsWith('src:') ? ref.indexOf('#', ref.indexOf('::')) : -1;
-    return hash < 0 ? ref : (ref.slice(0, hash) as NodeRef);
+    const split = splitSourceRef(ref);
+    if (!split) return ref;
+    const hash = split.path.indexOf('#');
+    return hash < 0 ? ref : (ref.slice(0, ref.length - split.path.length + hash) as NodeRef);
 }
 
 /** The node ref of a stored fact key: `ent:` keys are refs already; the rest are `fact:`. */

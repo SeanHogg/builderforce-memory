@@ -405,6 +405,7 @@
     "sha256Hex",
     "slowestSteps",
     "slugOf",
+    "splitSourceRef",
     "srcRef",
     "startRun",
     "toCards",
