@@ -73,7 +73,7 @@ export function regularizedIncompleteBeta(x: number, a: number, b: number): numb
     return 1 - (bt * betaCf(b, a, 1 - x)) / b;
 }
 
-/** The inverse stops when a step moves x by less than this. */
+/** The inverse stops when its Newton step is below this RELATIVE to the nearer end's distance, min(x, 1 − x). */
 const INVERSE_BETA_TOL = 1e-10;
 /** Hard cap on the inverse's steps (each costs one I_x evaluation). */
 const INVERSE_BETA_MAX_STEPS = 100;
@@ -98,9 +98,17 @@ function inverseBetaGuess(p: number, a: number, b: number): number {
     return p < t / w ? pow(a * w * p, 1 / a) : 1 - pow(b * w * (1 - p), 1 / b);
 }
 
+/** The scale a tolerance is relative to: the distance to the nearer end of (0, 1), so both tails keep their digits. */
+const nearEnd = (x: number): number => max(min(x, 1 - x), 1e-300);
+
 /**
- * Inverse of the regularized incomplete beta: Halley steps on I_x(a, b) − p, kept inside a shrinking bracket (a step that
- * leaves it, or a degenerate density, falls back to bisection). Stops once a step moves x by less than INVERSE_BETA_TOL.
+ * Inverse of the regularized incomplete beta: Halley steps on I_x(a, b) − p, kept inside a shrinking bracket [lo, hi].
+ *   - Converged when the Newton step |f / density| is below INVERSE_BETA_TOL · min(x, 1 − x) (relative, so a quantile near 0
+ *     or 1 keeps its accuracy); the step is then applied and clamped to the bracket. The test runs on the RAW step, before any
+ *     bracket fallback, and a step landing exactly on a bracket end is converged too (a step under 1 ulp).
+ *   - A step that leaves the bracket, or a degenerate density, falls back to the bracket's midpoint.
+ *   - If INVERSE_BETA_MAX_STEPS pass without converging, plain bisection finishes the bracket to tolerance (or to the last
+ *     representable midpoint): an unconverged x is never returned.
  * Deterministic: a fixed start and a fixed sequence of steps.
  */
 export function inverseRegularizedIncompleteBeta(p: number, a: number, b: number): number {
@@ -119,14 +127,23 @@ export function inverseRegularizedIncompleteBeta(p: number, a: number, b: number
         const density = exp((a - 1) * log(x) + (b - 1) * log(1 - x) - lnBeta);
         let next = -1; // outside every bracket: falls back to bisection
         if (density > 0 && isFiniteNumber(density)) {
-            const u = f / density;
-            next = x - u / (1 - 0.5 * min(1, u * ((a - 1) / x - (b - 1) / (1 - x))));
+            const newton = f / density;
+            next = x - newton / (1 - 0.5 * min(1, newton * ((a - 1) / x - (b - 1) / (1 - x))));
+            // Converged: judged on the undamped Newton distance (a Halley damping can shrink a far step), before any fallback.
+            if (abs(newton) < INVERSE_BETA_TOL * nearEnd(x) || next === lo || next === hi) {
+                return min(max(next, lo), hi);
+            }
         }
         if (!(next > lo && next < hi)) next = (lo + hi) / 2;
-        if (abs(next - x) < INVERSE_BETA_TOL || hi - lo < INVERSE_BETA_TOL) return next;
         x = next;
     }
-    return x;
+    // Step cap hit: bisect the bracket to tolerance.
+    for (;;) {
+        const mid = (lo + hi) / 2;
+        if (mid <= lo || mid >= hi || hi - lo < INVERSE_BETA_TOL * nearEnd(mid)) return mid;
+        if (regularizedIncompleteBeta(mid, a, b) < p) lo = mid;
+        else hi = mid;
+    }
 }
 
 /** Posterior Beta(α₀ + k, β₀ + n − k): mean and credible quantiles. */

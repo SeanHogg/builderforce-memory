@@ -330,6 +330,44 @@ describe("rateInterval", () => {
         expect(ms).toBeLessThan(5000);
     });
 
+    // Jeffreys posterior of k of n: the interval ends must sit on the 5% and 95% points and hold k/n.
+    const offQuantile = (k: number, n: number): string | undefined => {
+        const { low, high } = rateInterval(k, n);
+        const a = k + 0.5, b = n - k + 0.5;
+        const ok = low <= k / n && k / n <= high
+            && Math.abs(regularizedIncompleteBeta(low, a, b) - 0.05) < 1e-9 && Math.abs(regularizedIncompleteBeta(high, a, b) - 0.95) < 1e-9;
+        return ok ? undefined : `${k}/${n} → [${low}, ${high}]`;
+    };
+
+    it("regression: a Halley step converging onto a bracket end is accepted, not bisected away (tail intervals)", () => {
+        // Before the fix: 288/289 gave low 0.986559 > high 0.984397, and 4999/5000 gave high 0.90889 (correct 0.999965).
+        expect([offQuantile(288, 289), offQuantile(4999, 5000), offQuantile(2499, 2500)]).toEqual([undefined, undefined, undefined]);
+        expect(Math.round(rateInterval(4999, 5000).high * 1e6) / 1e6).toBe(0.999965);
+    });
+
+    it("regression: every interval on the k ∈ {1, n/2, n − 1} diagonals for n ≤ 5000 is on its quantiles, quickly", () => {
+        // Before the fix 7,019 of 34,967 sampled intervals with n ≤ 5000 were wrong.
+        const t0 = Date.now();
+        const wrong: string[] = [];
+        for (let n = 2; n <= 5000; n++) {
+            for (const k of new Set([1, n >> 1, n - 1])) {
+                const off = offQuantile(k, n);
+                if (off) wrong.push(off);
+            }
+        }
+        expect(wrong.slice(0, 5)).toEqual([]);
+        expect(Date.now() - t0).toBeLessThan(10_000);
+    });
+
+    it("regression: the tolerance is relative, so a quantile near 0 or 1 keeps its accuracy", () => {
+        // An absolute 1e-10 stop gave I_x = 0.0501 for (0.05, 0.5, 1e7), whose quantile is ~2e-10.
+        // (A mirror case near 1, e.g. Beta(1e7, ½), is limited by doubles: 1 − x ≈ 1e-10 has only ~6 digits next to 1.)
+        for (const [p, a, b] of [[0.05, 0.5, 1e7], [0.05, 0.5, 1e5], [0.95, 1000.5, 1.5]] as const) {
+            const x = inverseRegularizedIncompleteBeta(p, a, b);
+            expect(Math.abs(regularizedIncompleteBeta(x, a, b) - p)).toBeLessThan(1e-9);
+        }
+    });
+
     it("the inverse lands on the quantile: I_x(a, b) at the returned x is p", () => {
         for (const [p, a, b] of [[0.05, 3.5, 1.5], [0.95, 3.5, 1.5], [0.05, 12.5, 0.5], [0.95, 400.5, 100.5], [0.5, 0.5, 0.5]] as const) {
             const x = inverseRegularizedIncompleteBeta(p, a, b);
