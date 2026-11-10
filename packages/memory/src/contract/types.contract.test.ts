@@ -108,7 +108,7 @@ export type ExtractFailed_constructor = Expect<Equal<ConstructorParameters<typeo
 export type ExtractorState_failures = Expect<Equal<ExtractorState['failures'], ReadonlyMap<string, { hash: string; count: number }> | undefined>>;
 // ExtractorState.oversized: claimed documents over the size cap, planned as assets; optional so a hand-built state stays valid.
 export type ExtractorState_oversized = Expect<Equal<ExtractorState['oversized'], ReadonlySet<string> | undefined>>;
-// ExtractorState.contentHashRule: the content-hash rule the entry recorded (absent: the one its version implies); optional so a hand-built state stays valid.
+// ExtractorState.contentHashRule: the content-hash rule the entry recorded (absent: none recorded, which never owes a file); optional so a hand-built state stays valid.
 export type ExtractorState_contentHashRule = Expect<Equal<ExtractorState['contentHashRule'], string | undefined>>;
 
 /* ── Content identity and directory Merkle hashes (PRD 41 §B2 steps 0 and 4) ───────────────────────────────── */

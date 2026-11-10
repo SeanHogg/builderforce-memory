@@ -13,7 +13,7 @@
  *
  * Stored under {@link extractorManifestKey} as fingerprints: `{ id: 'version', hash: '<version>' }`
  * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments}),
- * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} differs from the rule the version implies (a rule change is an upgrade),
+ * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} moves past `eol-lf@1` (a recorded rule that differs is an upgrade; no record never is),
  * and one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
  * decimal number of model calls the file is still expected to cost (the plan's estimate):
  *   • a file the run reached but did not finish: the sections the budget or a failed call left
@@ -36,11 +36,11 @@ const VERSION_ID = 'version';
 const DOCUMENTS_ID = 'documents';
 const CONTENT_HASH_ID = 'contentHash';
 /**
- * The content-hash rule an entry WITHOUT a `contentHash` record was written under: `eol-lf@1` from extractor version 5 (the release
- * that introduced the rule), raw sha256 before. So the record is written only once the rule moves past what the version implies —
- * a rule change owes every file one re-extraction, and the rule's introduction rides on the version-5 upgrade instead of adding one.
+ * The content-hash rule whose entries carry NO `contentHash` record: the first one. A host switching to `contentHash` changes the
+ * hash of every CRLF file, so those re-extract by content (`contentChanged`, an extract-cache miss) — the rule never owes a file
+ * by its absence. Only a later rule writes the record, and only a recorded rule that differs from today's owes every file once.
  */
-const impliedContentHashRule = (version: number | undefined): string => (version !== undefined && version >= 5 ? 'eol-lf@1' : 'raw');
+const BASELINE_CONTENT_HASH_RULE = 'eol-lf@1';
 /** No document type claimed — also what an entry with no `documents` record means, so a root that never had a host parser stores nothing extra. */
 const NO_DOCUMENTS = '-';
 const OWED_PREFIX = 'owed:';
@@ -51,7 +51,7 @@ const UPGRADE_CALLS = 1;
 export interface ExtractorState {
     /** The version the files were last reviewed with; undefined when never recorded. */
     version: number | undefined;
-    /** The content-hash rule (contentHash.ts) the files were hashed under, when the entry records one; absent, the rule the version implies. */
+    /** The content-hash rule (contentHash.ts) the files were hashed under, when the entry records one; absent for `eol-lf@1` and for every entry written before the rule existed. */
     contentHashRule?: string;
     /** Paths a previous run left unfinished under that version → model calls each still costs. */
     owed: ReadonlyMap<string, number>;
@@ -116,14 +116,17 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
     return { version, owed, failures, documents: documents ?? NO_DOCUMENTS, ...(contentHashRule !== undefined ? { contentHashRule } : {}) };
 }
 
-/** True while the files were last reviewed under another extractor version or content-hash rule than today's: every file owes one re-extraction. */
+/**
+ * True while the files were last reviewed under another extractor version than today's, or under a RECORDED content-hash rule other
+ * than today's: every file owes one re-extraction. An entry with no rule record never owes anything by it.
+ */
 const upgradePending = (state: ExtractorState): boolean =>
-    state.version !== EXTRACTOR_VERSION || (state.contentHashRule ?? impliedContentHashRule(state.version)) !== CONTENT_HASH_RULE;
+    state.version !== EXTRACTOR_VERSION || (state.contentHashRule !== undefined && state.contentHashRule !== CONTENT_HASH_RULE);
 
 /** The file's document extension when its asset-ness flipped (a host parser arrived or left since the last run). */
 const isFlipped = (state: ExtractorState, path: string): boolean => !!state.flipped?.size && state.flipped.has(extOf(path));
 
-/** True when `path` is owed a re-extraction: another extractor version or content-hash rule than today's, left unfinished before, or its asset-ness flipped. */
+/** True when `path` is owed a re-extraction: another extractor version or recorded content-hash rule than today's, left unfinished before, or its asset-ness flipped. */
 export const isOwed = (state: ExtractorState, path: string): boolean =>
     upgradePending(state) || state.owed.has(path) || isFlipped(state, path);
 
@@ -187,7 +190,7 @@ export async function saveExtractorState(
 ): Promise<void> {
     await manifest.set(extractorManifestKey(rootId), [
         { id: VERSION_ID, hash: String(EXTRACTOR_VERSION) },
-        ...(CONTENT_HASH_RULE !== impliedContentHashRule(EXTRACTOR_VERSION) ? [{ id: CONTENT_HASH_ID, hash: CONTENT_HASH_RULE }] : []),
+        ...(CONTENT_HASH_RULE !== BASELINE_CONTENT_HASH_RULE ? [{ id: CONTENT_HASH_ID, hash: CONTENT_HASH_RULE }] : []),
         ...(documents !== undefined && documents !== NO_DOCUMENTS ? [{ id: DOCUMENTS_ID, hash: documents }] : []),
         ...[...owed].sort((a, b) => compareStr(a[0], b[0])).map(([path, calls]) => ({ id: `${OWED_PREFIX}${path}`, hash: String(calls) })),
         ...[...failures].filter(([path]) => owed.has(path)).sort((a, b) => compareStr(a[0], b[0])).map(([path, f]) => ({ id: `${FAIL_PREFIX}${path}`, hash: `${f.count}:${f.hash}` })),

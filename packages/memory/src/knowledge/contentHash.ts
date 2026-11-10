@@ -9,8 +9,9 @@
  * Byte-level, never decoded: CR (0x0D) and LF (0x0A) cannot occur inside a UTF-8 multibyte
  * sequence, so the rewrite is safe for any UTF-8 text. A file with no CR is hashed in place.
  *
- * The rule is part of the extractor identity: {@link CONTENT_HASH_RULE} is stored in a root's
- * extractor entry (owedFiles.ts), so changing it owes every file one re-extraction.
+ * {@link CONTENT_HASH_RULE} is recorded in a root's extractor entry (owedFiles.ts) once it moves past
+ * `eol-lf@1`; only a recorded rule that differs from today's owes every file one re-extraction. Adopting
+ * this first rule owes nothing: it moves the hash of every CRLF file, which re-extract by content.
  */
 
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
