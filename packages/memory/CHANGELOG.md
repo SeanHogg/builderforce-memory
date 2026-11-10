@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.10.68
+
 ### Added — finding identity v2, lineage and comparability (`./knowledge`, PRD 41 §C3/§C9)
 
 - **`Finding.anchor?` / `Finding.anchorKind?`** (`'symbol' | 'route' | 'package' | 'file' | 'group'`): the PRIMARY anchor the emitting rule names — never a line number, never the member set. `finding(…, idRefs?, anchor?)` takes a `FindingAnchor` (`{ anchor, anchorKind, snippet? }`; the snippet is hashed after `normalizeSnippet`), `refAnchor(ref)` builds one from a ref. Every generic finding sets one: cycle → its sorted-first member; clone-group → `cloneGroup:<badge>` (group), else its sorted-first member; near-duplicate → the sorted-first of the pair; partition-violation → `<from layer>-><to layer>@<from file ref>`; duplicate-copy → the copy's file; unpartitioned → `pack:<pack>`; stale → the stale source; god-module → the file; possible-same → the sorted-first entity. `id` is unchanged.
