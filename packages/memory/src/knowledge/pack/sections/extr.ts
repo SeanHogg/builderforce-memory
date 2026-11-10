@@ -6,12 +6,14 @@
 
 import type { Extracted, ExtrEntryDiff, ListDiff, PackExtr } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
-import { boundedCount, ByteReader, ByteWriter, type Budget } from '../varint.js';
+import { assertConsumed, assertFlagsKnown, boundedCount, ByteReader, ByteWriter, PackFormatError, type Budget } from '../varint.js';
 import type { SectionCodec } from './columns.js';
 import { readEdges, readKeys, readNodes, writeEdges, writeKeys, writeNodes } from './extrLists.js';
 import { TAG } from './rows.js';
 
 const HAS_VERSION = 1;
+/** The kind byte of a hash: whole, or a diff against a prior hash. Any other value is from a writer this reader does not know. */
+const KIND_FULL = 0, KIND_DIFF = 1;
 
 function writeDiff<T>(w: ByteWriter, t: Tables, d: ListDiff<T>, items: (w: ByteWriter, t: Tables, xs: T[]) => void): void {
     w.varint(d.remove.length);
@@ -29,6 +31,9 @@ function readDiff<T>(r: ByteReader, t: ReadTables, budget: Budget, items: (r: By
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += r.varint(); ats.push(prev); }
     const list = items(r, t, budget);
+    // The positions and the items are counted separately on the wire: a mismatch would store `undefined` (fewer items) or
+    // silently drop items (more), so it is a malformed pack.
+    if (list.length !== n) throw new PackFormatError(`diff: ${n} add positions but ${list.length} added items`);
     return { remove, add: ats.map((at, i) => ({ at, item: list[i]! })) };
 }
 
@@ -40,7 +45,7 @@ export const extrSection: SectionCodec = {
         const w = new ByteWriter();
         w.varint(rows.length);
         for (const x of rows) {
-            w.u8(x.kind === 'full' ? 0 : 1);
+            w.u8(x.kind === 'full' ? KIND_FULL : KIND_DIFF);
             w.varint(t.hash(x.hash));
             if (x.kind === 'diff') w.varint(t.hash(x.prior));
             w.varint(x.entries.length);
@@ -65,7 +70,9 @@ export const extrSection: SectionCodec = {
         const n = boundedCount(r, limits.budget, 'extracted hashes');
         const out: PackExtr[] = [];
         for (let i = 0; i < n; i++) {
-            const diff = r.u8() === 1;
+            const kind = r.u8();
+            if (kind !== KIND_FULL && kind !== KIND_DIFF) throw new PackFormatError(`unknown EXTR entry kind ${kind}`);
+            const diff = kind === KIND_DIFF;
             const hash = t.hash(r.varint());
             const prior = diff ? t.hash(r.varint()) : '';
             const count = boundedCount(r, limits.budget, 'extracted entries');
@@ -73,7 +80,9 @@ export const extrSection: SectionCodec = {
             for (let k = 0; k < count; k++) {
                 const sourceRef = t.str(r.varint());
                 const sourceHash = t.hash(r.varint());
-                const version = r.u8() & HAS_VERSION ? { extractorVersion: r.varint() } : {};
+                const vflags = r.u8();
+                assertFlagsKnown(vflags, HAS_VERSION);
+                const version = vflags & HAS_VERSION ? { extractorVersion: r.varint() } : {};
                 if (!diff) {
                     entries.push({ sourceRef: sourceRef as Extracted['sourceRef'], sourceHash, ...version, nodes: readNodes(r, t, limits.budget), edges: readEdges(r, t, limits.budget), keys: readKeys(r, t, limits.budget) });
                 } else {
@@ -85,6 +94,7 @@ export const extrSection: SectionCodec = {
             }
             out.push(diff ? { kind: 'diff', hash, prior, entries: entries as ExtrEntryDiff[] } : { kind: 'full', hash, entries: entries as Extracted[] });
         }
+        assertConsumed(r, 'EXTR section');
         into.extracted = out;
     },
 };

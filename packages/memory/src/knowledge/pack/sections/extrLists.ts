@@ -6,7 +6,7 @@
 
 import type { KEdge, KNode, NodeRef } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
-import { boundedCount, ByteReader, ByteWriter, PackFormatError, type Budget } from '../varint.js';
+import { assertFlagsKnown, boundedCount, ByteReader, ByteWriter, PackFormatError, type Budget } from '../varint.js';
 import { EDGE_KINDS, NODE_KINDS, ORIGINS, VERDICTS, readEnum, readWord, unzigzag, writeEnum, writeWord, zigzag } from './columns.js';
 
 const N_PARTITION = 1, N_AREA = 2, N_STALE = 4, N_STALE_V = 8, N_BADGES = 16, N_SYSTEM = 32, N_APP = 64, N_COPY = 128, N_HASH = 256;
@@ -74,7 +74,9 @@ export function readNodes(r: ByteReader, t: ReadTables, budget: Budget): KNode[]
             const count = boundedCount(r, budget, 'badges');
             for (let b = 0; b < count; b++) {
                 const key = t.str(r.varint());
-                badges[key] = r.u8() === 0 ? r.num() : t.str(r.varint());
+                const type = r.u8();
+                if (type > 1) throw new PackFormatError('unknown badge value type');
+                badges[key] = type === 0 ? r.num() : t.str(r.varint());
             }
             node.badges = badges;
         }
@@ -144,8 +146,4 @@ export function readKeys(r: ByteReader, t: ReadTables, budget: Budget): Array<{ 
     let prev = 0;
     for (let i = 0; i < n; i++) { prev += unzigzag(r.varint()); refs.push(t.str(prev)); }
     return refs.map((ref) => ({ ref: ref as NodeRef, key: t.str(r.varint()) }));
-}
-
-export function assertFlagsKnown(flags: number, mask: number): void {
-    if (flags & ~mask) throw new PackFormatError('unknown flag bits');
 }

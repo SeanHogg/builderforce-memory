@@ -51,7 +51,7 @@ export type ReviewReport_counters = Expect<Equal<
     Pick<ReviewReport, 'extracted' | 'judged' | 'unjudged' | 'readErrors' | 'extractErrors' | 'aborted' | 'digest' | 'durationMs'>,
     { extracted: number; judged: number; unjudged: number; readErrors: number; extractErrors: number; aborted: boolean; digest: string; durationMs: number }
 >>;
-export type ReviewFailure_shape = Expect<Equal<ReviewFailure, { path: string; phase: ReviewPhase; reason: string }>>;
+export type ReviewFailure_shape = Expect<Equal<ReviewFailure, { path: string; phase: ReviewPhase; reason: string; kind?: 'file' | 'analyzer' }>>;
 
 /* ── ReviewRun: failures are CHUNKS, read through failuresOf / failureTotal ─────────────────────────────────── */
 export type ReviewRun_failures_are_chunks = Expect<Equal<ReviewRun['failures'], readonly (readonly ReviewFailure[])[]>>;
@@ -187,6 +187,7 @@ export type RowPersistence_ports = Expect<Equal<RowPersistence, {
     apply(change: RowChange): Promise<{ generation: number; reloaded?: KnowledgeSnapshot }>;
     loadAllExtracted?(): Promise<Record<string, Extracted[]>>;
     loadExtracted?(hash: string): Promise<Extracted[] | undefined>;
+    extractedSources?(): Promise<Record<string, string[]>>;
     changedElsewhere?(): Promise<boolean>;
 }>>;
 export type SnapshotPersistence_ports = Expect<Equal<

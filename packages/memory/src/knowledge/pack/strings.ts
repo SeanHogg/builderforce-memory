@@ -12,7 +12,7 @@
 
 import { fromHex64, HEX64, toHex } from './hex.js';
 import { PackTooLargeError } from './types.js';
-import { boundedCount, ByteReader, ByteWriter, PackFormatError, utf8 } from './varint.js';
+import { assertConsumed, boundedCount, ByteReader, ByteWriter, PackFormatError, utf8 } from './varint.js';
 
 /** What a section encoder needs: the index of a string and of a hash. */
 export interface Tables {
@@ -78,6 +78,8 @@ export function readStringTable(bytes: Uint8Array, maxStrings: number, maxBytes:
     for (let i = 0; i < n; i++) {
         const shared = r.varint(), rest = r.varint();
         if (shared > prev.length) throw new PackFormatError('string table: prefix longer than the previous string');
+        // A suffix the section does not hold is a malformed table (422), checked before the size cap (413) so it is never reported as "too large".
+        if (rest > r.remaining) throw new PackFormatError('string table: suffix runs past the end of the section');
         total += shared + rest;
         if (total > maxBytes) throw new PackTooLargeError(maxBytes);
         const b = new Uint8Array(shared + rest);
@@ -86,6 +88,7 @@ export function readStringTable(bytes: Uint8Array, maxStrings: number, maxBytes:
         try { out.push(dec.decode(b)); } catch { throw new PackFormatError('string table: invalid UTF-8'); }
         prev = b;
     }
+    assertConsumed(r, 'string table');
     return out;
 }
 
@@ -114,6 +117,7 @@ export function readHashTable(bytes: Uint8Array, maxHashes: number): string[] {
         else if (flag === 1) out.push(r.str());
         else throw new PackFormatError('hash table: unknown entry flag');
     }
+    assertConsumed(r, 'hash table');
     return out;
 }
 

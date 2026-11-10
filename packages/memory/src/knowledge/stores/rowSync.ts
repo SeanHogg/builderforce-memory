@@ -67,6 +67,7 @@ export class RowSync {
         for (const [h, e] of old.extracted) if (!next.extracted.has(h)) next.extracted.set(h, e);
         this.delta.overlay(old, next);
         next.reindex();
+        next.adoptRefs(old);
         this.host.setMem(next);
         this.misses.clear();
         this.generation += 1;
@@ -95,7 +96,7 @@ export class RowSync {
         const found = await this.rows.loadExtracted(hash);
         if (!found) { if (startedIn === this.generation) this.misses.add(hash); return undefined; }
         const now = this.host.mem();
-        if (!now.extracted.has(hash)) now.extracted.set(hash, found);
+        if (!now.extracted.has(hash)) now.seedBody(hash, found);
         return now.extracted.get(hash);
     }
 

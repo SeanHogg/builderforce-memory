@@ -25,9 +25,12 @@ export interface ReviewStep {
 
 /** A file a review could not finish: its prior knowledge and manifest hash are kept, so the next review retries it. */
 export interface ReviewFailure {
+    /** The file's path; for an `analyzer` failure, `analyzer:<pack id>` (never a path: read `kind` first). */
     path: string;
     phase: ReviewPhase;
     reason: string;
+    /** What failed: absent or `file` for a file of the root, `analyzer` for a pack's analyzer (`path` then names the pack, not a file). */
+    kind?: 'file' | 'analyzer';
 }
 
 /** Lane ids 0..width-1 for in-flight work: `take` the lowest free one, `free` it when the work settles. */

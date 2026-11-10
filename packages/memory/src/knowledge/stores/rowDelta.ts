@@ -46,6 +46,12 @@ export interface RowPersistence {
     loadAllExtracted?(): Promise<Record<string, Extracted[]>>;
     /** The extract bodies of one content hash that are not in memory (reload returns rows, bodies load lazily). Optional. */
     loadExtracted?(hash: string): Promise<Extracted[] | undefined>;
+    /**
+     * The source refs of EVERY stored extract body by hash, without the bodies (e.g. a `hash, source_ref` index), read once at load
+     * so the store can evict bodies superseded by later edits even when it never loaded them. Optional: without it only bodies that
+     * passed through memory are tracked.
+     */
+    extractedSources?(): Promise<Record<string, string[]>>;
     /** True when another writer changed the store since this store last saw it (e.g. `PRAGMA data_version`). Optional. */
     changedElsewhere?(): Promise<boolean>;
 }

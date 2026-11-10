@@ -13,13 +13,19 @@
 
 import { sha256Hex } from '../../retrieval/knowledge-index/sha256.js';
 import type { ManifestLeaf, StoredFact, StoredRelation } from './types.js';
+import { wireString } from './varint.js';
 
 export const MANIFEST_BUCKETS = 4096;
 
-/** FNV-1a (32-bit) over the key's UTF-16 code units: stable across runtimes and releases. */
+/**
+ * FNV-1a (32-bit) over the UTF-16 code units of the key's WIRE form ({@link wireString}): stable across runtimes and
+ * releases. A key holding a lone surrogate (a legal Windows path) reaches the other side as U+FFFD, so it is hashed as
+ * U+FFFD here too, or the two sides would bucket it differently and never agree. A well-formed key hashes as before.
+ */
 export function keyHash(key: string): number {
+    const k = wireString(key);
     let h = 0x811c9dc5;
-    for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    for (let i = 0; i < k.length; i++) { h ^= k.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
     return h >>> 0;
 }
 
@@ -36,6 +42,8 @@ export interface ManifestTree {
 }
 
 const cmp = (a: ManifestLeaf, b: ManifestLeaf): number => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+/** A leaf as the other side decodes it (see {@link wireString}): equal leaves sort, bucket and digest the same on both. */
+const wireLeaf = (l: ManifestLeaf): ManifestLeaf => { const key = wireString(l.key); return key === l.key ? l : { ...l, key }; };
 
 /**
  * The digest of ONE bucket: the hash of its leaves sorted by key (an empty bucket has a fixed digest). The server keeps
@@ -43,7 +51,7 @@ const cmp = (a: ManifestLeaf, b: ManifestLeaf): number => (a.key < b.key ? -1 : 
  */
 export function bucketDigest(leaves: readonly ManifestLeaf[]): string {
     if (leaves.length === 0) return EMPTY_BUCKET;
-    return sha256Hex([...leaves].sort(cmp).map((l) => `${l.key}\u0000${l.digest}\n`).join(''));
+    return sha256Hex(leaves.map(wireLeaf).sort(cmp).map((l) => `${l.key}\u0000${l.digest}\n`).join(''));
 }
 
 /** The root digest from the `MANIFEST_BUCKETS` bucket digests (hex), in bucket order. */
@@ -54,7 +62,8 @@ export function rootDigestOfBuckets(digests: readonly string[]): string {
 
 export function manifestTree(leaves: readonly ManifestLeaf[]): ManifestTree {
     const grouped = new Map<number, ManifestLeaf[]>();
-    for (const l of leaves) {
+    for (const l0 of leaves) {
+        const l = wireLeaf(l0);
         const b = bucketOf(l.key);
         const list = grouped.get(b);
         if (list) list.push(l); else grouped.set(b, [l]);
@@ -75,19 +84,25 @@ export function differingBuckets(a: readonly string[], b: readonly string[]): nu
     return out;
 }
 
-/** A source's leaf key: its path, or `~tag|path` for a root-level output (the blob store's own source identity). */
+/**
+ * A source's leaf key: its path, or `~tag|path` for a root-level output (the blob store's own source identity). Every leaf
+ * key and digest input is taken in its wire form ({@link wireString}), so a lone surrogate means the same on both sides.
+ */
 export function fileLeafKey(path: string, hash: string): string {
-    if (!hash.startsWith('~')) return `f:${path}`;
+    const p = wireString(path);
+    if (!hash.startsWith('~')) return `f:${p}`;
     const colon = hash.indexOf(':');
-    return `f:${colon > 0 ? hash.slice(0, colon) : hash}|${path}`;
+    return `f:${colon > 0 ? hash.slice(0, colon) : hash}|${p}`;
 }
 
-export const factLeafKey = (key: string): string => `a:${key}`;
+export const factLeafKey = (key: string): string => `a:${wireString(key)}`;
 /**
  * A relation's leaf key: `r:` + the JSON array `[from, to, kind]`. Printable and unambiguous: Postgres `text` and
- * `jsonb` reject NUL, which the earlier `from␀to␀kind` form contained.
+ * `jsonb` reject NUL, which the earlier `from␀to␀kind` form contained. (JSON.stringify would escape a lone surrogate as
+ * `\udXXX` text, which the decoded U+FFFD on the other side never equals: the parts are taken in wire form first.)
  */
-export const relationLeafKey = (r: { from: string; to: string; kind: string }): string => `r:${JSON.stringify([r.from, r.to, r.kind])}`;
+export const relationLeafKey = (r: { from: string; to: string; kind: string }): string =>
+    `r:${JSON.stringify([wireString(r.from), wireString(r.to), wireString(r.kind)])}`;
 
 /** The inverse of {@link relationLeafKey}; null when `key` is not a relation leaf key. The ONE parser. */
 export function parseRelationLeafKey(key: string): { from: string; to: string; kind: string } | null {
@@ -102,7 +117,7 @@ export function parseRelationLeafKey(key: string): { from: string; to: string; k
 }
 
 /** The digest of what a fact says: its key, text and provenance kind. Importance and timestamps are the server's to score. */
-export const factDigest = (f: Pick<StoredFact, 'key' | 'content' | 'origin'>): string => sha256Hex(JSON.stringify([f.key, f.content, f.origin]));
+export const factDigest = (f: Pick<StoredFact, 'key' | 'content' | 'origin'>): string => sha256Hex(JSON.stringify([wireString(f.key), wireString(f.content), f.origin]));
 
 export const relationDigest = (r: Pick<StoredRelation, 'weight' | 'origin' | 'confidence' | 'sourceHash'>): string =>
     sha256Hex(`${r.weight.toFixed(3)}|${r.origin}|${r.confidence === undefined ? '' : r.confidence.toFixed(3)}|${r.sourceHash ?? ''}`);

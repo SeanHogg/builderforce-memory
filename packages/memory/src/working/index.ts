@@ -54,7 +54,19 @@ export {
   buildWorkingTranscript,
 } from './transcript.js';
 export type { TranscriptMessage, CompactMemo, WorkingTranscriptState, TranscriptFold } from './transcript.js';
-export { NARRATION_OVERLAP, PROGRESS_NOTE, supersededReadMarker, foldSupersededReads, foldRepeatedNarration, foldWorkingTranscript } from './fold.js';
+export {
+  NARRATION_OVERLAP,
+  PROGRESS_NOTE,
+  supersededReadMarker,
+  foldSupersededReads,
+  foldRepeatedNarration,
+  foldWorkingTranscript,
+  wordOverlap,
+  wordContained,
+  isRepeatedNarration,
+} from './fold.js';
+export { DEFAULT_MAX_MERGE_DEPTH, chunkText, chunkedTextSummary } from './textSummary.js';
+export type { ChunkedTextSummaryOptions } from './textSummary.js';
 export { TRANSCRIPT_SUMMARY_PROMPT, TRANSCRIPT_SUMMARY_MAX_TOKENS, TRANSCRIPT_SUMMARY_INPUT_TOKENS, renderForSummary, summaryChunks, summarizeTranscript } from './summary.js';
 export type { SummaryCompletion } from './summary.js';
 export {

@@ -105,8 +105,11 @@ function wordSet(text: string): Set<string> {
   );
 }
 
-/** Jaccard similarity of two texts' word sets. */
-function wordOverlap(a: string, b: string): number {
+/**
+ * Jaccard similarity of two texts' word sets (lower-cased `[a-z0-9_]` words): |A ∩ B| / |A ∪ B|, 0 when either has no word.
+ * The measure B7 folds repeated narration by (see {@link isRepeatedNarration}).
+ */
+export function wordOverlap(a: string, b: string): number {
   const sa = wordSet(a);
   const sb = wordSet(b);
   if (sa.size === 0 || sb.size === 0) return 0;
@@ -118,13 +121,21 @@ function wordOverlap(a: string, b: string): number {
 /** Containment: is every word of the smaller set present in the larger? True when one
  *  narration is the other plus a trailing qualifier ("…once more", "…again", "…now") —
  *  a repeat Jaccard under-counts because the union grows with the qualifier's words. */
-function wordContained(a: string, b: string): boolean {
+export function wordContained(a: string, b: string): boolean {
   const sa = wordSet(a);
   const sb = wordSet(b);
   if (sa.size === 0 || sb.size === 0) return false;
   const [small, large] = sa.size <= sb.size ? [sa, sb] : [sb, sa];
   for (const w of small) if (!large.has(w)) return false;
   return true;
+}
+
+/**
+ * B7's detector: `text` merely repeats `previous` — their {@link wordOverlap} is at least `overlap`
+ * (default {@link NARRATION_OVERLAP}), or one's words are all in the other ({@link wordContained}).
+ */
+export function isRepeatedNarration(text: string, previous: string, overlap = NARRATION_OVERLAP): boolean {
+  return wordOverlap(text, previous) >= overlap || wordContained(text, previous);
 }
 
 /** The narration an assistant turn carries before its tool calls — null when it carries
@@ -221,7 +232,7 @@ export function foldRepeatedNarration<M extends TranscriptMessage>(msgs: readonl
       lastKept = narration;
       return m;
     }
-    if (lastKept != null && (wordOverlap(narration, lastKept) >= overlap || wordContained(narration, lastKept))) {
+    if (lastKept != null && isRepeatedNarration(narration, lastKept, overlap)) {
       changed = true;
       return { ...m, content: PROGRESS_NOTE } as M;
     }

@@ -4,9 +4,8 @@
  */
 
 import type { NodeRef, StoredFact, StoredRelation } from '../types.js';
-import { boundedCount, ByteReader, ByteWriter } from '../varint.js';
+import { assertConsumed, assertFlagsKnown, boundedCount, ByteReader, ByteWriter } from '../varint.js';
 import { EDGE_KINDS, STORED_ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
-import { assertFlagsKnown } from './extrLists.js';
 import { TAG } from './rows.js';
 
 const F_UPDATED = 1, F_BY_NULL = 2, F_BY = 4;
@@ -72,6 +71,7 @@ export const factSection: SectionCodec = {
                 f.fileAnchors.push(a);
             }
         });
+        assertConsumed(r, 'facts section');
         into.facts = facts;
     },
 };
@@ -122,5 +122,6 @@ export const relationSection: SectionCodec = {
             if (f & R_STALE_NULL) x.staleAt = null;
             return x;
         });
+        assertConsumed(r, 'relations section');
     },
 };

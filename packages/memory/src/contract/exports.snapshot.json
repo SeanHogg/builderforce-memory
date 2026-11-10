@@ -623,6 +623,7 @@
     "CONSOLIDATED_ROOT_AREA",
     "CONSOLIDATION_MARKER_PREFIX",
     "CONSOLIDATION_META",
+    "DEFAULT_MAX_MERGE_DEPTH",
     "HISTORY_TOKEN_BUDGET",
     "HISTORY_WINDOW",
     "MAX_RECALLED_MAPS",
@@ -637,6 +638,8 @@
     "areasNamedIn",
     "areasOfPathsIn",
     "buildWorkingTranscript",
+    "chunkText",
+    "chunkedTextSummary",
     "consolidate",
     "consolidatedArea",
     "consolidatedFactsFor",
@@ -650,6 +653,7 @@
     "foldSupersededReads",
     "foldWorkingTranscript",
     "isConsolidationMarker",
+    "isRepeatedNarration",
     "lastConsolidationIndex",
     "mergeConsolidated",
     "rankByCount",
@@ -661,6 +665,8 @@
     "supersededReadMarker",
     "transcriptTokens",
     "windowed",
-    "withoutConsolidatedFiles"
+    "withoutConsolidatedFiles",
+    "wordContained",
+    "wordOverlap"
   ]
 }

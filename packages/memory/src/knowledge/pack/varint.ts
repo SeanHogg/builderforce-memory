@@ -85,12 +85,21 @@ export class ByteReader {
         return this.buf[this.pos++]!;
     }
 
+    /**
+     * Unsigned LEB128, canonical only: at most {@link MAX_VARINT}, and no overlong form (a final byte of 0 after a
+     * continuation byte names the same value in more bytes). Both are a malformed pack, never a size error.
+     */
     varint(): number {
         let result = 0, scale = 1;
         for (let i = 0; i < 8; i++) {
             const b = this.u8();
             result += (b & 0x7f) * scale;
-            if ((b & 0x80) === 0) return result;
+            if ((b & 0x80) === 0) {
+                if (b === 0 && i > 0) throw new PackFormatError('non-canonical varint (overlong encoding)');
+                // Exact below 2^53; any larger value rounds to at least 2^53, so the comparison never lets one through.
+                if (result > MAX_VARINT) throw new PackFormatError('varint exceeds the safe integer range');
+                return result;
+            }
             scale *= 0x80;
         }
         throw new PackFormatError('varint too long');
@@ -128,6 +137,29 @@ export class ByteReader {
         if (v === 2) return this.f64();
         throw new PackFormatError('bad number tag');
     }
+}
+
+/** A flag word with a bit outside `mask` is from a newer writer this reader cannot honour: a malformed pack, never ignored. */
+export function assertFlagsKnown(flags: number, mask: number): void {
+    if (flags & ~mask) throw new PackFormatError('unknown flag bits');
+}
+
+/** A section (or table) must be read to its last byte: bytes left over mean the writer and this reader disagree. */
+export function assertConsumed(r: ByteReader, what: string): void {
+    if (!r.done) throw new PackFormatError(`${what}: ${r.remaining} trailing bytes`);
+}
+
+/** A lone UTF-16 surrogate: a high one not followed by a low one, or a low one not preceded by a high one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const ANY_SURROGATE = /[\uD800-\uDFFF]/;
+
+/**
+ * `s` as it arrives after a trip through the wire: UTF-8 cannot carry a lone surrogate, so {@link utf8} (TextEncoder)
+ * writes U+FFFD in its place. Anything hashed on one side and compared with what the other side decoded must be hashed
+ * in THIS form. The identity for every well-formed string, so no existing digest changes.
+ */
+export function wireString(s: string): string {
+    return ANY_SURROGATE.test(s) ? s.replace(LONE_SURROGATE, '�') : s;
 }
 
 /** What a whole pack may still hold: every list a decode reads draws its count from ONE budget. */

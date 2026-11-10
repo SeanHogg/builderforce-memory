@@ -66,6 +66,22 @@ export function stripUndefined<T extends object>(o: T): Partial<T> {
     return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+/**
+ * What a COMPACTED log line records beside its body: `c` the source refs it is current for, `p` those it is the previous body of
+ * (extractRefs.ts). An appended line has neither: its replay derives them from the put sequence. Older readers ignore both.
+ */
+export interface LoggedRefState { current: string[]; previous: string[] }
+
+const strings = (v: unknown): string[] | undefined => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : undefined);
+
+function refStateOf(row: { c?: unknown; p?: unknown }): LoggedRefState | undefined {
+    const current = strings(row.c), previous = strings(row.p);
+    return current || previous ? { current: current ?? [], previous: previous ?? [] } : undefined;
+}
+
+/** One compacted log line (newline-terminated) for a body and its reference state. */
+export const compactedLogLine = (h: string, e: Extracted[], s: LoggedRefState): string => `${JSON.stringify({ h, e, c: s.current, p: s.previous })}\n`;
+
 export interface ParsedLog {
     entries: Map<string, Extracted[]>;
     /** The live (last) line of each hash, newline-terminated, in log order. */
@@ -77,21 +93,22 @@ export interface ParsedLog {
 
 /**
  * The log's entries, last line per hash winning. A line that does not parse (torn by a crash or a failed
- * append) is skipped on its own: it never costs the other lines.
+ * append) is skipped on its own: it never costs the other lines. `onLine` sees EVERY parsed line in log order (superseded
+ * ones too), for a reader that replays the puts.
  */
-export function parseLog(text: string | undefined): ParsedLog {
+export function parseLog(text: string | undefined, onLine?: (hash: string, entries: Extracted[], state?: LoggedRefState) => void): ParsedLog {
     const out: ParsedLog = { entries: new Map(), liveLines: new Map(), liveBytes: 0, deadBytes: 0 };
     if (!text) return out;
     for (const line of text.split('\n')) {
         if (!line.trim()) continue;
-        try {
-            const row = JSON.parse(line) as { h?: unknown; e?: unknown };
-            if (typeof row.h === 'string' && Array.isArray(row.e)) {
-                out.entries.set(row.h, row.e as Extracted[]);
-                out.liveLines.delete(row.h); // re-set below so the map stays in log order of last occurrence
-                out.liveLines.set(row.h, `${line}\n`);
-            }
-        } catch { /* torn line */ }
+        let row: { h?: unknown; e?: unknown; c?: unknown; p?: unknown };
+        // Only a line that does not parse is torn; a failure of the replay below is the caller's and surfaces.
+        try { row = JSON.parse(line) as typeof row; } catch { continue; /* torn line */ }
+        if (!row || typeof row.h !== 'string' || !Array.isArray(row.e)) continue;
+        out.entries.set(row.h, row.e as Extracted[]);
+        out.liveLines.delete(row.h); // re-set below so the map stays in log order of last occurrence
+        out.liveLines.set(row.h, `${line}\n`);
+        onLine?.(row.h, row.e as Extracted[], refStateOf(row));
     }
     for (const l of out.liveLines.values()) out.liveBytes += l.length;
     out.deadBytes = Math.max(0, text.length - out.liveBytes);

@@ -107,7 +107,7 @@ export class LocalSnapshotStore implements KnowledgeStore {
         this.now = opts.now ?? (() => new Date().toISOString());
         this.nowMs = opts.nowMs ?? Date.now;
         this.checkpointMs = opts.checkpointMs ?? 30_000;
-        this.log = !this.rows && opts.extractedLog ? new ExtractLogWriter(opts.extractedLog) : undefined;
+        this.log = !this.rows && opts.extractedLog ? new ExtractLogWriter(opts.extractedLog, (h) => this.mem.extracted.has(h)) : undefined;
     }
 
     /** Loads once; every later call is a no-op, so reads never wait on the mutation queue after the first. */
@@ -140,14 +140,18 @@ export class LocalSnapshotStore implements KnowledgeStore {
             logText = this.log ? await this.log.read() : undefined;
         }
         this.mem.fill(snap, !this.log);
+        // Row mode: bodies the host holds but never sent are tracked by key, so a later edit's eviction reaches them too.
+        if (this.rows?.extractedSources) {
+            for (const [h, refs] of Object.entries(await this.rows.extractedSources())) if (!this.mem.extracted.has(h)) this.mem.seedKey(h, refs);
+        }
         if (this.log) {
-            await this.log.load(logText, this.mem.extracted);
+            await this.log.load(logText, this.mem);
             // An old snapshot still carrying the cache: move it into the log once; the next snapshot write omits it.
             const legacy = Object.entries(snap.extracted ?? {});
             if (legacy.length) {
                 for (const [h, e] of legacy) {
                     if (this.mem.extracted.has(h)) continue;
-                    this.mem.extracted.set(h, e);
+                    this.mem.seedBody(h, e);
                     this.log.queue(h, e);
                 }
                 this.dirty = true;
@@ -332,15 +336,28 @@ export class LocalSnapshotStore implements KnowledgeStore {
 
     putExtracted(hash: string, extracted: Extracted[]): Promise<void> {
         return this.mutate(() => {
-            // The same entry again (a second pass re-puts what the first stored) is skipped: no append, no dirty snapshot.
+            // The same entry again (a second pass re-puts what the first stored) is skipped: no append, no dirty snapshot, and no
+            // claim — a re-put never makes the files of a shared body current at it again (extractRefs.ts).
             const prior = this.mem.extracted.get(hash);
             if (prior && canonicalJson(prior) === canonicalJson(extracted)) return;
-            this.mem.extracted.set(hash, extracted);
+            // Only the entries new or changed against `prior` become current; bodies no longer current or previous for any source
+            // leave memory here, and the cache's persistence below.
+            for (const h of this.mem.putBody(hash, extracted)) this.evicted(h);
             this.sync?.forget(hash);
             this.delta?.mark('extracted', [hash]);
             if (this.log) this.log.queue(hash, extracted);
             else this.dirty = true;
         }, false);
+    }
+
+    /**
+     * A body {@link RowMemory.putBody} evicted: a row delete (row mode), never appended if still queued and dropped from the log at its
+     * next compaction (log mode), or gone from the next snapshot write (snapshot mode).
+     */
+    private evicted(hash: string): void {
+        this.delta?.mark('extracted', [hash], true);
+        this.log?.unqueue(hash);
+        if (!this.log) this.dirty = true;
     }
 
     /** See {@link canonicalDump}. Static so it can reach private state without widening the instance's public surface. */

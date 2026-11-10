@@ -5,7 +5,7 @@
  * Rows arrive sorted (see `normalizePack`), so index runs are delta-encoded.
  */
 
-import { boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
+import { assertConsumed, assertFlagsKnown, boundedCount, ByteReader, ByteWriter, PackFormatError } from '../varint.js';
 import { fromHex64, toHex } from '../hex.js';
 import type { Pack } from '../types.js';
 import type { SectionCodec } from './columns.js';
@@ -34,6 +34,7 @@ export const fileSection: SectionCodec = {
         for (let i = 0; i < n; i++) { prev += r.varint(); paths.push(t.str(prev)); }
         const hashes = paths.map(() => t.hash(r.varint()));
         into.files = paths.map((path, i) => ({ path, hash: hashes[i]!, bytes: r.varint() }));
+        assertConsumed(r, 'FILE section');
     },
 };
 
@@ -56,6 +57,7 @@ export const staleSection: SectionCodec = {
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); refs.push(t.str(prev)); }
         into.stale = refs.map((sourceRef) => ({ sourceRef, hash: t.hash(r.varint()) }));
+        assertConsumed(r, 'STALE section');
     },
 };
 
@@ -90,6 +92,7 @@ export const deleteSection: SectionCodec = {
         const from = Array.from({ length: n }, () => t.str(r.varint()));
         const to = Array.from({ length: n }, () => t.str(r.varint()));
         const kind = Array.from({ length: n }, () => t.str(r.varint()));
+        assertConsumed(r, 'DEL section');
         into.deletes = { files: lists[0]!, facts: lists[1]!, relations: from.map((f, i) => ({ from: f, to: to[i]!, kind: kind[i]! })) };
     },
 };
@@ -115,8 +118,10 @@ export const scopeSection: SectionCodec = {
         const n = boundedCount(r, limits.budget, 'packs');
         for (let i = 0; i < n; i++) scope.packs.push(t.str(r.varint()));
         const flags = r.u8();
+        assertFlagsKnown(flags, 3);
         if (flags & 1) scope.lastDigest = t.str(r.varint());
         if (flags & 2) scope.lastReviewedAt = t.str(r.varint());
+        assertConsumed(r, 'SCOPE section');
         into.scope = scope;
     },
 };
@@ -138,7 +143,10 @@ export const analysisSection: SectionCodec = {
         return w.finish();
     },
     read(bytes, t, _limits, into) {
-        into.analysis = JSON.parse(t.str(new ByteReader(bytes).varint())) as unknown;
+        const r = new ByteReader(bytes);
+        const text = t.str(r.varint());
+        assertConsumed(r, 'ANALYSIS section');
+        into.analysis = JSON.parse(text) as unknown;
     },
 };
 
@@ -161,6 +169,7 @@ export const leafSection: SectionCodec = {
         let prev = 0;
         for (let i = 0; i < n; i++) { prev += r.varint(); keys.push(t.str(prev)); }
         into.leaves = keys.map((key) => ({ key, digest: t.hash(r.varint()) }));
+        assertConsumed(r, 'LEAF section');
     },
 };
 

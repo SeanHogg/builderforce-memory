@@ -1,20 +1,27 @@
 /**
  * knowledge/pack/frame.ts — the BFKP v1 frame (PRD 41 A11):
  *
- *   magic "BFKP" · version u8 · flags u8 (bit 0 = body deflated) · rootId · baseGeneration varint ·
+ *   magic "BFKP" · version u8 · flags u8 (bit 0 = body deflated; any other bit is refused) · rootId · baseGeneration varint ·
  *   targetDigest (32 raw bytes) · body · trailer: CRC-32 (u32 LE) of the DECODED body
  *
- * The body is sections `{ tag u8, length varint, bytes }`; an unknown tag is skipped.
+ * The body is sections `{ tag u8, length varint, bytes }`; an unknown tag is skipped, a repeated tag is refused, and a known
+ * section must be read to its last byte.
+ *
+ * EVOLVING THE FORMAT: known sections are CLOSED. A reader refuses trailing bytes in a known section and any flag bit, kind or
+ * version byte it does not know, so a writer can never append a field to an existing section or set a new bit in it. A new field
+ * goes in a NEW section tag (older readers skip it); a change to how the body itself is read (a new compression) is a new frame
+ * VERSION. A new value in an existing closed vocabulary needs every reader upgraded first.
  * Also: the multi-part split a large pack travels in.
  */
 
 import { crc32 } from './crc32.js';
 import { fromHex64, HEX64, toHex } from './hex.js';
-import { ByteReader, ByteWriter, PackFormatError } from './varint.js';
+import { assertFlagsKnown, ByteReader, ByteWriter, PackFormatError } from './varint.js';
 
 export const MAGIC = [0x42, 0x46, 0x4b, 0x50] as const; // "BFKP"
 export const VERSION = 1;
 export const FLAG_DEFLATED = 1;
+const KNOWN_FLAGS = FLAG_DEFLATED;
 export const KPACK_CONTENT_TYPE = 'application/vnd.builderforce.kpack';
 /** A compressed pack larger than this travels as several parts. */
 export const MAX_PART_BYTES = 8 * 1024 * 1024;
@@ -51,6 +58,8 @@ export function readHeader(bytes: Uint8Array): { header: FrameHeader; headerByte
     const version = r.u8();
     if (version !== VERSION) throw new PackFormatError(`unsupported BFKP version ${version}`);
     const flags = r.u8();
+    // A flag this reader does not know changes how the body must be read (a new compression, say): refuse, never guess.
+    assertFlagsKnown(flags, KNOWN_FLAGS);
     const rootId = r.str();
     const baseGeneration = r.varint();
     const targetDigest = toHex(r.bytes(32));
@@ -98,11 +107,18 @@ export function writeSection(w: ByteWriter, tag: number, bytes: Uint8Array): voi
     w.bytes(bytes);
 }
 
-/** The sections of a decoded body by tag (a repeated tag keeps the last); unknown tags are returned too, for the caller to skip. */
+/**
+ * The sections of a decoded body by tag; unknown tags are returned too, for the caller to skip. A tag that appears twice is a
+ * malformed pack: which copy wins would be a guess, and the writer never repeats one.
+ */
 export function readSections(body: Uint8Array): Map<number, Uint8Array> {
     const r = new ByteReader(body);
     const out = new Map<number, Uint8Array>();
-    while (!r.done) { const tag = r.u8(); out.set(tag, r.bytes(r.varint())); }
+    while (!r.done) {
+        const tag = r.u8();
+        if (out.has(tag)) throw new PackFormatError(`section tag ${tag} appears twice`);
+        out.set(tag, r.bytes(r.varint()));
+    }
     return out;
 }
 
