@@ -230,6 +230,16 @@ export function regularizedIncompleteGamma(a: number, x: number): number {
     return 1 - gammaQ(a, x);
 }
 
+/**
+ * Regularized UPPER incomplete gamma Q(a, x) = 1 − P(a, x), computed directly in the
+ * tail (continued fraction) so a tiny Q does not underflow to 0 through 1 − P. Module-
+ * internal to `./stats` (the normal tail of the Wilcoxon large-n branch); not a public export.
+ */
+export function regularizedUpperIncompleteGamma(a: number, x: number): number {
+    if (x <= 0) return 1;
+    return x < a + 1 ? 1 - regularizedIncompleteGamma(a, x) : gammaQ(a, x);
+}
+
 /** Gamma(shape, scale) quantile by bisection on the CDF. Deterministic. */
 export function gammaQuantile(p: number, shape: number, scale = 1): number {
     if (p <= 0) return 0;

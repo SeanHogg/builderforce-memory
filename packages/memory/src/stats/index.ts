@@ -40,7 +40,7 @@ export {
     signTestSprt,
     wilcoxonSignedRank,
 } from "./tests.js";
-export type { SprtResult, WilcoxonResult } from "./tests.js";
+export type { PairedStatistic, SprtResult, WilcoxonResult } from "./tests.js";
 
 export { bayesianOnlineChangePoint, cusum } from "./timeSeries.js";
 export type { ChangePointResult, CusumResult } from "./timeSeries.js";

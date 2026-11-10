@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — Wilcoxon signed-rank, paired Hodges–Lehmann and the paired bootstrap (`./stats`, shipped wrong in 2026.10.72)
+
+- **`wilcoxonSignedRank` p-values were wrong for every n.** The exact null CDF was built once for n = 60 and indexed with W+ for any n, so p ≈ 0 for every input with n ≤ 60 (a null 10-pair series gave 2.2e-15; n = 3 gave 8.7e-18). Above 60 the "normal" branch used exp(−z²/2), not a normal tail. Now:
+  - **n ≤ 50** (`WILCOXON_EXACT_MAX_N`): an EXACT two-sided p from the permutation distribution of W+ built for this n by DP over the (doubled, so mid-ranks are integers) ranks — conditional on ties.
+  - **n > 50**: normal approximation with continuity correction ½ and the tie variance correction Σ(t³ − t)/48, two-sided normal tail. The tail uses the upper incomplete gamma Q directly, so a far tail is a tiny positive number (n = 100 all positive ≈ 4e-18), not 0. At n = 50 the two methods agree within 0.001 for p < 0.1.
+  - **Non-finite differences** (NaN, ±Infinity) are dropped from the test, the estimate and `pairedBootstrapCi`. `WilcoxonResult` gains a required **`nonFinite`** count; it is additive for readers.
+  - **Zeros:** Wilcoxon's rule, as before: zero differences are dropped before ranking; `n` counts the rest.
+  - Any caller that read a tiny p from null-ish data was reading the bug. Data where every pair moves the same way gets the same verdict as before (p = 2/2ⁿ, still tiny).
+- **The paired Hodges–Lehmann estimate dropped zero differences**, biasing it away from 0. It is now the median of the Walsh averages of ALL paired differences, zeros included (Hollander & Wolfe; R's `wilcox.test` drops zeros for its estimate). It is computed by exact value-space selection in O(n log n), not by sorting the n(n+1)/2 averages. The result is the same double as the full sort. At n = 200 the Hodges–Lehmann bootstrap takes about 0.12 s, down from 6.3 s.
+- **`pairedBootstrapCi` gains `statistic: 'mean' | 'hodges-lehmann'`** (default `'mean'`, unchanged). With `'hodges-lehmann'` it resamples pairs and reports the percentile CI of the paired Hodges–Lehmann estimate (PRD 41 C6.2), centred on that estimate. Still seeded with a fixed resample count. New type `PairedStatistic`.
+- Regression tests: `src/contract/regression.wilcoxon.test.ts`. They cover null data (p = 1), all-positive n = 10 (p = 2/1024), the α = 0.05 critical values for n = 5..20, ties, exact vs normal at n = 50, the far tail without underflow, non-finite pairs, Hodges–Lehmann with zeros, the selection against a brute-force median (200 seeded inputs with ties, zero clusters and mixed scales), and the Hodges–Lehmann bootstrap with its cost.
+
 ### Added — FileFacts v3, FactRule and the incremental evaluator (`./knowledge`, PRD 41 WS4 phase 1, §B1/§B3/§B5/§B8.6)
 
 - **`FileFacts` v3** (types for the Phase 2 tree-sitter / regex extractors): `symbols`, `imports`, `exports` (name, kind, signature hash), `entryPoints` (§C5.1, with the guard `chain` files), `calls` (callee, enclosing symbol, `awaited`, `inLoop`, count — no positions), `complexity`, `capabilityImports` (§C5.3), optional `testFacts` (§C8.2). Fact kinds `structure` / `body` / `content` (`FACT_KIND_FIELDS`), each with its own hash (`factKindHashes`); `canonicalFileFacts` sorts every array; `factsHash` is the content address; `readFileFacts` reads a v2 object as `factsVersion: 2` with empty v3 lists.
