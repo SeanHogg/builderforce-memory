@@ -10,6 +10,7 @@
 - **`OUTLINE_BADGE_KEYS` gains `coChange`, `coChangeHidden`**, so the outline carries both.
 - **Station transitions** (P7): `transitionsFromWeights`, `transitionsFromSequences`, `stationTransitions({ sequences?, weights })`, `transitionOf`, `mostLikelyWalk` (greedy per-hop argmax, not Viterbi). A table row is `{ source: 'traces' | 'references', transitions: StationTransition[] }`; `stationTransitions` picks per station (its trace row when it has trace hops, else its reference row). A hop is `{ to, p, k, n, low?, high? }`: trace hops carry the interval, reference hops (not observations) do not.
 - **`./stats`: `rateInterval(k, n)`, `RATE_PRIOR` (0.5), `RATE_CREDIBLE_MASS` (0.9)**: THE interval of a shown rate — the equal-tailed 90% Jeffreys interval with the boundary rule (low 0 at k = 0, high 1 at k = n). Used by co-change confidence and trace hops.
+- **`./stats`: `inverseRegularizedIncompleteBeta` (so `betaPosterior(...).quantile`) is Halley steps inside a bisection bracket, stopping at 1e-10**, instead of 100 fixed bisections: about 1000× fewer incomplete-beta evaluations per quantile, same values at 6 decimals. `coChangePartners` computes intervals only for the kept partners (memoised per call) and counts pairs in a typed open-addressing table.
 - Minor, non-breaking: new names only.
 
 ### Changed

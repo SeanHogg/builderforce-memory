@@ -97,6 +97,7 @@ export function transitionOf(table: TransitionTable, from: string, to: string): 
 /**
  * A greedy walk from `start`: at each hop the likeliest unvisited successor (ties by `to` asc), at most `maxHops`, stopping
  * when no unvisited successor is left. Per-hop argmax, NOT the most likely whole path (no Viterbi search).
+ * A station whose trace row leads only to stations already visited ends the walk; it does not fall back to its reference row.
  */
 export function mostLikelyWalk(table: TransitionTable, start: string, maxHops: number): { stops: string[]; hops: StationTransition[] } {
     const stops = [start];

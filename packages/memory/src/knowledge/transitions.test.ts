@@ -111,6 +111,23 @@ describe('mostLikelyWalk', () => {
         expect(mostLikelyWalk(table, 'Z', 5)).toEqual({ stops: ['Z'], hops: [] });
     });
 
+    it('over a mixed table: trace hops carry their interval, reference hops do not', () => {
+        // A and B have trace rows (A → B → C); C has none, so its reference row (C → D) continues the walk.
+        const mixed = stationTransitions({ sequences: [['A', 'B', 'C']], weights: [W('A', 'Z', 9), W('C', 'D', 1), W('C', 'A', 0)] });
+        const w = mostLikelyWalk(mixed, 'A', 10);
+        expect(w.stops).toEqual(['A', 'B', 'C', 'D']);
+        expect(w.hops.map((h) => [h.to, h.low !== undefined, h.high !== undefined])).toEqual([['B', true, true], ['C', true, true], ['D', false, false]]);
+        expect(w.hops[0]).toMatchObject({ p: 1, high: 1 });
+        expect('low' in w.hops[2]! || 'high' in w.hops[2]!).toBe(false);
+    });
+
+    it('a trace row that leads only to visited stations ends the walk; its reference row is not consulted', () => {
+        // B's traces only go back to A (visited); B's reference row would offer C, but the trace row wins for B.
+        const t = stationTransitions({ sequences: [['A', 'B', 'A']], weights: [W('B', 'C', 5)] });
+        expect(t.get('B')!.source).toBe('traces');
+        expect(mostLikelyWalk(t, 'A', 10).stops).toEqual(['A', 'B']);
+    });
+
     it('is deterministic under shuffled input', () => {
         const shuffled = transitionsFromWeights([W('C', 'E', 1), W('B', 'D', 1), W('B', 'A', 9), W('A', 'B', 1), W('A', 'C', 1)]);
         same(mostLikelyWalk(shuffled, 'A', 10), mostLikelyWalk(table, 'A', 10));

@@ -26,6 +26,7 @@ import {
     gammaQuantile,
     garwoodPoissonInterval,
     goelOkumotoMLE,
+    inverseRegularizedIncompleteBeta,
     kaplanMeier,
     ledoitWolfCovariance,
     lincolnPetersenEstimate,
@@ -37,6 +38,7 @@ import {
     RATE_CREDIBLE_MASS,
     RATE_PRIOR,
     rateInterval,
+    regularizedIncompleteBeta,
     shannonEntropy,
     signTestSprt,
     thompsonRank,
@@ -310,6 +312,29 @@ describe("rateInterval", () => {
         expect(rateInterval(5, 5).high).toBe(1);
         expect(rateInterval(5, 5).low).toBeLessThan(1);
         expect(rateInterval(0, 5).high).toBeGreaterThan(0);
+    });
+
+    // A loose guard: ~0.2 s here; the fixed-bisection inverse it replaced took ~8 ms per call (~80 s for these).
+    it("is cheap: 10,000 distinct (k, n) solve in under 5 s, each inverting I_x to the beta quantile", () => {
+        const t0 = Date.now();
+        let checked = 0;
+        let outside = 0;
+        for (let n = 1; checked < 10_000; n++) {
+            for (let k = 0; k <= n && checked < 10_000; k++, checked++) {
+                const { low, high } = rateInterval(k, n);
+                if (!(low <= k / n && k / n <= high)) outside += 1;
+            }
+        }
+        const ms = Date.now() - t0;
+        expect(outside).toBe(0);
+        expect(ms).toBeLessThan(5000);
+    });
+
+    it("the inverse lands on the quantile: I_x(a, b) at the returned x is p", () => {
+        for (const [p, a, b] of [[0.05, 3.5, 1.5], [0.95, 3.5, 1.5], [0.05, 12.5, 0.5], [0.95, 400.5, 100.5], [0.5, 0.5, 0.5]] as const) {
+            const x = inverseRegularizedIncompleteBeta(p, a, b);
+            expect(Math.abs(regularizedIncompleteBeta(x, a, b) - p)).toBeLessThan(1e-9);
+        }
     });
 
     it("narrows as n grows at the same rate", () => {

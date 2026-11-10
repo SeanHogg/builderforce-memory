@@ -122,10 +122,29 @@ describe('coChangePartners — partner cap and ranking', () => {
         expect(coChangePartners(history, { minLift: 2.5 }).size).toBe(0);
     });
 
+    it('computes intervals only for the kept partners', () => {
+        // Every kept partner carries its interval; the cut ones (p7, p8 of the hub) never reach the output.
+        for (const list of r.values()) for (const p of list) expect([p.low, p.high]).toEqual([round6(rateInterval(p.together, p.ofSelf).low), round6(rateInterval(p.together, p.ofSelf).high)]);
+    });
+
     it('shuffled commits and refs give identical output', () => {
         const shuffled = [...history].reverse().map((c) => ({ refs: [...c.refs].reverse() }));
         same([...coChangePartners(shuffled)], [...r]);
         expect([...r.keys()]).toEqual([...r.keys()].sort());
+    });
+});
+
+describe('coChangePartners — cost', () => {
+    // A loose guard: ~1–2 s here; the regression it catches (an interval solve per candidate pair) took hours.
+    it('2000 commits × 50 files over 4000 refs runs in under 10 s', () => {
+        // 80 clusters of 50 files, each committed 25 times: 98,000 kept pairs, 2.45M pair increments, every file at the cap.
+        const commits = Array.from({ length: 2000 }, (_, c) => ({ refs: Array.from({ length: 50 }, (_, i) => ref(`f${(c % 80) * 50 + i}.ts`)) }));
+        const t0 = Date.now();
+        const r = coChangePartners(commits);
+        const ms = Date.now() - t0;
+        expect(r.size).toBe(4000);
+        expect(r.get(ref('f0.ts'))).toHaveLength(COCHANGE_MAX_PARTNERS);
+        expect(ms).toBeLessThan(10_000);
     });
 });
 
@@ -137,6 +156,12 @@ describe('co-change badge codec (v1)', () => {
         const value = encodeCoChange(partners);
         expect(value).toBe(`v1\n3\t6\t${low}\t${high}\t${ref('b.ts')}\n3\t6\t${low}\t${high}\t${ref('c d.ts')}`);
         expect(decodeCoChange(value)).toEqual(partners.map((p) => ({ ref: p.ref, together: p.together, ofSelf: p.ofSelf, low: p.low, high: p.high })));
+    });
+
+    it.each([['a carriage return', 'c\r.ts'], ['U+2028', 'c .ts'], ['U+2029', 'c .ts']])('round-trips a ref holding %s', (_name, path) => {
+        // One bad line voids the badge, so a ref the line pattern rejected would drop every partner (and coChangeHidden with them).
+        const odd = [partners[0]!, { ...partners[0]!, ref: ref(path) }];
+        expect(decodeCoChange(encodeCoChange(odd)).map((e) => e.ref)).toEqual([ref('b.ts'), ref(path)]);
     });
 
     it('an empty list is the bare version line, which decodes to nothing', () => {
