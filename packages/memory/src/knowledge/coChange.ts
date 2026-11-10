@@ -227,8 +227,8 @@ function partnersOf(kept: readonly KeptCommit[], opts: CoChangeOptions): Map<Nod
     };
     const out = new Map<NodeRef, CoChangePartner[]>();
     for (const i of [...lists.keys()].sort((a, b) => a - b)) {
-        const kept = lists.get(i)!.sort(byRank).slice(0, maxPartners);
-        out.set(order[i]!, kept.map((c) => ({ ...c, ...intervalOf(c.together, c.ofSelf) })));
+        const top = lists.get(i)!.sort(byRank).slice(0, maxPartners);
+        out.set(order[i]!, top.map((c) => ({ ...c, ...intervalOf(c.together, c.ofSelf) })));
     }
     return out;
 }
@@ -240,16 +240,31 @@ export function coChangePartners(commits: ReadonlyArray<CoChangeCommit>, opts: C
 
 /**
  * The `coChange` badge value: the line `v1`, then `${together}\t${ofSelf}\t${low}\t${high}\t${ref}` per partner, '\n'-joined
- * (the ref is the line remainder). A ref holding a newline cannot be carried and is skipped.
+ * (the ref is the line remainder). An entry the decoder would reject is dropped, never written (one bad line would void the
+ * whole badge): a ref that is empty or holds a newline, `together` not an integer ≥ 1 or above `ofSelf`, and `low` / `high`
+ * that are not numbers in 0 ≤ low ≤ high ≤ 1. Each line is checked by the decoder's own {@link parseLine}.
  */
 export function encodeCoChange(partners: readonly CoChangePartner[]): string {
-    const lines = partners.filter((p) => !p.ref.includes('\n')).map((p) => `${p.together}\t${p.ofSelf}\t${p.low}\t${p.high}\t${p.ref}`);
+    const lines = partners
+        .filter((p) => !p.ref.includes('\n'))
+        .map((p) => `${p.together}\t${p.ofSelf}\t${p.low}\t${p.high}\t${p.ref}`)
+        .filter((line) => parseLine(line) !== undefined);
     return [BADGE_VERSION, ...lines].join('\n');
 }
 
 const NUM = String.raw`(\d+(?:\.\d+)?(?:e-\d+)?)`;
 // `s`: the ref is the line remainder and may hold '\r', U+2028 or U+2029 (the value is already split on '\n').
 const LINE = new RegExp(String.raw`^(\d+)\t(\d+)\t${NUM}\t${NUM}\t(.+)$`, 's');
+
+/** THE validity of one partner line, shared by the encoder (to drop) and the decoder (to reject). */
+function parseLine(line: string): CoChangeBadgeEntry | undefined {
+    const hit = LINE.exec(line);
+    if (!hit) return undefined;
+    const together = Number(hit[1]), ofSelf = Number(hit[2]), low = Number(hit[3]), high = Number(hit[4]);
+    if (!Number.isSafeInteger(together) || !Number.isSafeInteger(ofSelf) || together < 1 || together > ofSelf) return undefined;
+    if (!(low >= 0 && low <= high && high <= 1)) return undefined;
+    return { ref: hit[5]! as NodeRef, together, ofSelf, low, high };
+}
 
 /** The partners of a `coChange` badge; [] for anything that is not a well-formed v1 value (one bad line voids it). */
 export function decodeCoChange(value: unknown): CoChangeBadgeEntry[] {
@@ -258,12 +273,9 @@ export function decodeCoChange(value: unknown): CoChangeBadgeEntry[] {
     if (version !== BADGE_VERSION) return [];
     const out: CoChangeBadgeEntry[] = [];
     for (const line of lines) {
-        const hit = LINE.exec(line);
-        if (!hit) return [];
-        const together = Number(hit[1]), ofSelf = Number(hit[2]), low = Number(hit[3]), high = Number(hit[4]);
-        if (!Number.isSafeInteger(together) || !Number.isSafeInteger(ofSelf) || together < 1 || together > ofSelf) return [];
-        if (!(low >= 0 && low <= high && high <= 1)) return [];
-        out.push({ ref: hit[5]! as NodeRef, together, ofSelf, low, high });
+        const entry = parseLine(line);
+        if (!entry) return [];
+        out.push(entry);
     }
     return out;
 }

@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## Unreleased
+
+### Fixed (`./knowledge`, PRD 38 P4)
+
+- **`encodeCoChange` never writes a line `decodeCoChange` would reject.** It drops an entry with an empty ref (or one holding a newline), a `together` that is not an integer ≥ 1 or exceeds `ofSelf`, or a `low` / `high` that is NaN, outside [0, 1] or with low > high. Before, one such entry voided the whole badge on read (and `coChangeHidden` with it). Encoder and decoder now share one line validator.
+
 ## 2026.10.71
 
 ### Added — predicted measures P4 co-change and P7 transitions (`./knowledge`, PRD 38)

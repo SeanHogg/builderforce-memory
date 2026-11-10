@@ -122,8 +122,8 @@ describe('coChangePartners — partner cap and ranking', () => {
         expect(coChangePartners(history, { minLift: 2.5 }).size).toBe(0);
     });
 
-    it('computes intervals only for the kept partners', () => {
-        // Every kept partner carries its interval; the cut ones (p7, p8 of the hub) never reach the output.
+    it('every kept partner carries the rate interval of its own together / ofSelf', () => {
+        // (That the interval is computed only after the cap is a cost property; the cost guard below covers it.)
         for (const list of r.values()) for (const p of list) expect([p.low, p.high]).toEqual([round6(rateInterval(p.together, p.ofSelf).low), round6(rateInterval(p.together, p.ofSelf).high)]);
     });
 
@@ -162,6 +162,19 @@ describe('co-change badge codec (v1)', () => {
         // One bad line voids the badge, so a ref the line pattern rejected would drop every partner (and coChangeHidden with them).
         const odd = [partners[0]!, { ...partners[0]!, ref: ref(path) }];
         expect(decodeCoChange(encodeCoChange(odd)).map((e) => e.ref)).toEqual([ref('b.ts'), ref(path)]);
+    });
+
+    it.each([
+        ['an empty ref', { ref: '' }], ['a non-integer together', { together: 2.5 }], ['together 0', { together: 0 }],
+        ['a negative together', { together: -1 }], ['together above ofSelf', { together: 7 }], ['a NaN ofSelf', { ofSelf: Number.NaN }],
+        ['a NaN low', { low: Number.NaN }], ['a NaN high', { high: Number.NaN }], ['a negative low', { low: -0.1 }],
+        ['high above 1', { high: 1.5 }], ['an infinite high', { high: Number.POSITIVE_INFINITY }], ['low above high', { low: 0.9, high: 0.8 }],
+        ['a newline in the ref', { ref: `${ref('x')}\ny` }],
+    ])('encode drops an entry with %s and keeps the rest decodable', (_name, bad) => {
+        const good = partners[0]!;
+        const value = encodeCoChange([good, { ...good, ...bad } as CoChangePartner, partners[1]!]);
+        expect(value).toBe(encodeCoChange([good, partners[1]!]));
+        expect(decodeCoChange(value).map((e) => e.ref)).toEqual([ref('b.ts'), ref('c d.ts')]);
     });
 
     it('an empty list is the bare version line, which decodes to nothing', () => {
