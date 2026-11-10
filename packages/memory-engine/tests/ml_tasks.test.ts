@@ -520,3 +520,47 @@ describe("run.local-success (learns from cloud outcomes)", () => {
     expect(g.predictor.predict(Float32Array.from(LOCAL_SUCCESS_TASK.features.numeric!(turn(1.4, 3)))).scores[1]).toBeLessThan(0.5);
   });
 });
+
+// ── run.check-scheduler (a host row) ─────────────────────────────────────────
+
+describe("run.check-scheduler (PRD 41 D9.1)", () => {
+  test("a host row: a valid id, not built in, and registers beside the catalog", async () => {
+    const { CHECK_SCHEDULER_TASK, CHECK_SCHEDULER_MODEL_CARD, ML_TASK_ID_RE } = await import("../src/ml/index.js");
+    expect(CHECK_SCHEDULER_TASK.id).toBe("run.check-scheduler");
+    expect(ML_TASK_ID_RE.test(CHECK_SCHEDULER_TASK.id)).toBe(true);
+    expect(CHECK_SCHEDULER_MODEL_CARD).toMatchObject({ taskId: "run.check-scheduler", modelVersion: "beta-cell.1", minObservations: 20, explorationShare: 0.1 });
+    expect(CHECK_SCHEDULER_MODEL_CARD.knownLimits.some((l) => l.includes("risk ?? 0.5"))).toBe(true);
+    expect(BUILTIN_ML_TASKS.some((t) => t.id === CHECK_SCHEDULER_TASK.id)).toBe(false);
+    const r = createMlRegistry();
+    r.register(CHECK_SCHEDULER_TASK);
+    expect(r.list().map((t) => t.id)).toContain("run.check-scheduler");
+  });
+
+  test("features: fixed scales, index-aligned with their names", async () => {
+    const { CHECK_SCHEDULER_FEATURES, checkSchedulerFeatures } = await import("../src/ml/index.js");
+    const x = checkSchedulerFeatures({
+      check: "mutation", dimensionsTouched: ["quality", "ilities.reliability"], blastRadiusBand: "high", changedFiles: 0,
+    });
+    expect(x).toHaveLength(CHECK_SCHEDULER_FEATURES.length);
+    expect(x).toEqual([0, 0, 1, 0, 0, 1, 1, 0, 1, 0.5, 0]);
+    expect(CHECK_SCHEDULER_FEATURES).not.toContain("remainingBudget");
+  });
+
+  test("trains on decisive outcomes and predicts", async () => {
+    const { CHECK_SCHEDULER_TASK } = await import("../src/ml/index.js");
+    expect(CHECK_SCHEDULER_TASK.train?.minSamples).toBe(2000); // the pooled gate
+    const ex = Array.from({ length: 2000 }, (_, i) => ({
+      input: { check: "benchmark" as const, dimensionsTouched: i % 2 ? ["performance"] : ["security"], blastRadiusBand: "low" as const, changedFiles: 3 },
+      label: i % 2,
+    }));
+    const models = new InMemoryMlModels();
+    const r = (await trainMlTask(CHECK_SCHEDULER_TASK, ex, { models }))!;
+    expect(engineKey(r.engine)).toBe("local:classical:logistic");
+    const reg = createMlRegistry();
+    reg.register(CHECK_SCHEDULER_TASK);
+    const ctx = { registry: reg, mode: "local-only" as const, models };
+    const perf = await runMlTask<{ decisive: boolean; probability: number }>("run.check-scheduler", ex[1]!.input, ctx);
+    const sec = await runMlTask<{ decisive: boolean; probability: number }>("run.check-scheduler", ex[0]!.input, ctx);
+    expect(perf.output.probability).toBeGreaterThan(sec.output.probability);
+  });
+});

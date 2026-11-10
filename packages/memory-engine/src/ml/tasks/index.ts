@@ -28,3 +28,5 @@ export function createMlRegistry(): MlTaskRegistry {
 export * from "./experience.js";
 export * from "./run_anomaly.js";
 export * from "./local_success.js";
+/** A host row (not built in): `run.check-scheduler`, PRD 41 D9.1. */
+export * from "./check_scheduler.js";

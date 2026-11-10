@@ -1,5 +1,9 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.78
+
+- Depends on `@seanhogg/builderforce-memory-engine` 2026.10.64, which adds the `run.check-scheduler` ml task row and its model card (PRD 41 §D9.1). No API change in this package.
+
 ## 2026.10.77
 
 ### Added — FactStorePort: persist and restore the fact graph (`./knowledge`, PRD 41 §B4, §B8.6)
