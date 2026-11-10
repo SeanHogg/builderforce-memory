@@ -10,6 +10,7 @@
 import type { EdgeVerdict, KEdge, KNode, KnowledgeGraph, NodeRef } from './model.js';
 import { areaImportance, byImportanceAssetsLast } from './importance.js';
 import { aboutTargets, compareStr, FALLBACK_PACK_ID, pathOfRef, srcRef } from './refs.js';
+import { isSymbolEdgeKind } from './symbolEdges.js';
 
 /** Hard cap on nodes, however many the keep rules ask for. */
 export const TRUNCATION_HARD_CAP = 2000;
@@ -33,7 +34,8 @@ export function truncateGraph(g: KnowledgeGraph, opts: TruncateOptions): { nodes
         if (!s) neighbours.set(a, (s = new Set()));
         s.add(b);
     };
-    for (const e of g.edges) { link(e.from, e.to); link(e.to, e.from); }
+    // A symbol-level edge restates its file's import (the code pack's rollup): it never earns a neighbour a slot.
+    for (const e of g.edges) { if (isSymbolEdgeKind(e.kind)) continue; link(e.from, e.to); link(e.to, e.from); }
 
     const kept: NodeRef[] = [];
     const keptSet = new Set<NodeRef>();

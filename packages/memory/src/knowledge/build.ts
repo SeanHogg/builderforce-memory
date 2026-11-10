@@ -27,6 +27,7 @@ import { pageRank } from './importance.js';
 import { applyCommunities } from './communities.js';
 import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
+import { isSymbolEdgeKind } from './symbolEdges.js';
 import {
     basenameOf, canonicalJson, compareStr, factRef, FALLBACK_PACK_ID, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
 } from './refs.js';
@@ -199,7 +200,9 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
     const systems = [...(input.systems ?? [])].sort((a, b) => compareStr(a.path, b.path));
     placeNodes(rootId, g, registries, systems);
 
-    const rank = pageRank([...g.nodes.keys()], [...g.edges.values()]);
+    // The symbol-level kinds restate a dependency the file's `references` already carry (the code pack's rollup):
+    // they draw the class/method bands and never re-weigh importance.
+    const rank = pageRank([...g.nodes.keys()], [...g.edges.values()].filter((e) => !isSymbolEdgeKind(e.kind)));
     for (const n of g.nodes.values()) n.importance = rank.get(n.ref) ?? 0;
     const { modularity, method: communityMethod } = applyCommunities(g.nodes.values(), g.edges.values());
 
@@ -300,7 +303,8 @@ function placeNodes(rootId: string, g: GraphBuilder, registries: Map<string, Par
     for (const e of g.edges.values()) {
         const from = g.nodes.get(e.from), to = g.nodes.get(e.to);
         const reg = from && registries.get(from.pack);
-        if (!from || !to || !reg || from.pack !== to.pack) continue;
+        // A symbol-level edge restates its file's import: the layer verdict (and its finding) is the import's alone.
+        if (!from || !to || !reg || from.pack !== to.pack || isSymbolEdgeKind(e.kind)) continue;
         // Layers are a system's own: a reference into another system is neither upward nor skipping.
         if (crossesSystems(systemOfRef.get(from.ref) ?? from, systemOfRef.get(to.ref) ?? to)) continue;
         const verdict = verdictOf(from.partition, to.partition, reg);
@@ -333,5 +337,6 @@ export function finalEdge(e: KEdge): KEdge {
         ...(e.verdict ? { verdict: e.verdict } : {}),
         ...(e.cycle ? { cycle: true } : {}),
         ...(e.stale ? { stale: true } : {}),
+        ...(e.sites?.length ? { sites: e.sites } : {}),
     };
 }

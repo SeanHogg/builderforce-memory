@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2026.10.69
+
+### Added — symbol-level edges (`./knowledge`, `./knowledge/pack`, PRD 43 P0b)
+
+- **Edge kinds `extends`, `implements`, `composes`, `uses`, `calls`** (`SYMBOL_EDGE_KINDS`, `isSymbolEdgeKind`, type `SymbolEdgeKind`): what a code pack says between two symbols. A target outside the root is a `src:` ref that `buildGraph` closes as a `missing` placeholder, as an unresolved import is.
+- **`KEdge.sites?: CallSite[]`** (`{ path, line, column, order }`): a `calls` edge carries every call of its callee in the caller's body; `order` is the call's position among ALL the caller's calls, so a sequence shows the real call order. One deduped edge per (from, to, kind) — a repeated call is another site.
+- **`dedupeSymbolEdges(edges, { maxPerSymbol, maxSites })`**, `MAX_SYMBOL_EDGES_PER_SYMBOL` (64), `MAX_CALL_SITES_PER_EDGE` (16), `compareCallSites`: the one dedupe/cap an extractor runs.
+- **BFKP: a new `SITE` section (tag 13)** carries call sites; EXTR is unchanged. **Compatible both ways:** the five kinds are KNOWN to the reader as codes 12–16 but WRITTEN as strings (`WRITTEN_EDGE_KINDS` = the 11 legacy codes) until no older reader remains, and an older reader skips the unknown SITE tag (it decodes every edge without its sites). A pack written before this release decodes to the same pack and re-encodes to the same bytes.
+
 ## 2026.10.68
 
 ### Added — finding identity v2, lineage and comparability (`./knowledge`, PRD 41 §C3/§C9)

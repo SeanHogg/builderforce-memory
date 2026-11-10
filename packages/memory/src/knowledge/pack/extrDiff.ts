@@ -65,12 +65,15 @@ const nodeId = (n: KNode): string => n.ref;
  */
 const stamped = (n: KNode, entryHash: string): KNode => (n.sourceHash === entryHash ? { ...n, sourceHash: '\u0000entry' } : n);
 const edgeId = (e: KEdge): string => `${e.from}\u0000${e.to}\u0000${e.kind}`;
+/** An edge with an empty `sites` list is the same edge as one without (the wire never carries an empty list). */
+const withoutEmptySites = (e: KEdge): KEdge => (e.sites && e.sites.length === 0 ? (({ sites: _, ...rest }) => rest)(e) : e);
+const sameEdge = (p: KEdge, n: KEdge): boolean => deepEqual(withoutEmptySites(p), withoutEmptySites(n));
 const keyId = (k: { ref: string; key: string }): string => `${k.ref}\u0000${k.key}`;
 
 export function diffEntry(prior: Extracted, next: Extracted): ExtrEntryDiff | undefined {
     if (prior.sourceRef !== next.sourceRef) return undefined;
     const nodes = diffList(prior.nodes, next.nodes, nodeId, (p, n) => deepEqual(stamped(p, prior.sourceHash), stamped(n, next.sourceHash)));
-    const edges = diffList(prior.edges, next.edges, edgeId);
+    const edges = diffList(prior.edges, next.edges, edgeId, sameEdge);
     const keys = diffList(prior.keys, next.keys, keyId);
     if (!nodes || !edges || !keys) return undefined;
     return {

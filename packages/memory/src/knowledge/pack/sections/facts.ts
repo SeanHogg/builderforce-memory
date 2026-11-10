@@ -5,7 +5,7 @@
 
 import type { NodeRef, StoredFact, StoredRelation } from '../types.js';
 import { assertConsumed, assertFlagsKnown, boundedCount, ByteReader, ByteWriter } from '../varint.js';
-import { EDGE_KINDS, STORED_ORIGINS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
+import { EDGE_KINDS, STORED_ORIGINS, WRITTEN_EDGE_KINDS, readEnum, readWord, writeEnum, writeWord, type SectionCodec } from './columns.js';
 import { TAG } from './rows.js';
 
 const F_UPDATED = 1, F_BY_NULL = 2, F_BY = 4;
@@ -88,7 +88,7 @@ export const relationSection: SectionCodec = {
         let prev = 0;
         for (const x of rows) { const i = t.str(x.from); w.varint(i - prev); prev = i; }
         for (const x of rows) w.varint(t.str(x.to));
-        for (const x of rows) writeWord(w, t, EDGE_KINDS, x.kind);
+        for (const x of rows) writeWord(w, t, WRITTEN_EDGE_KINDS, x.kind);
         for (const x of rows) w.num(x.weight);
         for (const x of rows) writeEnum(w, STORED_ORIGINS, x.origin);
         const flags = rows.map((x) => (x.confidence !== undefined ? R_CONF : 0) | (x.sourceHash !== undefined ? R_HASH : 0)

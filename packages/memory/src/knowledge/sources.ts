@@ -21,7 +21,8 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
  * re-extraction (judged sections with unchanged text are re-anchored, not judged again; see
  * owedFiles.ts for how an unfinished one is carried to the next review).
  */
-export const EXTRACTOR_VERSION = 4;
+// 5 (2026-11-10, PRD 43 P0b): the code pack's file nodes carry the file→file rollup of the symbol-level edge kinds.
+export const EXTRACTOR_VERSION = 5;
 /**
  * Always ignored: VCS internals, installed dependencies, builderforce config, and lockfiles (`yarn.lock`, `Cargo.lock` …): generated,
  * huge, and plain text — extracted they would cost judgement calls for nothing; they were never stored (once skipped as binary).

@@ -9,7 +9,8 @@
  * NORMALISATION (lossless for every value the model produces, documented where it is not): rows are sorted and
  * empty parts dropped; object keys of badges and of the analysis document are written in sorted order; a
  * negative zero is written as zero; a string holding a lone UTF-16 surrogate is written with U+FFFD in its place
- * (UTF-8 cannot carry it). Equal normalised input gives equal bytes.
+ * (UTF-8 cannot carry it); an edge's empty `sites` list is not written (the SITE section carries non-empty ones only).
+ * Equal normalised input gives equal bytes.
  */
 
 import { deflateRaw } from './deflate.js';

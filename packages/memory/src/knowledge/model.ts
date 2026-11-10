@@ -52,7 +52,8 @@ export interface KEdge {
     from: NodeRef;
     to: NodeRef;
     /** 'references' | 'links' | 'contains' | 'mentions' | 'duplicate' | 'near-duplicate'
-     *  | 'contradicts' | 'agrees' | 'supersedes' | 'about' | 'co-changed' — a new kind is a value. */
+     *  | 'contradicts' | 'agrees' | 'supersedes' | 'about' | 'co-changed', and the symbol-level
+     *  'extends' | 'implements' | 'composes' | 'uses' | 'calls' (`SYMBOL_EDGE_KINDS`) — a new kind is a value. */
     kind: string;
     weight: number;
     origin: Origin;
@@ -67,6 +68,22 @@ export interface KEdge {
      * target) — so the cached extract never depends on which other files exist. Never emitted.
      */
     byName?: string;
+    /**
+     * `calls` edges: every call of `to` in the body of `from`, in source order (`order`). One deduped edge per
+     * (from, to, kind) — a repeated call is another site, never another edge. Absent elsewhere; never empty.
+     */
+    sites?: CallSite[];
+}
+
+/**
+ * Where a call is written: the root-relative `path`, 1-based `line` and `column`, and `order` — the call's position
+ * among ALL calls in the caller's body (0-based, source order), so a sequence shows the real call order.
+ */
+export interface CallSite {
+    path: string;
+    line: number;
+    column: number;
+    order: number;
 }
 
 /** Output of a pack's deterministic extractor (or analyzer) for one source. Never stored. */

@@ -1,0 +1,345 @@
+{
+  "//": "Generated with @seanhogg/builderforce-memory@2026.10.68 (aliased memory-prev) by the P0b compat script; never edit by hand.",
+  "prevVersion": "2026.10.68",
+  "prevPackHex": "42464b50010001720300000000000000000000000000000000000000000000000000000000000000000145080004612e7473000563616c6c7301036f6465000c666163743a636c61696d3a3100087372632f612e74730404622e7473030c3a723a3a7372632f612e74730b04622e747302430200aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb030702040100017850042b0100000106000104010c01040281897a00800200030c0000070707010b0001040404000000000000010c0006070106030a0400007cdb87bb",
+  "prevPackDecodedByPrev": {
+    "rootId": "r",
+    "baseGeneration": 3,
+    "targetDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "files": [
+      {
+        "path": "src/a.ts",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 120
+      },
+      {
+        "path": "src/b.ts",
+        "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bytes": 80
+      }
+    ],
+    "extracted": [
+      {
+        "kind": "full",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "entries": [
+          {
+            "sourceRef": "src:r::src/a.ts",
+            "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extractorVersion": 4,
+            "nodes": [
+              {
+                "ref": "src:r::src/a.ts",
+                "kind": "file",
+                "label": "src/a.ts",
+                "pack": "code",
+                "importance": 0.5,
+                "origin": "extracted",
+                "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "edges": [
+              {
+                "from": "src:r::src/a.ts",
+                "to": "src:r::src/b.ts",
+                "kind": "references",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts",
+                "to": "src:r::src/b.ts",
+                "kind": "co-changed",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts",
+                "to": "src:r::src/b.ts",
+                "kind": "calls",
+                "weight": 1,
+                "origin": "extracted"
+              }
+            ],
+            "keys": [
+              {
+                "ref": "src:r::src/a.ts",
+                "key": "a.ts"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "relations": [
+      {
+        "from": "src:r::src/a.ts",
+        "to": "fact:claim:1",
+        "kind": "about",
+        "weight": 1,
+        "origin": "model"
+      }
+    ]
+  },
+  "newPack": {
+    "rootId": "r",
+    "baseGeneration": 4,
+    "targetDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "extracted": [
+      {
+        "kind": "full",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "entries": [
+          {
+            "sourceRef": "src:r::src/a.ts",
+            "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extractorVersion": 5,
+            "nodes": [
+              {
+                "ref": "src:r::src/a.ts",
+                "kind": "file",
+                "label": "src/a.ts",
+                "pack": "code",
+                "importance": 0.5,
+                "origin": "extracted",
+                "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "edges": [
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#B@1",
+                "kind": "extends",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#I@9",
+                "kind": "implements",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#B@1",
+                "kind": "composes",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A.run@3",
+                "to": "src:r::src/b.ts#Row@20",
+                "kind": "uses",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A.run@3",
+                "to": "src:r::src/b.ts#B.get@2",
+                "kind": "calls",
+                "weight": 1,
+                "origin": "extracted",
+                "sites": [
+                  {
+                    "path": "src/a.ts",
+                    "line": 4,
+                    "column": 5,
+                    "order": 0
+                  }
+                ]
+              }
+            ],
+            "keys": []
+          }
+        ]
+      },
+      {
+        "kind": "diff",
+        "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prior": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "entries": [
+          {
+            "sourceRef": "src:r::src/a.ts",
+            "sourceHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extractorVersion": 5,
+            "nodes": {
+              "remove": [
+                "src:r::src/a.ts"
+              ],
+              "add": [
+                {
+                  "at": 0,
+                  "item": {
+                    "ref": "src:r::src/a.ts",
+                    "kind": "file",
+                    "label": "src/a.ts",
+                    "pack": "code",
+                    "importance": 0.5,
+                    "origin": "extracted",
+                    "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                }
+              ]
+            },
+            "edges": {
+              "remove": [
+                "src:r::src/a.ts#A.run@3\u0000src:r::src/b.ts#B.get@2\u0000calls"
+              ],
+              "add": [
+                {
+                  "at": 4,
+                  "item": {
+                    "from": "src:r::src/a.ts#A.run@3",
+                    "to": "src:r::src/b.ts#B.get@2",
+                    "kind": "calls",
+                    "weight": 1,
+                    "origin": "extracted",
+                    "sites": [
+                      {
+                        "path": "src/a.ts",
+                        "line": 4,
+                        "column": 5,
+                        "order": 0
+                      },
+                      {
+                        "path": "src/a.ts",
+                        "line": 6,
+                        "column": 9,
+                        "order": 2
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "keys": {
+              "remove": [],
+              "add": []
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "newPackHex": "42464b50010001720400000000000000000000000000000000000000000000000000000000000000000195010f000563616c6c7301036f646502066d706f7365730007657874656e6473000a696d706c656d656e747300087372632f612e7473030c3a723a3a7372632f612e74730f0823412e72756e4033171e007372633a723a3a7372632f622e747323422e67657440320063616c6c73110240310b0c622e747323422e67657440321102403110034940391006526f7740323000047573657302430200aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb04600200000106000105010c01050181897a008002000512000003000b0c0b0d0a000300040002000e000004040404040000000000000000000000010100010601010501060100010c01050181897a0080020001080104010e0a00000400000000000d150200000401050405000100000205040500050609025ab5ca20",
+  "newPackDecodedByPrev": {
+    "rootId": "r",
+    "baseGeneration": 4,
+    "targetDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "extracted": [
+      {
+        "kind": "full",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "entries": [
+          {
+            "sourceRef": "src:r::src/a.ts",
+            "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extractorVersion": 5,
+            "nodes": [
+              {
+                "ref": "src:r::src/a.ts",
+                "kind": "file",
+                "label": "src/a.ts",
+                "pack": "code",
+                "importance": 0.5,
+                "origin": "extracted",
+                "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "edges": [
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#B@1",
+                "kind": "extends",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#I@9",
+                "kind": "implements",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A@1",
+                "to": "src:r::src/b.ts#B@1",
+                "kind": "composes",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A.run@3",
+                "to": "src:r::src/b.ts#Row@20",
+                "kind": "uses",
+                "weight": 1,
+                "origin": "extracted"
+              },
+              {
+                "from": "src:r::src/a.ts#A.run@3",
+                "to": "src:r::src/b.ts#B.get@2",
+                "kind": "calls",
+                "weight": 1,
+                "origin": "extracted"
+              }
+            ],
+            "keys": []
+          }
+        ]
+      },
+      {
+        "kind": "diff",
+        "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prior": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "entries": [
+          {
+            "sourceRef": "src:r::src/a.ts",
+            "sourceHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "extractorVersion": 5,
+            "nodes": {
+              "remove": [
+                "src:r::src/a.ts"
+              ],
+              "add": [
+                {
+                  "at": 0,
+                  "item": {
+                    "ref": "src:r::src/a.ts",
+                    "kind": "file",
+                    "label": "src/a.ts",
+                    "pack": "code",
+                    "importance": 0.5,
+                    "origin": "extracted",
+                    "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                }
+              ]
+            },
+            "edges": {
+              "remove": [
+                "src:r::src/a.ts#A.run@3\u0000src:r::src/b.ts#B.get@2\u0000calls"
+              ],
+              "add": [
+                {
+                  "at": 4,
+                  "item": {
+                    "from": "src:r::src/a.ts#A.run@3",
+                    "to": "src:r::src/b.ts#B.get@2",
+                    "kind": "calls",
+                    "weight": 1,
+                    "origin": "extracted"
+                  }
+                }
+              ]
+            },
+            "keys": {
+              "remove": [],
+              "add": []
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,7 +7,7 @@
 import type { KEdge, KNode, NodeRef } from '../types.js';
 import type { ReadTables, Tables } from '../strings.js';
 import { assertFlagsKnown, boundedCount, ByteReader, ByteWriter, PackFormatError, type Budget } from '../varint.js';
-import { EDGE_KINDS, NODE_KINDS, ORIGINS, VERDICTS, readEnum, readWord, unzigzag, writeEnum, writeWord, zigzag } from './columns.js';
+import { EDGE_KINDS, NODE_KINDS, ORIGINS, VERDICTS, WRITTEN_EDGE_KINDS, readEnum, readWord, unzigzag, writeEnum, writeWord, zigzag } from './columns.js';
 
 const N_PARTITION = 1, N_AREA = 2, N_STALE = 4, N_STALE_V = 8, N_BADGES = 16, N_SYSTEM = 32, N_APP = 64, N_COPY = 128, N_HASH = 256;
 const N_KNOWN = 0x1ff;
@@ -92,7 +92,7 @@ export function writeEdges(w: ByteWriter, t: Tables, edges: readonly KEdge[]): v
     let prev = 0;
     for (const e of edges) { const i = t.str(e.from); w.varint(zigzag(i - prev)); prev = i; }
     for (const e of edges) w.varint(t.str(e.to));
-    for (const e of edges) writeWord(w, t, EDGE_KINDS, e.kind);
+    for (const e of edges) writeWord(w, t, WRITTEN_EDGE_KINDS, e.kind);
     for (const e of edges) w.num(e.weight);
     for (const e of edges) writeEnum(w, ORIGINS, e.origin);
     const flags = edges.map((e) =>

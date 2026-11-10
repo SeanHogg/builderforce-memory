@@ -18,8 +18,9 @@ import type {
     DirectorySource, Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
     OutlineFile, OutlineCommunity, NodePlacement, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
     StoredFact, StoredRelation, ExtractedLogPersistence, KnowledgeSnapshot, LocalSnapshotStoreOptions, SnapshotPersistence,
-    RowChange, RowPersistence,
+    RowChange, RowPersistence, CallSite, SymbolEdgeKind,
 } from '../knowledge/index.js';
+import type { dedupeSymbolEdges } from '../knowledge/index.js';
 import type { PlannedFile } from '../knowledge/index.js';
 import type {
     AnalysisIssue, AnchorKind, CodeAnalysisSnapshot, ComparabilityMeta, Finding, FindingIdentity, LineageEntry,
@@ -258,6 +259,15 @@ export type OutlineCommunity_fields = Expect<Equal<OutlineCommunity, { id: numbe
 export type NodePlacement_shape = Expect<Equal<NodePlacement, { kind: 'partition'; id: string } | { kind: 'community'; id: number }>>;
 export type placementOf_signature = Expect<Equal<ReturnType<typeof placementOf>, NodePlacement | undefined>>;
 export type KEdge_verdict = Expect<Equal<KEdge['verdict'], 'allowed' | 'same' | 'skips' | 'upward' | undefined>>;
+
+/* ── Symbol-level edges (PRD 43 P0b): `calls` edges carry their call sites ─────────────────────────────────── */
+export type KEdge_sites = Expect<Equal<KEdge['sites'], CallSite[] | undefined>>;
+export type KEdge_sites_is_optional = Expect<Equal<IsOptional<KEdge, 'sites'>, true>>;
+export type CallSite_shape = Expect<Equal<CallSite, { path: string; line: number; column: number; order: number }>>;
+export type SymbolEdgeKind_values = Expect<Equal<SymbolEdgeKind, 'extends' | 'implements' | 'composes' | 'uses' | 'calls'>>;
+export type dedupeSymbolEdges_signature = Expect<Equal<
+    typeof dedupeSymbolEdges, (edges: readonly KEdge[], opts?: { maxPerSymbol?: number; maxSites?: number }) => KEdge[]
+>>;
 
 /* ── Finding identity v2, lineage, comparability (PRD 41 §C3/§C9) ─────────────────────────────────────────── */
 export type AnchorKind_values = Expect<Equal<AnchorKind, 'symbol' | 'route' | 'package' | 'file' | 'group'>>;

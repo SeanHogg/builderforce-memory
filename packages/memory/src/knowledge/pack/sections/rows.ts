@@ -11,7 +11,7 @@ import type { Pack } from '../types.js';
 import type { SectionCodec } from './columns.js';
 import { MANIFEST_BUCKETS } from '../manifest.js';
 
-export const TAG = { STR: 1, HASH: 2, FILE: 3, EXTR: 4, FACT: 5, REL: 6, STALE: 7, DEL: 8, SCOPE: 9, ANALYSIS: 10, LEAF: 11, BKT: 12 } as const;
+export const TAG = { STR: 1, HASH: 2, FILE: 3, EXTR: 4, FACT: 5, REL: 6, STALE: 7, DEL: 8, SCOPE: 9, ANALYSIS: 10, LEAF: 11, BKT: 12, SITE: 13 } as const;
 
 export const fileSection: SectionCodec = {
     tag: TAG.FILE,

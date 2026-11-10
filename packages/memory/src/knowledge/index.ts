@@ -12,8 +12,12 @@ export type {
     JudgementPort, AnalyzerPort, AnalyzerProgress, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
     ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile, OutlineCommunity,
-    GraphSystem, GraphApp, GraphReadSkip,
+    GraphSystem, GraphApp, GraphReadSkip, CallSite,
 } from './model.js';
+export {
+    SYMBOL_EDGE_KINDS, MAX_SYMBOL_EDGES_PER_SYMBOL, MAX_CALL_SITES_PER_EDGE, isSymbolEdgeKind, compareCallSites, dedupeSymbolEdges,
+    type SymbolEdgeKind,
+} from './symbolEdges.js';
 export {
     buildOutline, outlineOf, outlineRef, OUTLINE_MAX_FILES, OUTLINE_MAX_LINKS, OUTLINE_BADGE_KEYS, OUTLINE_VERDICTS, OUTLINE_FLAG_CYCLE,
 } from './outline.js';
