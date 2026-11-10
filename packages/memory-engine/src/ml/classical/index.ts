@@ -28,8 +28,18 @@ export { RobustZModel, fitRobustZ, anomalyConfidence, minScaleAt } from "./robus
 export type { RobustZOptions, MinScale } from "./robust_z.js";
 export { EwmaModel, fitEwma } from "./ewma.js";
 export type { EwmaOptions } from "./ewma.js";
-export { AnomalyCompositeModel, fitAnomalyComposite } from "./anomaly_composite.js";
-export type { AnomalyCompositeOptions } from "./anomaly_composite.js";
+export {
+  AnomalyCompositeModel,
+  fitAnomalyComposite,
+  fitMahalanobis,
+  leaveOneOutMahalanobisThreshold,
+  MAHALANOBIS_MIN_SAMPLES,
+  mahalanobisMinSamples,
+  MahalanobisDetector,
+} from "./anomaly_composite.js";
+export type { AnomalyCompositeOptions, MahalanobisOptions } from "./anomaly_composite.js";
+export { choleskyInverse, ledoitWolfCovariance } from "./covariance.js";
+export type { CovarianceResult } from "./covariance.js";
 export { IsolationForestModel, fitIsolationForest } from "./isolation_forest.js";
 export type { IsolationForestOptions } from "./isolation_forest.js";
 export { GbmModel, fitGbm } from "./gbm.js";

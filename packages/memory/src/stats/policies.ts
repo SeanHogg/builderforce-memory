@@ -5,7 +5,7 @@
  * source of randomness.
  */
 
-import { type Rng } from "./prng.js";
+import { normalDraw, type Rng } from "./prng.js";
 
 export interface BetaArm {
     alpha: number;
@@ -28,35 +28,15 @@ function gammaDraw(shape: number, rng: Rng): number {
     const d = shape - 1 / 3;
     const c = 1 / Math.sqrt(9 * d);
     for (;;) {
-        const z = normalZ(rng);
+        // The module's ONE normal (prng.ts), stateless: a spare cached across calls would
+        // leak one caller's draw into the next, and the same seed would not give the same pick.
+        const z = normalDraw(rng);
         const v = Math.pow(1 + c * z, 3);
         if (v <= 0) continue;
         const u = rng();
         if (Math.log(u) < 0.5 * z * z + d - d * v + d * Math.log(v)) return d * v;
     }
 }
-
-/** Standard-normal draw via the polar form of Box–Muller (caches its spare). */
-function makeNormalZ() {
-    let spare: number | null = null;
-    return (rng: Rng): number => {
-        if (spare !== null) {
-            const z = spare;
-            spare = null;
-            return z;
-        }
-        let u: number, v: number, s: number;
-        do {
-            u = rng() * 2 - 1;
-            v = rng() * 2 - 1;
-            s = u * u + v * v;
-        } while (s >= 1 || s === 0);
-        const mul = Math.sqrt((-2 * Math.log(s)) / s);
-        spare = v * mul;
-        return u * mul;
-    };
-}
-const normalZ = makeNormalZ();
 
 /**
  * Sample one arm index by Thompson sampling: draw θᵢ ~ Beta(αᵢ, βᵢ) per arm and

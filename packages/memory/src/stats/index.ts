@@ -2,14 +2,21 @@
  * The stats module (PRD 41 Part D / D13): the ONE home for the predicted-measure
  * maths. Pure and deterministic — seeded PRNG, fixed iteration caps, quantized
  * outputs. It holds only what the memory-engine `ml/classical` catalog lacks and
- * imports (never re-implements) those primitives; EWMA and the classical models
- * stay in `ml/classical`.
+ * imports (never re-implements) those primitives; EWMA, Ledoit–Wolf and the
+ * classical models stay in `ml/classical` (Ledoit–Wolf is re-exported here).
+ *
+ * One deliberate exception: the BINARY logistic head (`logistic.ts` — `sigmoid`,
+ * `logisticProbability`, `onlineLogisticStep`) is float64 and engine-free, not the
+ * engine's softmax `LogisticModel` (Float32 weights, batch fits). Device code scores a
+ * stored head and folds in one outcome at a time; batch fitting (gradient descent or
+ * IRLS) stays in the engine.
  */
 
 export { createRng, normalDraw } from "./prng.js";
 export type { Rng } from "./prng.js";
 
 export {
+    betaMoments,
     betaPosterior,
     gammaQuantile,
     garwoodPoissonInterval,
@@ -19,8 +26,11 @@ export {
     rateInterval,
     regularizedIncompleteBeta,
     regularizedIncompleteGamma,
+    wilsonInterval,
 } from "./distributions.js";
 export type { BetaPosterior } from "./distributions.js";
+
+export { logisticProbability, onlineLogisticStep, sigmoid } from "./logistic.js";
 
 export { fitBayesianLogistic, fitIsotonic, fitPlattScaling } from "./fitting.js";
 export type { BayesianLogisticOptions, IsotonicFit } from "./fitting.js";

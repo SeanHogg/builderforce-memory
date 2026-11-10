@@ -49,7 +49,26 @@ export {
 export type { LanedTrace, TraceOptions } from './trace.js';
 export {
     computeFindings, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
+    GENERIC_FINDING_RULES, KNOWLEDGE_FINDING_RULES,
 } from './findings.js';
+// PRD 41 §B1/§B3/§B5: FileFacts v3, the composite extractor version, FactRule + the incremental evaluator, the fact graph.
+export {
+    FACT_KINDS, FACT_KIND_FIELDS, MATCHER_STRENGTH_ORDER, canonicalFileFacts, factKindHashes, factsHash, readFileFacts, isFileFactsV3, projectFileFacts,
+} from './facts/fileFacts.js';
+export type {
+    FactKind, FileFacts, SymbolFact, ImportFact, ExportFact, CallFact, ComplexityFact, EntryPointKind, EntryPointFact, CapabilityKind,
+    CapabilityImportFact, MatcherStrength, MatcherUse, TestModifier, TestCaseFact, TestFacts,
+} from './facts/fileFacts.js';
+export { FACTS_EXTRACTOR_VERSION, factsExtractorTag, isFactsCurrent, extractorStampMeta } from './facts/extractorVersion.js';
+export type { ExtractorFamily, ExtractorStamp } from './facts/extractorVersion.js';
+export { defineRule, DEFAULT_RULE_HOPS, MAX_RULE_HOPS } from './rules/factRule.js';
+export type { FactRule, RuleInput, RuleScope } from './rules/factRule.js';
+export { evaluateRules, importNeighbours, derivedRowKey } from './rules/evaluateRules.js';
+export type { RuleWorld, DerivedRow, DerivedRows, RuleTraceEntry, RuleEvaluation } from './rules/evaluateRules.js';
+export { emptyFactGraph, updateFactGraph, buildFactGraph, factGraphDump, FACT_GRAPH_DUMP_VERSION } from './rules/factGraph.js';
+export type { FactGraph, FactManifestEntry, FactChange, FactGraphOptions, FactGraphUpdate } from './rules/factGraph.js';
+export { knowledgeFacts, knowledgeInputHash, runKnowledgeRules, packOfRef, KNOWLEDGE_INPUT } from './rules/knowledgeInput.js';
+export type { KnowledgeFacts, KnowledgeRuleExtra, KnowledgeRule } from './rules/knowledgeInput.js';
 export { refAnchor, type FindingAnchor } from './findingBuilder.js';
 export {
     identityOf, defaultAnchorOf, composeAnchor, anchorWithSnippet, anchorKindOfRef, kindOfAnchor, normalizeSnippet, DEFAULT_RULE_VERSION,

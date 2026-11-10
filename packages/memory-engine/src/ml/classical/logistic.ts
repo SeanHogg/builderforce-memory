@@ -1,14 +1,18 @@
 /**
  * ml/classical/logistic.ts — (multinomial) logistic regression.
  *
- * Softmax regression with L2, fitted by full-batch gradient descent; two classes
- * is ordinary logistic regression. No internal feature scaling: a task supplies
- * features on a stable scale, so a weight means the same thing on every machine —
- * which is what lets trained weights FEDERATE (`exportParams` / `importParams`).
+ * Softmax regression with L2, sample weights and class weights, fitted by full-batch
+ * gradient descent; two classes is ordinary logistic regression, and two classes may
+ * instead be fitted by IRLS (Newton–Raphson on the same penalized objective, with
+ * step-halving and a fixed iteration cap). No internal feature scaling: a task
+ * supplies features on a stable scale, so a weight means the same thing on every
+ * machine — which is what lets trained weights FEDERATE (`exportParams` /
+ * `importParams`).
  */
 import { mlEvalLoss } from "../eval_loss.js";
 import type { MlPrediction, MlPredictor, MlSample } from "../types.js";
-import { classCount, featureDim, softmax, topProbability } from "./math.js";
+import { solveLinearSystem } from "./linear.js";
+import { classCount, featureDim, sigmoid, softmax, topProbability } from "./math.js";
 
 export interface LogisticOptions {
   classes?: number;
@@ -16,6 +20,24 @@ export interface LogisticOptions {
   epochs?: number;
   /** L2 penalty on weights (not biases). Default 1e-3. */
   l2?: number;
+  /**
+   * Per-class weight, index-aligned with the class label; multiplies each sample's own
+   * `weight`. A class without an entry weighs 1. Absent = every class weighs 1.
+   */
+  classWeights?: readonly number[];
+  /**
+   * `gradient-descent` (default) runs `epochs` full-batch steps. `irls` (two classes only)
+   * runs Newton–Raphson to the optimum of the same objective — mean weighted cross-entropy
+   * plus the L2 penalty — in at most `maxIterations` steps.
+   */
+  solver?: "gradient-descent" | "irls";
+  /** IRLS iteration cap. Default 50. */
+  maxIterations?: number;
+}
+
+/** A sample's effective weight: its own weight times its class's weight. */
+function effectiveWeight(s: MlSample, classWeights: readonly number[] | undefined): number {
+  return (s.weight ?? 1) * (classWeights?.[s.y] ?? 1);
 }
 
 export class LogisticModel implements MlPredictor {
@@ -57,13 +79,13 @@ export class LogisticModel implements MlPredictor {
   }
 
   /** One full-batch gradient step; returns the pre-step mean loss. */
-  step(samples: readonly MlSample[], learningRate: number, l2: number): number {
+  step(samples: readonly MlSample[], learningRate: number, l2: number, classWeights?: readonly number[]): number {
     const gW = new Float64Array(this.weights.length);
     const gB = new Float64Array(this.classes);
     let loss = 0;
     let wSum = 0;
     for (const s of samples) {
-      const w = s.weight ?? 1;
+      const w = effectiveWeight(s, classWeights);
       const p = this.proba(s.x);
       loss += -w * Math.log(Math.max(p[s.y]!, 1e-12));
       wSum += w;
@@ -117,9 +139,120 @@ export function fitLogistic(
   }
   const model = init ?? new LogisticModel(d, k);
   if (model.dim !== d || model.classes !== k) throw new Error(`fitLogistic: init is ${model.dim}×${model.classes}, data is ${d}×${k}`);
-  const lr = opts.learningRate ?? 0.5;
   const l2 = opts.l2 ?? 1e-3;
+  const badWeight = opts.classWeights?.findIndex((w) => !Number.isFinite(w) || w < 0) ?? -1;
+  if (badWeight >= 0) {
+    throw new Error(`fitLogistic: classWeights[${badWeight}] must be a finite number ≥ 0, got ${opts.classWeights![badWeight]}`);
+  }
+  if (opts.solver === "irls") {
+    if (k !== 2) throw new Error(`fitLogistic: the irls solver fits two classes, not ${k}`);
+    fitBinaryIrls(model, samples, l2, opts.classWeights, opts.maxIterations ?? 50);
+    return model;
+  }
+  const lr = opts.learningRate ?? 0.5;
   const epochs = opts.epochs ?? 300;
-  for (let e = 0; e < epochs; e++) model.step(samples, lr, l2);
+  for (let e = 0; e < epochs; e++) model.step(samples, lr, l2, opts.classWeights);
   return model;
+}
+
+/** Diagonal jitter that keeps the Newton system solvable on separable data with l2 = 0. */
+const IRLS_JITTER = 1e-9;
+/** Converged when every coordinate of the full (unhalved) Newton step is below this. */
+const IRLS_TOLERANCE = 1e-10;
+/** Step-halvings tried before an iteration gives up and the fit stops. */
+const IRLS_MAX_HALVINGS = 40;
+
+/**
+ * Binary IRLS: Newton–Raphson on `mean weighted cross-entropy + λ/2·‖w‖²` over
+ * θ = [w, b] (the bias is not penalized), each step accepted only while the objective
+ * does not rise (halved otherwise). Writes the result into `model` as a two-class
+ * softmax whose class-0 row is zero, so `P(class 1) = σ(w·x + b)` exactly. Starts from
+ * the model's current params, reduced to binary form.
+ *
+ * λ = l2 / 2: gradient descent penalizes BOTH softmax rows, and at its optimum they are
+ * w₀ = −w/2, w₁ = w/2, so `l2/2·(‖w₀‖² + ‖w₁‖²) = (l2/2)/2·‖w‖²`. With this λ both
+ * solvers minimise the same function and reach the same model.
+ */
+function fitBinaryIrls(
+  model: LogisticModel,
+  samples: readonly MlSample[],
+  softmaxL2: number,
+  classWeights: readonly number[] | undefined,
+  maxIterations: number,
+): void {
+  const l2 = softmaxL2 / 2;
+  const d = model.dim;
+  const n = d + 1;
+  const theta = new Float64Array(n);
+  for (let i = 0; i < d; i++) theta[i] = model.weights[d + i]! - model.weights[i]!;
+  theta[d] = model.bias[1]! - model.bias[0]!;
+  const omega = samples.map((s) => effectiveWeight(s, classWeights));
+  const wSum = omega.reduce((a, b) => a + b, 0);
+  const inv = wSum > 0 ? 1 / wSum : 0;
+  const eta = (t: Float64Array, x: ArrayLike<number>): number => {
+    let z = t[d]!;
+    for (let i = 0; i < d; i++) z += t[i]! * x[i]!;
+    return z;
+  };
+  const objective = (t: Float64Array): number => {
+    let loss = 0;
+    samples.forEach((s, r) => {
+      const z = eta(t, s.x);
+      // log(1 + e^z) − y·z, numerically stable.
+      const softplus = z >= 0 ? z + Math.log1p(Math.exp(-z)) : Math.log1p(Math.exp(z));
+      loss += omega[r]! * (softplus - (s.y === 1 ? z : 0));
+    });
+    let penalty = 0;
+    for (let i = 0; i < d; i++) penalty += t[i]! * t[i]!;
+    return loss * inv + (l2 / 2) * penalty;
+  };
+  let current = objective(theta);
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const g = new Float64Array(n);
+    const H = new Float64Array(n * n);
+    samples.forEach((s, r) => {
+      const p = sigmoid(eta(theta, s.x));
+      const gr = omega[r]! * (p - (s.y === 1 ? 1 : 0)) * inv;
+      const hr = omega[r]! * p * (1 - p) * inv;
+      for (let i = 0; i < n; i++) {
+        const xi = i < d ? s.x[i]! : 1;
+        g[i] = g[i]! + gr * xi;
+        for (let j = 0; j < n; j++) {
+          const xj = j < d ? s.x[j]! : 1;
+          H[i * n + j] = H[i * n + j]! + hr * xi * xj;
+        }
+      }
+    });
+    for (let i = 0; i < n; i++) {
+      if (i < d) {
+        g[i] = g[i]! + l2 * theta[i]!;
+        H[i * n + i] = H[i * n + i]! + l2;
+      }
+      H[i * n + i] = H[i * n + i]! + IRLS_JITTER;
+    }
+    const delta = solveLinearSystem(H, g, n);
+    // Converged when the FULL Newton step is negligible (a halved step can be small far from the optimum).
+    let largest = 0;
+    for (let i = 0; i < n; i++) largest = Math.max(largest, Math.abs(delta[i]!));
+    const converged = largest < IRLS_TOLERANCE;
+    let scale = 1;
+    let accepted = false;
+    for (let h = 0; h < IRLS_MAX_HALVINGS; h++) {
+      const candidate = new Float64Array(n);
+      for (let i = 0; i < n; i++) candidate[i] = theta[i]! - scale * delta[i]!;
+      const value = objective(candidate);
+      if (value <= current + 1e-15) {
+        theta.set(candidate);
+        current = value;
+        accepted = true;
+        break;
+      }
+      scale /= 2;
+    }
+    if (!accepted || converged) break;
+  }
+  model.weights.fill(0);
+  model.bias.fill(0);
+  for (let i = 0; i < d; i++) model.weights[d + i] = theta[i]!;
+  model.bias[1] = theta[d]!;
 }

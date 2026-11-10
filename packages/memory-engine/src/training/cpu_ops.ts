@@ -11,6 +11,7 @@
 /** Epsilon used by `rmsnorm_forward` in `ACTIVATIONS_WGSL`. */
 export const RMSNORM_EPS = 1e-6;
 
+/** The training kernels' sigmoid. The engine-free, tail-stable one for device scoring is memory's `./stats` `sigmoid`. */
 export function sigmoid(x: number): number {
     return 1 / (1 + Math.exp(-x));
 }

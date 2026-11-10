@@ -45,6 +45,19 @@ export function median(values: readonly number[]): number {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
 }
 
+/**
+ * The empirical `q`-quantile (0 ≤ q ≤ 1) of a numeric list, linear between order
+ * statistics (Hyndman–Fan type 7, R's default). NaN for an empty list.
+ */
+export function quantile(values: readonly number[], q: number): number {
+  if (values.length === 0) return Number.NaN;
+  const s = [...values].sort((a, b) => a - b);
+  const h = (s.length - 1) * Math.min(1, Math.max(0, q));
+  const lo = Math.floor(h);
+  const hi = Math.min(s.length - 1, lo + 1);
+  return s[lo]! + (h - lo) * (s[hi]! - s[lo]!);
+}
+
 /** Index of the largest value (first on ties). */
 export function argmax(values: ArrayLike<number>): number {
   let best = 0;

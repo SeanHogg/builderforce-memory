@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added — FileFacts v3, FactRule and the incremental evaluator (`./knowledge`, PRD 41 WS4 phase 1, §B1/§B3/§B5/§B8.6)
+
+- **`FileFacts` v3** (types for the Phase 2 tree-sitter / regex extractors): `symbols`, `imports`, `exports` (name, kind, signature hash), `entryPoints` (§C5.1, with the guard `chain` files), `calls` (callee, enclosing symbol, `awaited`, `inLoop`, count — no positions), `complexity`, `capabilityImports` (§C5.3), optional `testFacts` (§C8.2). Fact kinds `structure` / `body` / `content` (`FACT_KIND_FIELDS`), each with its own hash (`factKindHashes`); `canonicalFileFacts` sorts every array; `factsHash` is the content address; `readFileFacts` reads a v2 object as `factsVersion: 2` with empty v3 lists.
+- **Composite extractor version**: `FACTS_EXTRACTOR_VERSION = 3`; `factsExtractorTag(stamp, language?)` composes family, version.revision, the language's grammar version and the EOL rule (`tree-sitter@3.0/typescript=0.23.2/eol-lf@1`), so a grammar bump owes only that language (`isFactsCurrent`); `extractorStampMeta` feeds `comparable()` (reason `tool-version-changed:grammar:<lang>`). Separate from `EXTRACTOR_VERSION` (6, the packs' `Extracted`), which is unchanged.
+- **`FactRule`** (`defineRule`; `scope: file | neighbourhood | global`, `reads`, `hops` ≤ 2, `readsGuardChain`, `extraInputs`) and **`evaluateRules(rules, world, previous?)`**: verifying traces with early cutoff — a row reruns only when the read kind hashes in its scope (or a declared extra input's hash) moved; returns `{ rows, trace, findings }`. The trace is enforced: `derive` sees each file projected to its read kinds (`projectFileFacts`) and `extra` cut to its declared inputs. `reads: []` is allowed for a global rule reading extra inputs only (the knowledge rules). `knowledgeInputHash(k)` is the hash a host passes for the `knowledge` input (graph digest + registries + near-duplicate pairs). Canonical facts normalize their path fields, break sort ties on the whole item and are deep-frozen.
+- **Fact graph**: `emptyFactGraph`, `updateFactGraph`, `buildFactGraph`, `factGraphDump` (sorted canonical JSON of manifest, objects and derived rows). The determinism oracle (500 seeded edit sequences, CRLF on the incremental side) asserts incremental dump === scratch dump.
+- **The generic findings are one rule per file** under `knowledge/rules/` (cycle, clone-group, near-duplicate, partition-violation, duplicate-copy, unpartitioned, stale, god-module, possible-same), registered in `GENERIC_FINDING_RULES` / `KNOWLEDGE_FINDING_RULES`; `genericFindings` / `computeFindings` are the unchanged facade. `genericFindings` now emits near-duplicate findings before partition violations instead of interleaving them per edge (`computeFindings` sorts, so its output is unchanged).
+- Minor, non-breaking: new names only.
+- `Sha256.digest` zero-pads in one update instead of byte by byte (same digest, far cheaper per small hash).
+
+### Added — the D13 consolidation primitives (`./stats`, PRD 41 WS15)
+
+- **`sigmoid(z)`** (the stats module's numerically stable sigmoid; `fitting.ts` now uses it), **`logisticProbability(weights, bias, x)`** (σ(b + w·x), shape check left to the caller) and **`onlineLogisticStep(weights, bias, x, label, learningRate)`** (one SGD step on the log-loss, returns a new head). This binary head is float64 and engine-free on purpose; batch fitting stays in memory-engine's `LogisticModel`. Builderforce migrates onto these: prefetch calibration (scoring and its online update), the difficulty head's SCORING only (its training stays on the engine's injected trainer), and the pipeline router's sigmoid.
+- **`wilsonInterval(successes, n, z = 1.96)`**: the Wilson score interval; n not > 0 (or NaN), or non-finite `successes`, is `[0, 1]`; a `z` that is not a finite positive number throws `RangeError`. Builderforce's replay impact / issue-cluster and canvas proportion copies migrate onto it.
+- **`betaMoments(alpha, beta)`** (mean, variance). The learned-routing Thompson draw migrates onto it.
+- **`BetaPosterior` gains a REQUIRED `variance` field.** Additive for every reader of `betaPosterior(...)`; code that constructs a `BetaPosterior` object literal itself must now supply `variance` (none does in this repo or Builderforce).
+- **`ledoitWolfCovariance` moved to memory-engine** (`ml/classical/covariance.ts`, where the anomaly composite's Mahalanobis term fits on it) and is re-exported from `./stats` unchanged, with `CovarianceResult`. `./stats` imports it through the engine's NEW light subpath **`@seanhogg/builderforce-memory-engine/ml/classical`** (pure classical maths: no WebGPU, kernels, training loop, I/O or `node:` imports), never the engine root, so browser bundles that import `./stats` stay small. The engine is already a peer dependency of this package. A consumer of `./stats` must now have `@seanhogg/builderforce-memory-engine` installed, at a version that has the `./ml/classical` export. Regression: `src/contract/regression.statsEngineFree.test.ts` (the stats import graph reaches the engine only through that subpath, and the subpath never reaches the engine root).
+- Additive: new names, one new required field on a result type.
+
+### Fixed (`./stats`)
+
+- **Thompson sampling is deterministic under its own seed.** `thompsonSample` / `thompsonRank` drew normals from a polar Box–Muller that cached its spare at module scope, so one caller's spare leaked into the next caller's schedule and the same seed could give a different pick. They now use the module's one stateless normal (`normalDraw`). Draws differ from before for the same seed. Regression: `src/contract/regression.thompsonDeterminism.test.ts`.
+
+## 2026.10.72
+
 ### Fixed (`./knowledge`, PRD 38 P4)
 
 - **`encodeCoChange` never writes a line `decodeCoChange` would reject.** It drops an entry with an empty ref (or one holding a newline), a `together` that is not an integer ≥ 1 or exceeds `ofSelf`, or a `low` / `high` that is NaN, outside [0, 1] or with low > high. Before, one such entry voided the whole badge on read (and `coChangeHidden` with it). Encoder and decoder now share one line validator.

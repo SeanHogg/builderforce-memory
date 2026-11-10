@@ -146,12 +146,19 @@ export function inverseRegularizedIncompleteBeta(p: number, a: number, b: number
     }
 }
 
-/** Posterior Beta(α₀ + k, β₀ + n − k): mean and credible quantiles. */
+/** Posterior Beta(α₀ + k, β₀ + n − k): mean, variance and credible quantiles. */
 export interface BetaPosterior {
     alpha: number;
     beta: number;
     mean: number;
+    variance: number;
     quantile(p: number): number;
+}
+
+/** Mean α/(α+β) and variance αβ/((α+β)²(α+β+1)) of Beta(α, β). */
+export function betaMoments(alpha: number, beta: number): { mean: number; variance: number } {
+    const total = alpha + beta;
+    return { mean: alpha / total, variance: (alpha * beta) / (total * total * (total + 1)) };
 }
 
 export function betaPosterior(alpha0: number, beta0: number, k: number, n: number): BetaPosterior {
@@ -160,9 +167,29 @@ export function betaPosterior(alpha0: number, beta0: number, k: number, n: numbe
     return {
         alpha,
         beta,
-        mean: alpha / (alpha + beta),
+        ...betaMoments(alpha, beta),
         quantile: (p) => inverseRegularizedIncompleteBeta(p, alpha, beta),
     };
+}
+
+/** Two-sided 95% standard-normal critical value. */
+const Z_95 = 1.96;
+
+/**
+ * Wilson score interval of `successes / n` at critical value `z` (default 95%): stays
+ * inside [0, 1] and keeps a non-zero width at 0 or n successes, where the Wald interval
+ * collapses. `n` not > 0 (including NaN) or a non-finite `successes` is no evidence:
+ * [0, 1]. A `z` that is not a finite positive number is a caller error and throws.
+ */
+export function wilsonInterval(successes: number, n: number, z: number = Z_95): { low: number; high: number } {
+    if (!(z > 0) || !isFiniteNumber(z)) throw new RangeError(`wilsonInterval: z must be a finite positive number, got ${z}`);
+    if (!(n > 0) || !isFiniteNumber(successes)) return { low: 0, high: 1 };
+    const p = min(1, max(0, successes / n));
+    const z2 = z * z;
+    const denom = 1 + z2 / n;
+    const centre = (p + z2 / (2 * n)) / denom;
+    const half = (z * sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+    return { low: max(0, centre - half), high: min(1, centre + half) };
 }
 
 function gammaQ(a: number, x: number): number {

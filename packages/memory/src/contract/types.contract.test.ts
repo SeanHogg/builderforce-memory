@@ -34,7 +34,12 @@ import type {
     transitionsFromSequences, transitionsFromWeights, CoChangeBadgeEntry, CoChangeCommit, CoChangeOptions, CoChangePartner, CoChangeRecall,
     NodeRef, StationTransition, TransitionRow, TransitionSource, TransitionTable,
 } from '../knowledge/index.js';
-import type { rateInterval } from '../stats/index.js';
+import type { betaMoments, logisticProbability, onlineLogisticStep, rateInterval, sigmoid, wilsonInterval } from '../stats/index.js';
+import type {
+    CallFact, CapabilityImportFact, DerivedRows, EntryPointFact, EntryPointKind, ExportFact, ExtractorStamp, FactChange, FactGraph, FactGraphOptions,
+    FactGraphUpdate, FactKind, FactRule, FileFacts, RuleEvaluation, RuleScope, RuleWorld, TestCaseFact, TestFacts,
+    evaluateRules, factGraphDump, factsExtractorTag, updateFactGraph,
+} from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -298,6 +303,19 @@ export type coChangeRecallAtK_signature = Expect<Equal<
 export type applyCoChangeHidden_signature = Expect<Equal<typeof applyCoChangeHidden, (nodes: Iterable<KNode>, edges: Iterable<KEdge>) => void>>;
 // The one interval of a shown rate (PRD 41 D3), shared by co-change confidence and trace hops.
 export type rateInterval_signature = Expect<Equal<typeof rateInterval, (k: number, n: number) => { low: number; high: number }>>;
+// PRD 41 D13: the one sigmoid / logistic head, Wilson interval and Beta moments that Builderforce's copies migrate onto.
+export type sigmoid_signature = Expect<Equal<typeof sigmoid, (z: number) => number>>;
+export type logisticProbability_signature = Expect<Equal<
+    typeof logisticProbability, (weights: readonly number[], bias: number, x: readonly number[]) => number
+>>;
+export type onlineLogisticStep_signature = Expect<Equal<
+    typeof onlineLogisticStep,
+    (weights: readonly number[], bias: number, x: readonly number[], label: 0 | 1, learningRate: number) => { weights: number[]; bias: number }
+>>;
+export type wilsonInterval_signature = Expect<Equal<
+    typeof wilsonInterval, (successes: number, n: number, z?: number) => { low: number; high: number }
+>>;
+export type betaMoments_signature = Expect<Equal<typeof betaMoments, (alpha: number, beta: number) => { mean: number; variance: number }>>;
 // PRD 38 P7: station transitions (the view groups stations; memory owns the formula). Reference rows carry no interval.
 export type TransitionSource_values = Expect<Equal<TransitionSource, 'traces' | 'references'>>;
 export type StationTransition_fields = Expect<Equal<StationTransition, { to: string; p: number; k: number; n: number; low?: number; high?: number }>>;
@@ -356,6 +374,32 @@ export type CodeAnalysisSnapshot_version = Expect<Equal<CodeAnalysisSnapshot['ve
 export type CodeAnalysisSnapshot_truncated = Expect<Equal<CodeAnalysisSnapshot['truncated'], true | undefined>>;
 export type CodeAnalysisSnapshot_truncated_is_optional = Expect<Equal<IsOptional<CodeAnalysisSnapshot, 'truncated'>, true>>;
 export type isBinaryBytes_signature = Expect<Equal<typeof isBinaryBytes, (bytes: Uint8Array) => boolean>>;
+
+/* ── FileFacts v3, FactRule, the fact graph (PRD 41 §B1/§B3/§B5) ──────────────────────────────────────────── */
+// The Phase 2 extractors (agent-tools, tree-sitter) emit exactly this shape; run-delta rules read it.
+export type FactKind_values = Expect<Equal<FactKind, 'body' | 'content' | 'structure'>>;
+export type FileFacts_keys = Expect<Equal<keyof FileFacts,
+    'factsVersion' | 'extractor' | 'language' | 'contentHash' | 'symbols' | 'imports' | 'exports' | 'entryPoints'
+    | 'calls' | 'complexity' | 'capabilityImports' | 'testFacts'>>;
+export type FileFacts_testFacts_is_optional = Expect<Equal<IsOptional<FileFacts, 'testFacts'>, true>>;
+export type EntryPointFact_shape = Expect<Equal<EntryPointFact, {
+    kind: EntryPointKind; key: string; symbol: string; guards: string[]; inputs: string[]; chain: string[];
+}>>;
+export type ExportFact_keys = Expect<Equal<keyof ExportFact, 'name' | 'kind' | 'signatureHash' | 'from'>>;
+export type CallFact_keys = Expect<Equal<keyof CallFact, 'callee' | 'enclosing' | 'awaited' | 'inLoop' | 'count'>>;
+export type CapabilityImportFact_keys = Expect<Equal<keyof CapabilityImportFact, 'capability' | 'module' | 'symbol' | 'algorithm'>>;
+export type TestFacts_keys = Expect<Equal<keyof TestFacts, 'framework' | 'tests' | 'snapshotFiles'>>;
+export type TestCaseFact_keys = Expect<Equal<keyof TestCaseFact, 'name' | 'assertions' | 'matchers' | 'modifier' | 'timeoutMs' | 'expectedHash'>>;
+export type FactRule_keys = Expect<Equal<keyof FactRule, 'id' | 'version' | 'reads' | 'scope' | 'hops' | 'readsGuardChain' | 'extraInputs' | 'derive'>>;
+export type RuleScope_values = Expect<Equal<RuleScope, 'file' | 'neighbourhood' | 'global'>>;
+export type factsExtractorTag_signature = Expect<Equal<typeof factsExtractorTag, (stamp: ExtractorStamp, language?: string) => string>>;
+export type evaluateRules_signature = Expect<Equal<
+    typeof evaluateRules, <X>(rules: readonly FactRule<X>[], world: RuleWorld<X>, previous?: DerivedRows) => RuleEvaluation
+>>;
+export type updateFactGraph_signature = Expect<Equal<
+    typeof updateFactGraph, <X>(graph: FactGraph, changes: readonly FactChange[], rules: readonly FactRule<X>[], opts?: FactGraphOptions<X>) => FactGraphUpdate
+>>;
+export type factGraphDump_signature = Expect<Equal<typeof factGraphDump, (graph: FactGraph) => string>>;
 
 describe('type contract', () => {
     it('is enforced by `npm run check:contract-types` (tsc over tsconfig.contract.json), not at run time', () => {

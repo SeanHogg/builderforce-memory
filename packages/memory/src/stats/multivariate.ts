@@ -2,67 +2,16 @@
  * Multivariate summaries for the stats module (PRD 41 Part D / D13): Ledoit–Wolf
  * shrinkage covariance and the population stability index (PSI). Pure and
  * deterministic.
+ *
+ * Ledoit–Wolf lives in memory-engine `ml/classical/covariance.ts` (the anomaly
+ * composite's Mahalanobis term fits on it) and is re-exported here, never copied. It
+ * comes through the engine's light `./ml/classical` subpath, NEVER the engine root:
+ * browser bundles import `./stats`, and the root carries WebGPU kernels and training
+ * (`src/contract/regression.statsEngineFree.test.ts` holds this).
  */
 
-export interface CovarianceResult {
-    /** Column means of the input matrix (rows = observations). */
-    means: number[];
-    covariance: number[][];
-    /** Shrinkage intensity in [0, 1]. */
-    shrinkage: number;
-}
-
-/**
- * Ledoit–Wolf shrunk covariance estimator. `data` is an n×d matrix (rows are
- * observations). The optimal shrinkage intensity follows the Ledoit–Wolf formula
- * toward the scaled-identity target (tr(S)/d)·I.
- */
-export function ledoitWolfCovariance(data: readonly (readonly number[])[]): CovarianceResult {
-    const n = data.length;
-    const d = data[0]?.length ?? 0;
-    if (n === 0 || d === 0) return { means: new Array(d).fill(0), covariance: [], shrinkage: 0 };
-    const means = new Array<number>(d).fill(0);
-    for (const row of data) for (let j = 0; j < d; j++) means[j]! += row[j]! / n;
-    const center = data.map((row) => row.map((v, j) => v - means[j]!));
-    const scale = 1 / n; // MLE denominator, matching the LW derivation
-    const s: number[][] = [];
-    for (let i = 0; i < d; i++) {
-        s.push(new Array<number>(d).fill(0));
-        for (let j = 0; j < d; j++) {
-            let acc = 0;
-            for (let r = 0; r < n; r++) acc += center[r]![i]! * center[r]![j]!;
-            s[i]![j] = acc * scale;
-        }
-    }
-    const trace = s.reduce((acc, row, i) => acc + row[i]!, 0);
-    const mu = trace / d;
-    // Sum of asymptotic variances of the off-diagonal (and diagonal) entries.
-    let deltaSum = 0;
-    for (let i = 0; i < d; i++) {
-        for (let j = 0; j < d; j++) {
-            let acc = 0;
-            for (let r = 0; r < n; r++) {
-                acc += (center[r]![i]! * center[r]![j]! - (i === j ? s[i]![i]! : s[i]![j]!)) ** 2;
-            }
-            deltaSum += acc / n;
-        }
-    }
-    deltaSum *= scale * scale;
-    // Squared distance from S to the target.
-    let targetDist = 0;
-    for (let i = 0; i < d; i++) {
-        for (let j = 0; j < d; j++) {
-            const target = i === j ? mu : 0;
-            targetDist += (s[i]![j]! - target) ** 2;
-        }
-    }
-    const beta = Math.min(deltaSum, targetDist);
-    const shrinkage = targetDist > 0 ? beta / targetDist : 0;
-    const covariance = s.map((row, i) =>
-        row.map((v, j) => (1 - shrinkage) * v + (i === j ? shrinkage * mu : 0)),
-    );
-    return { means, covariance, shrinkage };
-}
+export { ledoitWolfCovariance } from "@seanhogg/builderforce-memory-engine/ml/classical";
+export type { CovarianceResult } from "@seanhogg/builderforce-memory-engine/ml/classical";
 
 /**
  * Population stability index, Σ (aᵢ − eᵢ) ln(aᵢ / eᵢ), over `bins` equal-width bins

@@ -57,7 +57,8 @@ export class Sha256 {
         const bitsHi = Math.floor(this._bytes / 0x20000000);
         const bitsLo = (this._bytes * 8) >>> 0;
         this.update(new Uint8Array([0x80]));
-        while (this._blockLen !== 56) this.update(new Uint8Array(1));
+        // Zero-pad to 56 mod 64 in ONE update (byte-at-a-time padding cost ~55 calls per digest).
+        this.update(new Uint8Array((120 - this._blockLen) % 64));
         const len = new Uint8Array(8);
         const view = new DataView(len.buffer);
         view.setUint32(0, bitsHi);

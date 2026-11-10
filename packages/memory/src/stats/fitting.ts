@@ -5,17 +5,12 @@
  * calibration shapes the classical catalog does not carry.
  */
 
+import { sigmoid } from "./logistic.js";
 import { createRng, normalDraw, type Rng } from "./prng.js";
 
 export interface LaplaceApproximation {
     mean: number[];
     covariance: number[][];
-}
-
-function sigmoid(x: number): number {
-    if (x >= 0) return 1 / (1 + Math.exp(-x));
-    const e = Math.exp(x);
-    return e / (1 + e);
 }
 
 function invert2x2(m: number[][]): number[][] {
