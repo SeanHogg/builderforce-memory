@@ -53,8 +53,9 @@ export {
 } from './findings.js';
 // PRD 41 §B1/§B3/§B5: FileFacts v3, the composite extractor version, FactRule + the incremental evaluator, the fact graph.
 export {
-    FACT_KINDS, FACT_KIND_FIELDS, MATCHER_STRENGTH_ORDER, canonicalFileFacts, factKindHashes, factsHash, readFileFacts, isFileFactsV3, projectFileFacts,
+    FACT_KINDS, FACT_KIND_FIELDS, MATCHER_STRENGTH_ORDER, canonicalFileFacts, readFileFacts, isFileFactsV3, projectFileFacts,
 } from './facts/fileFacts.js';
+export { factKindHashes, factsHash } from './facts/factsHash.js';
 export type {
     FactKind, FileFacts, SymbolFact, ImportFact, ExportFact, CallFact, ComplexityFact, EntryPointKind, EntryPointFact, CapabilityKind,
     CapabilityImportFact, MatcherStrength, MatcherUse, TestModifier, TestCaseFact, TestFacts,
@@ -69,6 +70,17 @@ export { emptyFactGraph, updateFactGraph, buildFactGraph, factGraphDump, FACT_GR
 export type { FactGraph, FactManifestEntry, FactChange, FactGraphOptions, FactGraphUpdate } from './rules/factGraph.js';
 export { knowledgeFacts, knowledgeInputHash, runKnowledgeRules, packOfRef, KNOWLEDGE_INPUT } from './rules/knowledgeInput.js';
 export type { KnowledgeFacts, KnowledgeRuleExtra, KnowledgeRule } from './rules/knowledgeInput.js';
+// PRD 41 §B4: the fact store port (pure; hosts implement it) + §C5.1: router mounts and `use` guard semantics.
+export { saveFactGraph, loadFactGraph, factStoreDump, sweepFactStore, memoryFactStore, FACT_STORE_LOAD_ATTEMPTS } from './rules/factStore.js';
+export type {
+    Awaitable, FactStorePort, FactStoreVersion, FactStoreManifest, FactManifestDelta, FactStoreSaveResult, StoredFactGraph,
+    LoadFactGraphOptions, MemoryFactStore,
+} from './rules/factStore.js';
+export { factsJson, factsWireForm } from './facts/factsHash.js';
+export { normalizeMountPrefix } from './facts/fileFacts.js';
+export type { MountFact, UseFact } from './facts/fileFacts.js';
+export { effectiveGuards, rootRouters, routePathCovers, joinRoutePath, MAX_MOUNT_DEPTH } from './facts/guards.js';
+export type { ResolvedMount, EffectiveEntryPoint, EffectiveGuardsOptions, EffectiveGuardsResult, RootRouter, MountTarget } from './facts/guards.js';
 export { refAnchor, type FindingAnchor } from './findingBuilder.js';
 export {
     identityOf, defaultAnchorOf, composeAnchor, anchorWithSnippet, anchorKindOfRef, kindOfAnchor, normalizeSnippet, DEFAULT_RULE_VERSION,

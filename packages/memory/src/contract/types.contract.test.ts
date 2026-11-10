@@ -42,6 +42,12 @@ import type {
     FactGraphUpdate, FactKind, FactRule, FileFacts, RuleEvaluation, RuleScope, RuleWorld, TestCaseFact, TestFacts,
     evaluateRules, factGraphDump, factsExtractorTag, updateFactGraph,
 } from '../knowledge/index.js';
+import type {
+    Awaitable, DerivedRow, EffectiveEntryPoint, EffectiveGuardsOptions, EffectiveGuardsResult, FactManifestDelta, FactManifestEntry,
+    FactStoreManifest, FactStorePort, FactStoreSaveResult, FactStoreVersion, LoadFactGraphOptions, MemoryFactStore, MountFact, ResolvedMount,
+    StoredFactGraph, UseFact, RootRouter, MountTarget,
+    effectiveGuards, factStoreDump, loadFactGraph, memoryFactStore, rootRouters, saveFactGraph, sweepFactStore,
+} from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -389,12 +395,14 @@ export type isBinaryBytes_signature = Expect<Equal<typeof isBinaryBytes, (bytes:
 /* ── FileFacts v3, FactRule, the fact graph (PRD 41 §B1/§B3/§B5) ──────────────────────────────────────────── */
 // The Phase 2 extractors (agent-tools, tree-sitter) emit exactly this shape; run-delta rules read it.
 export type FactKind_values = Expect<Equal<FactKind, 'body' | 'content' | 'structure'>>;
+// 2026-11-10 (additive, §C5.1): + optional `mounts` and `uses`.
 export type FileFacts_keys = Expect<Equal<keyof FileFacts,
     'factsVersion' | 'extractor' | 'language' | 'contentHash' | 'symbols' | 'imports' | 'exports' | 'entryPoints'
-    | 'calls' | 'complexity' | 'capabilityImports' | 'testFacts'>>;
+    | 'calls' | 'complexity' | 'capabilityImports' | 'testFacts' | 'mounts' | 'uses'>>;
 export type FileFacts_testFacts_is_optional = Expect<Equal<IsOptional<FileFacts, 'testFacts'>, true>>;
+// 2026-11-10 (additive, §C5.1): + optional registration `order` and `router`.
 export type EntryPointFact_shape = Expect<Equal<EntryPointFact, {
-    kind: EntryPointKind; key: string; symbol: string; guards: string[]; inputs: string[]; chain: string[];
+    kind: EntryPointKind; key: string; symbol: string; guards: string[]; inputs: string[]; chain: string[]; order?: number; router?: string;
 }>>;
 export type ExportFact_keys = Expect<Equal<keyof ExportFact, 'name' | 'kind' | 'signatureHash' | 'from'>>;
 export type CallFact_keys = Expect<Equal<keyof CallFact, 'callee' | 'enclosing' | 'awaited' | 'inLoop' | 'count'>>;
@@ -411,6 +419,53 @@ export type updateFactGraph_signature = Expect<Equal<
     typeof updateFactGraph, <X>(graph: FactGraph, changes: readonly FactChange[], rules: readonly FactRule<X>[], opts?: FactGraphOptions<X>) => FactGraphUpdate
 >>;
 export type factGraphDump_signature = Expect<Equal<typeof factGraphDump, (graph: FactGraph) => string>>;
+
+/* ── FactStorePort (PRD 41 §B4) and router mounts (§C5.1) ──────────────────────────────────────────────────── */
+// Node hosts implement the port on the G03 SQLite store, the Worker behind a Durable Object (or one R2 object with an
+// `onlyIf` etag); memory owns the shape and the save / load / sweep.
+export type FileFacts_mounts_is_optional = Expect<Equal<IsOptional<FileFacts, 'mounts'>, true>>;
+export type FileFacts_uses_is_optional = Expect<Equal<IsOptional<FileFacts, 'uses'>, true>>;
+export type MountFact_keys = Expect<Equal<keyof MountFact, 'prefix' | 'target' | 'order' | 'router' | 'guards'>>;
+export type MountFact_required = Expect<Equal<Pick<MountFact, 'prefix' | 'target' | 'order'>, { prefix: string; target: string; order: number }>>;
+export type UseFact_keys = Expect<Equal<keyof UseFact, 'path' | 'match' | 'guards' | 'order' | 'router'>>;
+export type UseFact_match = Expect<Equal<UseFact['match'], 'prefix' | 'exact' | undefined>>;
+export type FactStoreVersion_shape = Expect<Equal<FactStoreVersion, { epoch: string; generation: number }>>;
+export type FactStorePort_keys = Expect<Equal<keyof FactStorePort,
+    'getObjects' | 'putObjects' | 'readVersion' | 'readManifest' | 'writeManifest' | 'derivedRows' | 'sweepObjects' | 'reset'>>;
+export type FactStorePort_writeManifest = Expect<Equal<FactStorePort['writeManifest'],
+    (manifest: FactManifestDelta, derivedPuts: readonly DerivedRow[], derivedDeletes: readonly string[]) => Awaitable<void>>>;
+export type FactStorePort_getObjects = Expect<Equal<FactStorePort['getObjects'], (hashes: readonly string[]) => Awaitable<ReadonlyMap<string, string>>>>;
+export type FactStorePort_putObjects = Expect<Equal<FactStorePort['putObjects'], (objects: ReadonlyMap<string, string>) => Awaitable<void>>>;
+export type FactStorePort_derivedRows = Expect<Equal<FactStorePort['derivedRows'], () => Awaitable<ReadonlyMap<string, DerivedRow>>>>;
+export type FactStorePort_sweepObjects = Expect<Equal<FactStorePort['sweepObjects'], (expected: FactStoreVersion) => Awaitable<number>>>;
+export type FactStoreManifest_keys = Expect<Equal<keyof FactStoreManifest, 'epoch' | 'generation' | 'files'>>;
+export type FactStoreManifest_files = Expect<Equal<FactStoreManifest['files'], ReadonlyMap<string, FactManifestEntry>>>;
+export type FactManifestDelta_keys = Expect<Equal<keyof FactManifestDelta, 'epoch' | 'generation' | 'puts' | 'deletes'>>;
+export type StoredFactGraph_keys = Expect<Equal<keyof StoredFactGraph, 'epoch' | 'generation' | 'graph'>>;
+export type FactStoreSaveResult_keys = Expect<Equal<keyof FactStoreSaveResult,
+    'epoch' | 'generation' | 'graph' | 'objects' | 'puts' | 'deletes' | 'derivedPuts' | 'derivedDeletes'>>;
+export type LoadFactGraphOptions_shape = Expect<Equal<LoadFactGraphOptions, { verify?: 'full' | 'manifest' }>>;
+export type saveFactGraph_signature = Expect<Equal<
+    typeof saveFactGraph, (port: FactStorePort, graph: FactGraph, previous?: StoredFactGraph) => Promise<FactStoreSaveResult>
+>>;
+export type loadFactGraph_signature = Expect<Equal<typeof loadFactGraph, (port: FactStorePort, opts?: LoadFactGraphOptions) => Promise<StoredFactGraph>>>;
+export type factStoreDump_signature = Expect<Equal<typeof factStoreDump, (port: FactStorePort) => Promise<string>>>;
+export type sweepFactStore_signature = Expect<Equal<typeof sweepFactStore, (port: FactStorePort) => Promise<number>>>;
+export type memoryFactStore_signature = Expect<Equal<typeof memoryFactStore, () => MemoryFactStore>>;
+export type effectiveGuards_signature = Expect<Equal<
+    typeof effectiveGuards, (fileFacts: FileFacts, resolvedMounts: readonly ResolvedMount[], opts?: EffectiveGuardsOptions) => EffectiveGuardsResult
+>>;
+export type EffectiveGuardsResult_shape = Expect<Equal<EffectiveGuardsResult, { entryPoints: EffectiveEntryPoint[]; truncated: number; unresolved: number }>>;
+export type EffectiveGuardsOptions_shape = Expect<Equal<EffectiveGuardsOptions, { path?: string; router?: string; maxDepth?: number }>>;
+export type rootRouters_signature = Expect<Equal<
+    typeof rootRouters, (files: ReadonlyMap<string, FileFacts>, resolveMount: (from: string, mount: MountFact) => MountTarget | undefined) => RootRouter[]
+>>;
+export type RootRouter_shape = Expect<Equal<RootRouter, { path: string; router: string }>>;
+export type MountTarget_shape = Expect<Equal<MountTarget, { path: string; router?: string }>>;
+export type ResolvedMount_shape = Expect<Equal<ResolvedMount, {
+    target: string; path: string; facts: FileFacts; router?: string; mounts?: readonly ResolvedMount[];
+}>>;
+export type EffectiveEntryPoint_extra_keys = Expect<Equal<Exclude<keyof EffectiveEntryPoint, keyof EntryPointFact>, 'file' | 'via' | 'guardsInferred'>>;
 
 describe('type contract', () => {
     it('is enforced by `npm run check:contract-types` (tsc over tsconfig.contract.json), not at run time', () => {

@@ -4,7 +4,8 @@
  */
 
 import { comparable } from '../comparability.js';
-import { canonicalFileFacts, factKindHashes, factsHash, readFileFacts, isFileFactsV3, projectFileFacts, type FileFacts } from './fileFacts.js';
+import { canonicalFileFacts, readFileFacts, isFileFactsV3, projectFileFacts, type FileFacts } from './fileFacts.js';
+import { factKindHashes, factsHash } from './factsHash.js';
 import { extractorStampMeta, factsExtractorTag, FACTS_EXTRACTOR_VERSION, isFactsCurrent, type ExtractorStamp } from './extractorVersion.js';
 
 const STAMP: ExtractorStamp = { family: 'tree-sitter', grammars: { typescript: '0.23.2', python: '0.23.6' } };

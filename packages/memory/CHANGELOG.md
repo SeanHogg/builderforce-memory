@@ -1,5 +1,86 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.77
+
+### Added — FactStorePort: persist and restore the fact graph (`./knowledge`, PRD 41 §B4, §B8.6)
+
+- **`FactStorePort`** (batch, `Awaitable<T>` so the synchronous SQLite adapter and an async Worker adapter fit one port):
+  - objects: `getObjects(hashes) → Map`, `putObjects(Map hash → json)` (write-once);
+  - version: `readVersion()` → `FactStoreVersion { epoch, generation }`. The `epoch` is a random id minted when the store is created or `reset()`, so a reset store is never mistaken for the old one (no ABA);
+  - `readManifest()` → `FactStoreManifest { epoch, generation, files: path → FactManifestEntry }`;
+  - `writeManifest(delta: FactManifestDelta, derivedPuts, derivedDeletes)` in ONE transaction. It compares and swaps the version (epoch equal, generation = stored + 1, else `fact_store_generation_conflict`) and refuses a put whose object is not stored (`fact_store_object_missing`);
+  - `derivedRows()` (bulk), `sweepObjects(expected)` (ONE transaction: compare and swap, bump the generation, delete unreferenced objects), `reset()`.
+
+  The graph maps 1:1: FileFacts objects as `factsJson` under `factsHash`; the manifest as path → `{ factsHash, contentHash, kinds }`; derived rows under `derivedRowKey` with their `inputs` trace.
+- **Adapters (documented on the port).**
+  - Node: the G03 SQLite store, with `writeManifest` and `sweepObjects` each in one `BEGIN IMMEDIATE` transaction. Stat and git-blob columns stay adapter-private and never enter the dump (§B8.3).
+  - Worker: behind a Durable Object (transactional storage), or manifest + derived as ONE R2 object written with an `onlyIf` etag. Plain KV cannot implement the port.
+- **`saveFactGraph(port, graph, previous?: StoredFactGraph)`** writes only the delta.
+  - Objects of new or moved manifest entries go first, then the manifest delta and the derived puts/deletes in one `writeManifest`.
+  - Derived rows are diffed by identity against `previous.graph` ONLY when `previous` is at the stored epoch and generation. Otherwise they are diffed against the stored rows, so a stale `previous` never trusts identity.
+  - Returns `FactStoreSaveResult`, which extends `StoredFactGraph { epoch, generation, graph }` and can be passed as the next `previous`.
+- **`loadFactGraph(port, { verify?: 'full' | 'manifest' })`** → `StoredFactGraph` restores a graph `updateFactGraph` continues from with early cutoff intact (restored traces are reused, not rerun).
+  - `full` (default): every object must hash to its address. `manifest`: trusts the address and checks the content and kind hashes only.
+  - The version is re-read after the rows. A write that landed mid-load retries (up to `FACT_STORE_LOAD_ATTEMPTS` = 3), then the load rejects `fact_store_generation_conflict:load`, so a graph never mixes generations.
+  - Bad JSON is `fact_store_object_corrupt`. A derived row under the wrong key is `fact_store_derived_corrupt`.
+- **`sweepFactStore(port)`** removes unreferenced objects and bumps the generation only when it removed any (a no-op sweep leaves the version unchanged). A writer whose objects a sweep removed then conflicts on its manifest write and re-puts them on retry.
+- **`factStoreDump(port)`** is the port's canonical dump, equal to `factGraphDump` of the loaded graph. **`memoryFactStore()`** is the in-memory reference adapter (`MemoryFactStore`, plus `objectHashes()`).
+- **Recovery contract (hosts).**
+  - Saves to one store are serialized within a process.
+  - On `fact_store_generation_conflict`: `loadFactGraph`, re-apply the pending `FactChange`s, then `saveFactGraph` with the loaded `StoredFactGraph`. Retry a bounded number of times.
+  - On `fact_store_object_missing`, `_object_corrupt`, `_manifest_corrupt` or `_derived_corrupt`: the store is a disposable cache. Call `reset()` and rebuild.
+- **`factsJson(f)`** and **`factsWireForm(f)`** give the canonical bytes a store keeps under `factsHash`. The wire form omits empty `mounts` and `uses`. The wire form, `factsHash` and `factKindHashes` now live in `facts/factsHash.ts`; their `./knowledge` exports are unchanged.
+- Contract tests (`src/knowledge/rules/factStore.test.ts`):
+  - round trip;
+  - an incremental save after an update equals a from-scratch save;
+  - a stale `previous` after another writer changed only derived rows (regression);
+  - load → update reuses traces;
+  - a write interrupted between the object puts and the manifest leaves the previous manifest valid;
+  - a mid-load write retries;
+  - sweep vs writer;
+  - corruption, and `reset()`.
+- Minor, non-breaking: new exports only.
+
+### Added — router mounts and `use` guard semantics (`./knowledge`, PRD 41 §C5.1)
+
+- **New fact fields.** All are `structure` facts, sorted by `order` in `canonicalFileFacts`.
+  - **`FileFacts.mounts?: MountFact[]`**: `{ prefix, target, order, router?, guards? }`, for `app.route('/api', sub)` and `app.use('/api', [guards…,] subRouter)`. `target` is an import specifier or a local router binding.
+  - **`FileFacts.uses?: UseFact[]`**: `{ path, match?: 'prefix' | 'exact', guards, order, router? }`, for `app.use(path?, guard)`.
+  - **`EntryPointFact.order?`** and **`EntryPointFact.router?`**. `order` is a registration index on one counter shared with uses and mounts. It is not a line number and not a byte offset, and it must be a non-negative integer (else `file_facts_invalid_order`). `router` is the local router binding.
+- **Older objects.** `readFileFacts` of an older object gives `mounts: []` and `uses: []`.
+- **`canonicalFileFacts` output** now always carries `mounts: []` and `uses: []`. It also:
+  - drops `match: 'prefix'` (the default);
+  - normalizes a mount prefix (`api/` → `/api`, `normalizeMountPrefix`) and a use path (`/admin/` → `/admin`; `''` stays the every-path form);
+  - throws `file_facts_invalid_order` for a bad order: producers catch it per file at extraction time and treat it as an extract failure;
+  - omits empty mount `guards` and an absent `router`.
+- **Hash-stable.** Empty `mounts`/`uses` and absent `router`/`order`/`guards` are omitted from every hash, the stored JSON and the dump. A golden test pins the `factsHash` and kind hashes of a v3 fixture as computed by the 2026.10.72 code (`src/knowledge/facts/factsHash.test.ts`).
+- **Semantics, explicit (`effectiveGuards`):**
+  - Routes, uses and mounts belong to their router. A use on `adminRouter` never guards `publicRouter`.
+  - A `use` guards only routes of its router registered AFTER it whose path its pattern covers.
+  - A mounted sub-router inherits:
+    - the mounting router's uses registered before the mount that cover the prefix-joined path;
+    - the mount's inline `guards`.
+  - `entryPoints[].guards` are the registration's own guards (inline middleware, wrappers).
+  - A producer that emits `uses` MUST set `order` on every entry point. Without it, every covering use applies and those guards are listed in `guardsInferred`, so a rule can downgrade them to heuristic.
+- **`effectiveGuards(fileFacts, resolvedMounts, opts?: { path?, router?, maxDepth? })`** → `EffectiveGuardsResult { entryPoints, truncated, unresolved }`.
+  - Each entry point is an `EffectiveEntryPoint` (`file`, `via`, `guardsInferred`), with prefix-joined keys and the mounting files added to `chain`.
+  - Local router mounts resolve within the file, and the parent router's routes are not re-emitted.
+  - Nested mounts are followed up to `MAX_MOUNT_DEPTH` = 8. Cycles are cut by the (file, router) pairs on the stack. Mounts cut by depth or a cycle are counted in `truncated`, unresolved ones in `unresolved`.
+- **Root routers.** It runs on ROOT routers only. `rootRouters(files, resolveMount)` → `RootRouter[]` (`{ path, router }`, `''` = the default router) lists them PER ROUTER: a mounted file's second, unmounted router is still a root, and for routers that only mount each other the lowest (path, router) is chosen deterministically. `resolveMount` returns a `MountTarget { path, router? }`.
+- **Helpers.** `routePathCovers` matches `/api/*`, `/api*` (a trailing `*` on the last segment), `:x`, optional `:x?` and Hono `:id{regex}`. `joinRoutePath` joins a prefix and a route path.
+- **Consumers that read `entryPoints[].guards` directly must switch to `effectiveGuards`** in the same change in which a producer starts emitting `uses`. Those guards are no longer folded into `entryPoints[].guards`.
+- Golden tests (`src/knowledge/facts/guards.test.ts`):
+  - a path-scoped `use` registered after a route does not guard it;
+  - two routers in one file;
+  - a same-file local mount;
+  - a mounted sub-router inherits its mounting app's guards;
+  - `router.use('/api', requireAuth, apiRouter)`;
+  - unknown order (both sides);
+  - depth, cycles, unresolved mounts;
+  - every path-pattern form.
+- Type contract: `FileFacts_keys` and `EntryPointFact_shape` extended with the new optional fields.
+- Minor, non-breaking: optional fields and new exports only.
+
 ## 2026.10.76
 
 ### Fixed — createRng (xoshiro128**) used a rotate where the algorithm shifts (`./stats`, shipped wrong in 2026.10.72)

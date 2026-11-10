@@ -11,7 +11,8 @@
 
 import { canonicalJson, compareStr, isRootFilePath, normalizePath } from '../refs.js';
 import type { Finding } from '../findingModel.js';
-import { canonicalFileFacts, factKindHashes, factsHash, type FactKind, type FileFacts } from '../facts/fileFacts.js';
+import { canonicalFileFacts, type FactKind, type FileFacts } from '../facts/fileFacts.js';
+import { factKindHashes, factsHash, factsWireForm } from '../facts/factsHash.js';
 import type { FactRule } from './factRule.js';
 import { evaluateRules, type DerivedRows, type RuleTraceEntry, type RuleWorld } from './evaluateRules.js';
 
@@ -20,6 +21,11 @@ export interface FactManifestEntry {
     factsHash: string;
     kinds: Readonly<Record<FactKind, string>>;
 }
+
+/** Whether two manifest entries are the same (facts hash, content hash and every kind hash). */
+export const sameManifestEntry = (a: FactManifestEntry | undefined, b: FactManifestEntry | undefined): boolean =>
+    a !== undefined && b !== undefined && a.factsHash === b.factsHash && a.contentHash === b.contentHash
+    && a.kinds.body === b.kinds.body && a.kinds.content === b.kinds.content && a.kinds.structure === b.kinds.structure;
 
 export interface FactGraph {
     manifest: ReadonlyMap<string, FactManifestEntry>;
@@ -101,7 +107,7 @@ export function factGraphDump(graph: FactGraph): string {
     return canonicalJson({
         version: FACT_GRAPH_DUMP_VERSION,
         manifest: sortedEntries(graph.manifest).map(([path, e]) => ({ path, ...e })),
-        objects: sortedEntries(graph.objects).map(([hash, facts]) => ({ hash, facts })),
+        objects: sortedEntries(graph.objects).map(([hash, facts]) => ({ hash, facts: factsWireForm(facts) })),
         derived: sortedEntries(graph.derived).map(([, row]) => row),
     });
 }

@@ -19,7 +19,8 @@
 import { compareStr } from '../refs.js';
 import { sha256Hex } from '../../retrieval/knowledge-index/sha256.js';
 import type { Finding } from '../findingModel.js';
-import { canonicalFileFacts, factKindHashes, projectFileFacts, type FactKind, type FileFacts } from '../facts/fileFacts.js';
+import { canonicalFileFacts, projectFileFacts, type FactKind, type FileFacts } from '../facts/fileFacts.js';
+import { factKindHashes } from '../facts/factsHash.js';
 import { DEFAULT_RULE_HOPS, type FactRule } from './factRule.js';
 
 /** What the evaluator reads: the current facts by path, the import neighbourhood, and the hashed extra inputs. */

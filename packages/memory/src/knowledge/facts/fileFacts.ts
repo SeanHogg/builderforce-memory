@@ -7,18 +7,17 @@
  *
  * The fields split into three FACT KINDS ({@link FACT_KIND_FIELDS}), each with its own hash, so a rule
  * that `reads` only `structure` never reruns for a body or comment edit (early cutoff, §B1):
- *   - `structure`: symbols, imports, exports, entry points (the declared surface; a guard added to or
- *     removed from a route registration moves it);
+ *   - `structure`: symbols, imports, exports, entry points, router mounts and `use` registrations (the
+ *     declared surface; a guard added to or removed from a route registration moves it);
  *   - `body`: calls, complexity, capability imports, test facts;
  *   - `content`: the EOL-normalized bytes themselves, i.e. `contentHash` (contentHash.ts).
  *
  * The header (`factsVersion`, `extractor`, `language`) enters every kind's hash: facts of another
  * extractor are never "the same structure". The extractors live in the hosts (Builderforce.ai
- * agent-tools); memory owns only this shape and its hashing.
+ * agent-tools); memory owns only this shape and its hashing (the hashes and the wire form: factsHash.ts).
  */
 
 import { canonicalJson, compareStr, normalizePath, sortBy } from '../refs.js';
-import { sha256Hex } from '../../retrieval/knowledge-index/sha256.js';
 import { FACTS_EXTRACTOR_VERSION } from './extractorVersion.js';
 
 /** The three fact kinds a rule may read (§B1). Sorted. */
@@ -80,7 +79,13 @@ export interface EntryPointFact {
     key: string;
     /** The handler symbol path. */
     symbol: string;
-    /** Guard names found on its chain (middleware, wrappers), sorted. Which names are guards is registry data (run-delta). */
+    /**
+     * Guard names on the REGISTRATION itself (inline middleware arguments, wrappers around the handler), sorted. Which names
+     * are guards is registry data (run-delta). File-level `use(path?, guard)` registrations are recorded in
+     * {@link FileFacts.uses} and composed by `effectiveGuards` (guards.ts): a producer that records `uses` does not also fold
+     * them in here. A producer with no `uses` may fold them, by the same rule (a `use` guards only routes registered AFTER it
+     * whose path its pattern covers).
+     */
     guards: string[];
     /** Untrusted input accessors the handler uses (`req.body`, `c.req.json`, `msg.data`, `argv`), sorted. */
     inputs: string[];
@@ -89,6 +94,59 @@ export interface EntryPointFact {
      * registration, sorted. A neighbourhood rule with `readsGuardChain` reads these files' facts whatever their import distance.
      */
     chain: string[];
+    /**
+     * The registration ORDER within the file: the 0-based index of this registration among the file's route, `use` and
+     * mount registrations (ONE counter shared with {@link UseFact.order} and {@link MountFact.order}). A registration index,
+     * not a line number and not a byte offset, so an edit that adds no registration never moves it. A non-negative integer.
+     * A producer that emits `uses` MUST set `order` on every entry point; absent ⇒ unknown, and `effectiveGuards` applies
+     * every covering `use` but reports those guards as inferred (`guardsInferred`).
+     */
+    order?: number;
+    /** The local router binding the route is registered on (`app`, `adminRouter`). Absent ⇒ the file's one default router. */
+    router?: string;
+}
+
+/**
+ * One file-level middleware registration (§C5.1): `app.use(path?, guard…)`. It guards the routes of its router registered
+ * AFTER it (by `order`) whose path `path` covers, and every sub-router that router mounts after it ({@link MountFact}).
+ */
+export interface UseFact {
+    /**
+     * The use-path pattern: '' (or '*', '/*') for every path; `:param` (also `:param?`, `:param{regex}`) matches one segment;
+     * a trailing `*` (`/api/*`, `/api*`) matches the rest.
+     */
+    path: string;
+    /**
+     * `prefix` (Express `use`, the default; canonical form omits it): the pattern covers every path under it.
+     * `exact` (Hono `use('/api')`): that path only.
+     */
+    match?: 'prefix' | 'exact';
+    /** Guard names it registers, sorted. */
+    guards: string[];
+    /** Registration order (see {@link EntryPointFact.order}). */
+    order: number;
+    /** The router binding it is registered on (see {@link EntryPointFact.router}). */
+    router?: string;
+}
+
+/**
+ * One sub-router mount (§C5.1): `app.route('/api', sub)` (Hono) / `app.use('/api', subRouter)` (Express). The sub-router's
+ * routes answer under `prefix`, and the mounting router's `use` guards registered before the mount apply to them.
+ */
+export interface MountFact {
+    /** The mount prefix ('/api'); '/' for the root. Canonical form: leading `/`, no trailing `/`. */
+    prefix: string;
+    /**
+     * The sub-router: an import specifier resolved to a file by the host (`ResolvedMount`), or the name of a LOCAL router
+     * binding of this file (one that registers routes, uses or mounts here), which `effectiveGuards` resolves itself.
+     */
+    target: string;
+    /** Registration order (see {@link EntryPointFact.order}). */
+    order: number;
+    /** The router binding that registers the mount (see {@link EntryPointFact.router}). */
+    router?: string;
+    /** Guards given inline at the mount (`router.use('/api', requireAuth, apiRouter)`), sorted; applied to every mounted route. */
+    guards?: string[];
 }
 
 export type CapabilityKind = 'process-exec' | 'fs-write' | 'network-client' | 'network-server' | 'dynamic-code' | 'native-addon'
@@ -150,6 +208,10 @@ export interface FileFacts {
     imports: ImportFact[];
     exports: ExportFact[];
     entryPoints: EntryPointFact[];
+    /** Sub-router mounts (§C5.1). Optional on input; a canonical object always carries it (`[]` when none). */
+    mounts?: MountFact[];
+    /** File-level `use()` middleware registrations (§C5.1). Optional on input; a canonical object always carries it. */
+    uses?: UseFact[];
     // body
     calls: CallFact[];
     complexity: ComplexityFact[];
@@ -159,7 +221,7 @@ export interface FileFacts {
 
 /** Which fields each kind hashes (data: the ONE place the split is declared). */
 export const FACT_KIND_FIELDS: Readonly<Record<FactKind, readonly (keyof FileFacts)[]>> = Object.freeze({
-    structure: ['symbols', 'imports', 'exports', 'entryPoints'],
+    structure: ['symbols', 'imports', 'exports', 'entryPoints', 'mounts', 'uses'],
     body: ['calls', 'complexity', 'capabilityImports', 'testFacts'],
     content: ['contentHash'],
 });
@@ -169,6 +231,25 @@ const sorted = (xs: readonly string[] | undefined) => [...(xs ?? [])].sort(compa
 const paths = (xs: readonly string[] | undefined) => sorted((xs ?? []).map(normalizePath));
 /** The final sort key of every list: the whole item, so items equal on the declared keys still sort one way. */
 const whole = (x: unknown) => canonicalJson(x);
+/** A registration order as a string that sorts numerically. */
+const ord = (n: number) => String(n).padStart(16, '0');
+
+/** Refuses a registration order that is not a non-negative safe integer: `file_facts_invalid_order:<what>:<value>`. */
+function checkOrder(what: string, order: number | undefined): void {
+    if (order === undefined) return;
+    if (!Number.isSafeInteger(order) || order < 0) throw new Error(`file_facts_invalid_order:${what}:${String(order)}`);
+}
+
+/** The ONE mount-prefix form: leading `/`, no trailing or doubled `/` ('' and '/' → '/', 'api/' → '/api'). */
+export function normalizeMountPrefix(prefix: string): string {
+    return `/${prefix.split('/').filter((s) => s !== '').join('/')}`;
+}
+
+/**
+ * The ONE `use`-path form: '' stays '' (every path); anything else as {@link normalizeMountPrefix} ('/admin/' → '/admin',
+ * '*' → '/*'), so a trailing or doubled `/` never moves a hash.
+ */
+const normalizeUsePath = (path: string): string => (path === '' ? '' : normalizeMountPrefix(path));
 
 /** Facts objects produced by {@link canonicalFileFacts}: deep-frozen, so every cache keyed by object identity holds. */
 const canonicalSet = new WeakSet<FileFacts>();
@@ -186,9 +267,15 @@ function deepFreeze<T>(value: T): T {
  * lists sorted, and every path field (`imports[].resolved`, `entryPoints[].chain`, `testFacts.snapshotFiles`) in the
  * ONE path form (`normalizePath`, §B8.1). The result is DEEP-FROZEN: facts are immutable values, and the kind-hash and
  * projection caches key on the object. Idempotent; a canonical object is returned as is.
+ *
+ * Throws `file_facts_invalid_order:<what>:<value>` when a registration `order` is not a non-negative integer; producers must
+ * catch it per file at extraction time and treat it as an extract failure of that file (never let it abort a whole build).
  */
 export function canonicalFileFacts(f: FileFacts): FileFacts {
     if (canonicalSet.has(f)) return f;
+    for (const e of f.entryPoints) checkOrder(`entryPoint:${e.key}`, e.order);
+    for (const u of f.uses ?? []) checkOrder(`use:${u.path}`, u.order);
+    for (const m of f.mounts ?? []) checkOrder(`mount:${m.prefix}`, m.order);
     const out: FileFacts = {
         ...f,
         symbols: sortBy(f.symbols.map((s) => ({ ...s })), (s) => s.name, (s) => s.kind, (s) => str(s.signatureHash), whole),
@@ -201,6 +288,14 @@ export function canonicalFileFacts(f: FileFacts): FileFacts {
             f.entryPoints.map((e) => ({ ...e, guards: sorted(e.guards), inputs: sorted(e.inputs), chain: paths(e.chain) })),
             (e) => e.kind, (e) => e.key, (e) => e.symbol, whole,
         ),
+        mounts: sortBy((f.mounts ?? []).map((m) => {
+            const { guards, ...rest } = m;
+            return { ...rest, prefix: normalizeMountPrefix(m.prefix), ...((guards?.length ?? 0) > 0 ? { guards: sorted(guards) } : {}) };
+        }), (m) => ord(m.order), (m) => m.prefix, (m) => m.target, whole),
+        uses: sortBy((f.uses ?? []).map((u) => {
+            const { match, ...rest } = u;
+            return { ...rest, path: normalizeUsePath(u.path), guards: sorted(u.guards), ...(match === 'exact' ? { match } : {}) };
+        }), (u) => ord(u.order), (u) => u.path, whole),
         calls: sortBy(f.calls.map((c) => ({ ...c })), (c) => c.enclosing, (c) => c.callee, (c) => str(c.awaited), (c) => str(c.inLoop), whole),
         complexity: sortBy(f.complexity.map((c) => ({ ...c })), (c) => c.symbol, whole),
         capabilityImports: sortBy(f.capabilityImports.map((c) => ({ ...c })), (c) => c.capability, (c) => c.module, (c) => str(c.symbol), (c) => str(c.algorithm), whole),
@@ -220,33 +315,9 @@ export function canonicalFileFacts(f: FileFacts): FileFacts {
     return out;
 }
 
-/** The header every kind hash includes. */
-const headerOf = (f: FileFacts) => ({ factsVersion: f.factsVersion, extractor: f.extractor, language: f.language });
-
-const kindCache = new WeakMap<FileFacts, Readonly<Record<FactKind, string>>>();
-
-/**
- * The hash of each fact kind of `f` (canonicalized first). `content` is the content hash itself; `structure` and `body`
- * are sha256 over the canonical JSON of the header plus that kind's fields. Cached per CANONICAL (deep-frozen) object;
- * a non-canonical input is canonicalized and hashed again on every call, so mutating it can never serve a stale hash.
- */
-export function factKindHashes(f: FileFacts): Readonly<Record<FactKind, string>> {
-    const c = canonicalFileFacts(f);
-    const hit = kindCache.get(c);
-    if (hit) return hit;
-    const of = (kind: FactKind) => {
-        const body: Record<string, unknown> = { header: headerOf(c) };
-        for (const field of FACT_KIND_FIELDS[kind]) body[field] = c[field];
-        return sha256Hex(canonicalJson(body));
-    };
-    const hashes = Object.freeze({ body: of('body'), content: c.contentHash, structure: of('structure') });
-    kindCache.set(c, hashes);
-    return hashes;
-}
-
 /** The empty value of every kind's fields: what a rule that does not read that kind sees. */
 const EMPTY_FIELDS: Readonly<Record<FactKind, Partial<FileFacts>>> = Object.freeze({
-    structure: { symbols: [], imports: [], exports: [], entryPoints: [] },
+    structure: { symbols: [], imports: [], exports: [], entryPoints: [], mounts: [], uses: [] },
     body: { calls: [], complexity: [], capabilityImports: [], testFacts: undefined },
     content: { contentHash: '' },
 });
@@ -274,11 +345,6 @@ export function projectFileFacts(f: FileFacts, reads: readonly FactKind[]): File
     return hit;
 }
 
-/** The content address of a facts object: sha256 of its canonical JSON. */
-export function factsHash(f: FileFacts): string {
-    return sha256Hex(canonicalJson(canonicalFileFacts(f)));
-}
-
 /**
  * Reads facts from any producer: a v3 object as is (canonicalized), a v2 one (repo-map's symbols + imports, no
  * `factsVersion`) with every v3 list empty and `factsVersion: 2`. A v2 fact set is never comparable with a v3 one
@@ -294,6 +360,8 @@ export function readFileFacts(raw: Partial<FileFacts> & Pick<FileFacts, 'content
         imports: raw.imports ?? [],
         exports: raw.exports ?? [],
         entryPoints: raw.entryPoints ?? [],
+        mounts: raw.mounts ?? [],
+        uses: raw.uses ?? [],
         calls: raw.calls ?? [],
         complexity: raw.complexity ?? [],
         capabilityImports: raw.capabilityImports ?? [],
