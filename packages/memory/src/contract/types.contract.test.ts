@@ -20,6 +20,10 @@ import type {
     RowChange, RowPersistence,
 } from '../knowledge/index.js';
 import type { PlannedFile } from '../knowledge/index.js';
+import type {
+    AnalysisIssue, AnchorKind, CodeAnalysisSnapshot, ComparabilityMeta, Finding, FindingIdentity, LineageEntry,
+    comparable, compareAnalysis, identityOf, matchLineage,
+} from '../knowledge/index.js';
 import { placementOf } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
 
@@ -242,6 +246,32 @@ export type OutlineCommunity_fields = Expect<Equal<OutlineCommunity, { id: numbe
 export type NodePlacement_shape = Expect<Equal<NodePlacement, { kind: 'partition'; id: string } | { kind: 'community'; id: number }>>;
 export type placementOf_signature = Expect<Equal<ReturnType<typeof placementOf>, NodePlacement | undefined>>;
 export type KEdge_verdict = Expect<Equal<KEdge['verdict'], 'allowed' | 'same' | 'skips' | 'upward' | undefined>>;
+
+/* ── Finding identity v2, lineage, comparability (PRD 41 §C3/§C9) ─────────────────────────────────────────── */
+export type AnchorKind_values = Expect<Equal<AnchorKind, 'symbol' | 'route' | 'package' | 'file' | 'group'>>;
+export type Finding_anchor_is_optional = Expect<Equal<IsOptional<Finding, 'anchor'>, true>>;
+export type Finding_anchorKind = Expect<Equal<Finding['anchorKind'], AnchorKind | undefined>>;
+export type FindingIdentity_shape = Expect<Equal<FindingIdentity, { id: string; anchor: string; anchorKind: AnchorKind; members: string[] }>>;
+export type identityOf_signature = Expect<Equal<typeof identityOf, (f: Finding, ruleVersion?: number) => FindingIdentity>>;
+export type LineageEntry_shape = Expect<Equal<LineageEntry, {
+    lineage: 'introduced' | 'resolved' | 'changed' | 'persisting'; change?: 'grew' | 'shrank' | 'moved'; before?: string; after?: string;
+}>>;
+export type matchLineage_signature = Expect<Equal<
+    typeof matchLineage, (before: readonly FindingIdentity[], after: readonly FindingIdentity[]) => LineageEntry[]
+>>;
+export type ComparabilityMeta_shape = Expect<Equal<ComparabilityMeta, {
+    extractor?: string; extractorVersion?: string | number; contentHashRule?: string; tools?: Record<string, string>;
+    scope?: string; repo?: string; branch?: string; truncated?: boolean; failed?: string[];
+}>>;
+export type comparable_signature = Expect<Equal<
+    typeof comparable, (before: ComparabilityMeta, after: ComparabilityMeta) => { comparable: boolean; reasons: string[] }
+>>;
+export type AnalysisIssue_anchor_is_optional = Expect<Equal<IsOptional<AnalysisIssue, 'anchor'>, true>>;
+export type compareAnalysis_result = Expect<Equal<
+    ReturnType<typeof compareAnalysis>,
+    { comparable: boolean; reasons: string[]; added: AnalysisIssue[]; unchanged: AnalysisIssue[]; resolved: AnalysisIssue[] }
+>>;
+export type CodeAnalysisSnapshot_version = Expect<Equal<CodeAnalysisSnapshot['version'], 1>>;
 
 describe('type contract', () => {
     it('is enforced by `npm run check:contract-types` (tsc over tsconfig.contract.json), not at run time', () => {

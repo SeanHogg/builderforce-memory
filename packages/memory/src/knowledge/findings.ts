@@ -8,12 +8,12 @@
  * Fix-with-agent request, never a model call.
  */
 
-import { finding, findingId, MAX_FINDING_NODES, requestKeyFor } from './findingBuilder.js';
+import { finding, findingId, MAX_FINDING_NODES, refAnchor, requestKeyFor, type FindingAnchor } from './findingBuilder.js';
 import type { EdgeVerdict, Finding, KEdge, KNode, KnowledgeGraph, KnowledgePack, NodeRef, PartitionRegistry } from './model.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
 import { godModuleFindings } from './godModule.js';
 import { possibleSameFindings } from './resolve.js';
-import { aboutTargets, compareStr, FALLBACK_PACK_ID, round6, srcRef } from './refs.js';
+import { aboutTargets, compareStr, FALLBACK_PACK_ID, fileRefOf, round6, srcRef } from './refs.js';
 
 /** Node badge naming the clone group (e.g. a jscpd issue id) its `duplicate` edges belong to. */
 export const CLONE_GROUP_BADGE = 'cloneGroup';
@@ -56,8 +56,12 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
     const packOf = (ref: NodeRef) => byRef.get(ref)?.pack ?? FALLBACK_PACK_ID;
     const out: Finding[] = [];
 
+    // Anchors (PRD 41 §C3) — one primary per kind, never a line or the member set:
+    //   cycle → its sorted-first member · clone-group → the clone-group badge, else its sorted-first member ·
+    //   near-duplicate → the sorted-first of the pair · partition-violation → from→to layer pair @ the from FILE ·
+    //   duplicate-copy → the copy's folder · unpartitioned → the pack · stale → the stale source.
     for (const refs of components(g.edges.filter((e) => e.cycle))) {
-        out.push(finding('cycle', packOf(refs[0]!), refs, 'warn', { nodes: refs.length }));
+        out.push(finding('cycle', packOf(refs[0]!), refs, 'warn', { nodes: refs.length }, undefined, refAnchor(refs[0]!)));
     }
 
     // Clone groups: duplicate edges grouped by the clone-group badge, else by component.
@@ -77,18 +81,22 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
     ];
     for (const { group, refs } of groups) {
         const unique = [...new Set(refs)];
-        out.push(finding('clone-group', packOf(unique.sort(compareStr)[0]!), unique, 'warn', { group, members: unique.length }));
+        const first = unique.sort(compareStr)[0]!;
+        const anchor: FindingAnchor = group ? { anchor: `${CLONE_GROUP_BADGE}:${group}`, anchorKind: 'group' } : refAnchor(first);
+        out.push(finding('clone-group', packOf(first), unique, 'warn', { group, members: unique.length }, undefined, anchor));
     }
 
     for (const e of g.edges) {
         if (e.kind === 'near-duplicate') {
-            out.push(finding('near-duplicate', packOf(e.from), [e.from, e.to], 'info', { similarity: round6(e.weight) }));
+            const first = compareStr(e.from, e.to) <= 0 ? e.from : e.to;
+            out.push(finding('near-duplicate', packOf(e.from), [e.from, e.to], 'info', { similarity: round6(e.weight) }, undefined, refAnchor(first)));
         }
         if (e.verdict === 'upward' || e.verdict === 'skips') {
             const from = byRef.get(e.from), to = byRef.get(e.to);
+            const layers = `${from?.partition ?? ''}->${to?.partition ?? ''}`;
             out.push(finding('partition-violation', packOf(e.from), [e.from, e.to], partitionSeverity(e.verdict), {
                 verdict: e.verdict, from: from?.partition ?? '', to: to?.partition ?? '', kind: e.kind,
-            }));
+            }, undefined, { anchor: `${layers}@${fileRefOf(e.from)}`, anchorKind: 'file' }));
         }
     }
 
@@ -97,7 +105,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
         if (s.copyOf === undefined) continue;
         out.push(finding('duplicate-copy', FALLBACK_PACK_ID, [srcRef(g.scope.rootId, s.path), srcRef(g.scope.rootId, s.copyOf)], 'warn', {
             copy: s.path, original: s.copyOf, similarity: s.copySimilarity ?? 1, reason: s.copyReason ?? 'later-name',
-        }, [s.path, s.copyOf]));
+        }, [s.path, s.copyOf], { anchor: srcRef(g.scope.rootId, s.path), anchorKind: 'file' }));
     }
 
     for (const [pack, reg] of [...registries].sort((a, b) => compareStr(a[0], b[0]))) {
@@ -107,7 +115,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
         if (loose.length === 0) continue;
         out.push(finding('unpartitioned', pack, loose, 'info', {
             count: loose.length, total: files.length, share: Math.round((loose.length / files.length) * 100),
-        }));
+        }, undefined, { anchor: `pack:${pack}`, anchorKind: 'group' }));
     }
 
     out.push(...staleFindings(g, byRef));
@@ -127,7 +135,7 @@ function staleFindings(g: KnowledgeGraph, byRef: ReadonlyMap<NodeRef, KNode>): F
         bySource.set(target, list);
     }
     return [...bySource].map(([source, refs]) =>
-        finding('stale', byRef.get(source)?.pack ?? FALLBACK_PACK_ID, [source, ...refs], 'warn', { count: refs.length }));
+        finding('stale', byRef.get(source)?.pack ?? FALLBACK_PACK_ID, [source, ...refs], 'warn', { count: refs.length }, undefined, refAnchor(source)));
 }
 
 /** Generic + possible-same + every pack's rules; deduped by id; severity, then id. */

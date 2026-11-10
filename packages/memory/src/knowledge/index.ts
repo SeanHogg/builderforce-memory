@@ -39,6 +39,19 @@ export type { LanedTrace, TraceOptions } from './trace.js';
 export {
     computeFindings, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
 } from './findings.js';
+export { refAnchor, type FindingAnchor } from './findingBuilder.js';
+export {
+    identityOf, defaultAnchorOf, composeAnchor, anchorWithSnippet, anchorKindOfRef, kindOfAnchor, normalizeSnippet, DEFAULT_RULE_VERSION,
+} from './findingIdentity.js';
+export type { AnchorKind, FindingIdentity } from './findingIdentity.js';
+export { matchLineage, LINEAGE_MIN_JACCARD, LINEAGE_MIN_MEMBERS } from './lineage.js';
+export type { Lineage, LineageChange, LineageEntry } from './lineage.js';
+export {
+    comparable, normalizeAnalysis, compareAnalysis, analysisMeta, identityOfIssue, ANALYSIS_ANCHOR_VERSION, ANALYSIS_TOOL_COUNT,
+} from './comparability.js';
+export type {
+    ComparabilityMeta, ComparabilityReason, AnalysisLocation, AnalysisIssue, CodeAnalysisSnapshot, CodeAnalysisComparison,
+} from './comparability.js';
 export { GOD_MODULE_LIMITS, GOD_MODULE_KIND, godModuleFindings } from './godModule.js';
 export type { GodModuleLimits } from './godModule.js';
 export {

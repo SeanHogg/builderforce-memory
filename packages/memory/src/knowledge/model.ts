@@ -96,6 +96,14 @@ export interface Finding {
     params: Record<string, string | number>;
     /** i18n key of the fixed Fix-with-agent request (e.g. 'knowledgeGraph.fix.cloneGroup'). */
     requestKey?: string;
+    /**
+     * The PRIMARY anchor the emitting rule names (PRD 41 §C3): an enclosing symbol/file ref, route key,
+     * package name or group name, plus `~<normalized-snippet hash>` where a snippet exists. Never a line
+     * number, never the member set. Absent ⇒ `identityOf` uses its documented default.
+     */
+    anchor?: string;
+    /** What {@link Finding.anchor} names. */
+    anchorKind?: 'symbol' | 'route' | 'package' | 'file' | 'group';
 }
 
 export interface FindingRule {

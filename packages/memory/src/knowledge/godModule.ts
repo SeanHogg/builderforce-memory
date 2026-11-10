@@ -9,7 +9,7 @@
  */
 
 import type { Finding, KnowledgeGraph } from './model.js';
-import { finding } from './findingBuilder.js';
+import { finding, refAnchor } from './findingBuilder.js';
 import { compareStr } from './refs.js';
 
 /** What a file may grow to before it is a god module: more lines, exports or worst-function complexity than this. */
@@ -40,7 +40,7 @@ export function godModuleFindings(g: KnowledgeGraph): Finding[] {
             linesLimit: GOD_MODULE_LIMITS.lines,
             exportsLimit: GOD_MODULE_LIMITS.exports,
             complexityLimit: GOD_MODULE_LIMITS.complexity,
-        }));
+        }, undefined, refAnchor(n.ref)));
     }
     return out;
 }

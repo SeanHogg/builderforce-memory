@@ -60,6 +60,8 @@ export function possibleSameFindings(pairs: readonly SimilarPair[], pack = FALLB
             id, kind: 'possible-same', pack, nodes: [a as NodeRef, b as NodeRef], severity: 'info',
             params: { similarity: round6(p.similarity) },
             requestKey: 'knowledgeGraph.fix.possibleSame',
+            // Anchor (PRD 41 §C3): the sorted-first entity of the pair.
+            anchor: a, anchorKind: 'symbol',
         });
     }
     return out.sort((x, y) => compareStr(x.id, y.id));
