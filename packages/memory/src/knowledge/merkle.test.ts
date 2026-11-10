@@ -3,7 +3,7 @@
  */
 
 import { jest } from '@jest/globals';
-import { changedPaths, merkleTree, type MerkleTree } from './merkle.js';
+import { canonicalListing, changedPaths, merkleTree, type MerkleTree } from './merkle.js';
 
 const FILES = [
     { path: 'README.md', hash: 'h-readme' },
@@ -56,11 +56,41 @@ describe('merkleTree', () => {
         expect(() => merkleTree([{ path: 'a', hash: '1' }, { path: 'a/b', hash: '2' }])).toThrow(/file and a directory/);
         expect(() => merkleTree([{ path: 'a/b', hash: '2' }, { path: 'a', hash: '1' }])).toThrow(/file and a directory/);
         expect(() => merkleTree([{ path: 'a//b', hash: '1' }])).toThrow(/not a file path/);
+        expect(() => merkleTree([{ path: 'a/./b', hash: '1' }])).toThrow(/not a file path/);
+        expect(() => merkleTree([{ path: 'a/../b', hash: '1' }])).toThrow(/not a file path/);
+        expect(() => merkleTree([{ path: '..', hash: '1' }])).toThrow(/not a file path/);
         expect(merkleTree([{ path: 'a', hash: '1' }, { path: 'a', hash: '1' }]).root).toBe(merkleTree([{ path: 'a', hash: '1' }]).root);
     });
 
     it('an empty listing has a root', () => {
         expect(merkleTree([]).root).toMatch(/^[0-9a-f]{64}$/);
+    });
+});
+
+describe('canonicalListing', () => {
+    const NFC = 'café.md', NFD = 'café.md';
+
+    it('keeps the first of a colliding pair by (normalized, listed) bytewise, in any input order, and never makes merkleTree throw', () => {
+        const pair = [{ path: NFC, hash: 'h1' }, { path: NFD, hash: 'h2' }];
+        for (const input of [pair, [...pair].reverse()]) {
+            const { kept, skipped } = canonicalListing(input);
+            // NFD's 'e' (U+0065) sorts before NFC's 'é' (U+00E9): the NFD spelling is kept, under its NFC path.
+            expect(kept).toEqual([{ path: NFC, hash: 'h2', listedPath: NFD }]);
+            expect(skipped).toEqual([{ path: NFC, reason: 'duplicate-path' }]);
+            expect(() => merkleTree(kept)).not.toThrow();
+        }
+    });
+
+    it('skips invalid paths, a path listed twice, and a path below a kept file', () => {
+        const { kept, skipped } = canonicalListing([
+            { path: 'a', hash: '1' }, { path: 'a/b', hash: '2' }, { path: 'x.md', hash: '3' }, { path: './x.md', hash: '4' },
+            { path: '../up.md', hash: '5' }, { path: 'p/./q', hash: '6' }, { path: 'p//q', hash: '7' }, { path: '', hash: '8' }, { path: 'src\\k.ts', hash: '9' },
+        ]);
+        expect(kept).toEqual([{ path: 'a', hash: '1' }, { path: 'src/k.ts', hash: '9', listedPath: 'src\\k.ts' }, { path: 'x.md', hash: '4', listedPath: './x.md' }]);
+        expect(skipped).toEqual([
+            { path: '../up.md', reason: 'invalid-path' }, { path: 'p/./q', reason: 'invalid-path' }, { path: 'p//q', reason: 'invalid-path' },
+            { path: '', reason: 'invalid-path' }, { path: 'a/b', reason: 'duplicate-path' }, { path: 'x.md', reason: 'duplicate-path' },
+        ]);
     });
 });
 

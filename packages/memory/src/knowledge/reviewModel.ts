@@ -48,7 +48,8 @@ export interface ReviewPlan {
     unchanged: number;
     changed: string[];
     removed: string[];
-    skipped: Array<{ path: string; reason: 'ignored' | 'too-large' | 'no-pack' }>;
+    /** `invalid-path` (empty, `.` or `..` segment) and `duplicate-path` (collides with another once normalized) carry the source's own spelling. */
+    skipped: Array<{ path: string; reason: 'ignored' | 'too-large' | 'no-pack' | 'invalid-path' | 'duplicate-path' }>;
     /** ≈ judgement calls for changed files (sections of judged kinds). */
     estimatedModelCalls: number;
     /** The file budget of the judge pass this run will run after the map is complete (PRD 41 A10); set by the host, so the confirm chip states it. */

@@ -9,12 +9,13 @@
  * never be presented as a fix.
  */
 
+import { contentHashRuleOf } from './contentHash.js';
 import { anchorWithSnippet, composeAnchor, type FindingIdentity } from './findingIdentity.js';
 import { compareStr } from './refs.js';
 
 /* ── comparable() ───────────────────────────────────────────────────────────────────────────────────── */
 
-/** What one side was measured with. Absent fields compare equal only to absent fields. */
+/** What one side was measured with. Absent fields compare equal only to absent fields — except `contentHashRule`, where absent IS the baseline rule. */
 export interface ComparabilityMeta {
     /** `'tree-sitter@<v>'` | `'regex@<v>'` — the family is the part before `@`. */
     extractor?: string;
@@ -50,7 +51,7 @@ export function comparable(before: ComparabilityMeta, after: ComparabilityMeta):
     if (familyOf(before.extractor) !== familyOf(after.extractor)) reasons.add('extractor-mismatch');
     else if (versionOf(before.extractor) !== versionOf(after.extractor)
         || String(before.extractorVersion ?? '') !== String(after.extractorVersion ?? '')) reasons.add('extractor-version-changed');
-    if (before.contentHashRule !== after.contentHashRule) reasons.add('content-hash-rule-changed');
+    if (contentHashRuleOf(before.contentHashRule) !== contentHashRuleOf(after.contentHashRule)) reasons.add('content-hash-rule-changed');
     const bt = before.tools ?? {}, at = after.tools ?? {};
     for (const tool of new Set([...Object.keys(bt), ...Object.keys(at)])) {
         if (!(tool in bt) || !(tool in at)) reasons.add(`tool-missing:${tool}`);
@@ -89,6 +90,8 @@ export interface CodeAnalysisComparison { current: CodeAnalysisSnapshot; baselin
 export const ANALYSIS_ANCHOR_VERSION = 1;
 /** dependency-cruiser, jscpd, knip: a snapshot missing one is never comparable. */
 export const ANALYSIS_TOOL_COUNT = 3;
+/** A duplicate's stored `snippet` is its fragment cut to this many characters; its anchor hashes exactly that text. */
+const MAX_SNIPPET_CHARS = 4000;
 
 const record = (v: unknown): Record<string, any> => v && typeof v === 'object' ? v as Record<string, any> : {};
 const list = (v: unknown): any[] => Array.isArray(v) ? v : [];
@@ -117,11 +120,12 @@ export function normalizeAnalysis(dependencies: unknown, duplicates: unknown, un
     // jscpd's fragment survives line movement. Range identity is a fallback for reporters without fragments.
     locations.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.startLine - b.startLine);
     const identity = typeof clone.fragment === 'string' ? clone.fragment.replace(/\r\n/g, '\n') : locations.map((l) => `${l.path}:${l.startLine}-${l.endLine}`).sort().join('|');
-    // Anchor: the first location's FILE plus the normalized fragment hash — never its lines.
-    const anchor = composeAnchor('duplicate', ANALYSIS_ANCHOR_VERSION, 'file',
-      anchorWithSnippet(locations[0]?.path ?? '', typeof clone.fragment === 'string' ? clone.fragment : undefined));
+    // Anchor: the first location's FILE plus the hash of the STORED snippet — never its lines. The stored (sliced) text is hashed,
+    // so identityOfIssue recomputes the same anchor from an issue saved before anchors existed.
+    const snippet = typeof clone.fragment === 'string' ? clone.fragment.slice(0, MAX_SNIPPET_CHARS) : undefined;
+    const anchor = composeAnchor('duplicate', ANALYSIS_ANCHOR_VERSION, 'file', anchorWithSnippet(locations[0]?.path ?? '', snippet));
     issues.push({ id: `duplicate:${hash(JSON.stringify([locations.map((l) => l.path).sort(), identity]))}`, kind: 'duplicate', locations,
-      ...(typeof clone.fragment === 'string' ? { snippet: clone.fragment.slice(0, 4000) } : {}), anchor });
+      ...(snippet !== undefined ? { snippet } : {}), anchor });
   }
   for (const file of list(record(unused).files)) issues.push({ id: `unused-file:${unusedPath(file)}`, kind: 'unused-file', locations: [{ path: unusedPath(file), startLine: 1, endLine: 1 }],
     anchor: composeAnchor('unused-file', ANALYSIS_ANCHOR_VERSION, 'file', unusedPath(file)) });
@@ -145,7 +149,10 @@ export function normalizeAnalysis(dependencies: unknown, duplicates: unknown, un
 export function identityOfIssue(issue: AnalysisIssue): FindingIdentity {
   const members = [...new Set(issue.locations.map((l) => l.path))].sort(compareStr);
   const anchorKind = issue.kind === 'unused-export' ? 'symbol' : issue.kind === 'unused-dependency' ? 'package' : 'file';
-  return { id: issue.id, anchor: issue.anchor ?? composeAnchor(issue.kind, ANALYSIS_ANCHOR_VERSION, anchorKind, members[0] ?? ''), anchorKind, members };
+  // An issue saved before anchors existed: recompose what normalizeAnalysis writes — the file (`<file>#<name>` for a symbol or package)
+  // plus the hash of the stored snippet — so a pre-upgrade baseline matches by anchor.
+  const primary = anchorKind !== 'file' && issue.symbol !== undefined ? `${members[0] ?? ''}#${issue.symbol}` : (members[0] ?? '');
+  return { id: issue.id, anchor: issue.anchor ?? composeAnchor(issue.kind, ANALYSIS_ANCHOR_VERSION, anchorKind, anchorWithSnippet(primary, issue.snippet)), anchorKind, members };
 }
 
 /** A snapshot's comparability meta: source scope/repo/branch, tool versions, and every tool not `complete` as failed. */
@@ -160,8 +167,9 @@ export function analysisMeta(snapshot: CodeAnalysisSnapshot): ComparabilityMeta 
 export function compareAnalysis(current: CodeAnalysisSnapshot, baseline?: CodeAnalysisSnapshot) {
   const before = new Set(baseline?.issues.map((i) => i.id) ?? []);
   const after = new Set(current.issues.map((i) => i.id));
-  const reasons = baseline ? comparable(analysisMeta(baseline), analysisMeta(current)).reasons : ['no-baseline'];
-  if (baseline && (current.tools.length !== ANALYSIS_TOOL_COUNT || baseline.tools.length !== ANALYSIS_TOOL_COUNT)) reasons.push('tools-incomplete');
+  const found = baseline ? comparable(analysisMeta(baseline), analysisMeta(current)).reasons : ['no-baseline'];
+  if (baseline && (current.tools.length !== ANALYSIS_TOOL_COUNT || baseline.tools.length !== ANALYSIS_TOOL_COUNT)) found.push('tools-incomplete');
+  const reasons = [...new Set(found)].sort(compareStr);
   const complete = reasons.length === 0;
   return {
     comparable: complete,

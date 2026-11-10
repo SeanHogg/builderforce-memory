@@ -93,12 +93,12 @@ export function jobOf(
     f: {
         rootId: string; path: string; hash: string; knownKeys: ReadonlyMap<string, NodeRef>;
         needSections?: boolean; sectionsOnly?: boolean; readMs?: number;
-    } & ({ doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true }),
+    } & ({ doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true; /** The path the worker opens (the source's spelling); default `path`. */ readPath?: string }),
 ): ExtractJob {
     return {
         rootId: f.rootId, path: f.path, hash: f.hash, knownKeys: [...f.knownKeys],
         ...(f.needSections ? { needSections: true } : {}), ...(f.sectionsOnly ? { sectionsOnly: true } : {}),
-        ...(f.readByPool ? { readByPool: { path: f.path, hash: f.hash, ...(f.readMs ? { readMs: f.readMs } : {}) } } : { doc: f.doc! }),
+        ...(f.readByPool ? { readByPool: { path: f.readPath ?? f.path, hash: f.hash, ...(f.readMs ? { readMs: f.readMs } : {}) } } : { doc: f.doc! }),
     } as ExtractJob;
 }
 

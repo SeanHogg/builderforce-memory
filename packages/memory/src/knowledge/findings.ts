@@ -59,7 +59,7 @@ export function genericFindings(g: KnowledgeGraph, registries: ReadonlyMap<strin
     // Anchors (PRD 41 §C3) — one primary per kind, never a line or the member set:
     //   cycle → its sorted-first member · clone-group → the clone-group badge, else its sorted-first member ·
     //   near-duplicate → the sorted-first of the pair · partition-violation → from→to layer pair @ the from FILE ·
-    //   duplicate-copy → the copy's folder · unpartitioned → the pack · stale → the stale source.
+    //   duplicate-copy → the copy's FILE · unpartitioned → the pack · stale → the stale source.
     for (const refs of components(g.edges.filter((e) => e.cycle))) {
         out.push(finding('cycle', packOf(refs[0]!), refs, 'warn', { nodes: refs.length }, undefined, refAnchor(refs[0]!)));
     }

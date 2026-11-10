@@ -67,8 +67,8 @@ export { CHANGED_SINCE_PLAN };
 export const DEFAULT_READ_TIMEOUT_MS = 5_000;
 export const DEFAULT_EXTRACT_TIMEOUT_MS = 10_000;
 
-/** A changed file as the prefetch sees it: a `PlannedFile`'s path, hash, size and asset flag. */
-export type PrefetchFile = { path: string; hash: string; size: number; asset?: true };
+/** A changed file as the prefetch sees it: a `PlannedFile`'s path, hash, size, asset flag and the source's own spelling (reads use it). */
+export type PrefetchFile = { path: string; hash: string; size: number; asset?: true; listedPath?: string };
 
 export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise<Prefetch> {
     // A lane is a worker: taken while the file holds an extract slot. The extract stage holds at most `extractWidth` at once, so the
@@ -95,8 +95,10 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
         if (f.asset) return { kind: 'asset' };
         let doc: SourceDocument | undefined;
         const t0 = Date.now();
+        // The source's own spelling opens the file; `f.path` (normalized) is its identity.
+        const readPath = f.listedPath ?? f.path;
         if (!byPool) {
-            try { doc = await withDeadline(readMsOf(f.path), (signal) => c.args.source.read(f.path, signal)); } catch (error) {
+            try { doc = await withDeadline(readMsOf(readPath), (signal) => c.args.source.read(readPath, signal)); } catch (error) {
                 return { kind: 'read-error', reason: reasonOf(error) };
             }
             parts.readMs = Date.now() - t0;
@@ -105,11 +107,13 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
             if (doc && doc.content.kind === 'text' && isBinaryText(doc.content.text)) return { kind: 'binary' };
             const extraction = await extractSlots.run(async () => {
                 held.lane = lanes.take();
-                try { return await withDeadline(byPool ? extractMs + (readOverrideOf(f.path) ?? 0) : extractMs,(signal) => extractFileDetailed({
+                try { return await withDeadline(byPool ? extractMs + (readOverrideOf(readPath) ?? 0) : extractMs,(signal) => extractFileDetailed({
                 rootId: c.rootId, path: f.path, hash: f.hash, ...(doc ? { doc } : {}), packs: c.packs, store: c.store, composed: c.composed,
                 knownKeys: c.knownKeys, writeCache: false,
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
-                ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? { readByPool: true, ...(readOverrideOf(f.path) ? { readMs: readOverrideOf(f.path)! } : {}) } : {}) } : {}),
+                ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? {
+                    readByPool: true, ...(f.listedPath !== undefined ? { readPath } : {}), ...(readOverrideOf(readPath) ? { readMs: readOverrideOf(readPath)! } : {}),
+                } : {}) } : {}),
             })); } finally { lanes.free(held.lane); }
             }, byPool ? c.signal : undefined);
             if (!extraction) return { kind: 'none' };
@@ -117,7 +121,7 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
             // stored, the bytes read must be the bytes planned: hashed once, from the text already in hand. The review writes the
             // extract cache only for an 'extracted' job, so nothing is stored under the stale hash.
             const hashOf = c.args.source.hashOf;
-            if (hashOf && doc && doc.content.kind === 'text' && hashOf.call(c.args.source, doc.content.text, f.path) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN, transient: true };
+            if (hashOf && doc && doc.content.kind === 'text' && hashOf.call(c.args.source, doc.content.text, readPath) !== f.hash) return { kind: 'failed', reason: CHANGED_SINCE_PLAN, transient: true };
             return { kind: 'extracted', ...(doc ? { doc } : {}), extraction };
         } catch (error) {
             if (error instanceof BinaryContent) return { kind: 'binary' };

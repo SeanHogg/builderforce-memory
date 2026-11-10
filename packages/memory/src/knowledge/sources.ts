@@ -121,20 +121,27 @@ export function claimedDocumentExts(composed: ComposedPacks): string {
     return [...DOCUMENT_EXT].filter((ext) => resolveDocument(composed, `x.${ext}`)).sort(compareStr).join(',') || '-';
 }
 
-/** How far the binary sniff looks: a NUL in this prefix means binary. */
-const BINARY_SNIFF_LENGTH = 8192;
-
-/** A NUL in the first 8 KB means binary, whatever the extension said. */
-export function isBinaryText(text: string): boolean {
-    return text.slice(0, BINARY_SNIFF_LENGTH).includes('\u0000');
-}
+/** How far the binary sniff looks, in BYTES: a NUL (0x00) among the file's first 8192 bytes means binary. */
+const BINARY_SNIFF_BYTES = 8192;
 
 /**
- * The same rule over raw bytes, for a caller that has not decoded the file (contentHash.ts). UTF-8 never encodes anything but
- * U+0000 as a 0 byte, so a NUL in the first 8 KB of bytes is a NUL {@link isBinaryText} sees too.
+ * THE binary rule, whatever the extension said: a 0 byte among the first {@link BINARY_SNIFF_BYTES} bytes. contentHash.ts sniffs raw
+ * bytes with it; {@link isBinaryText} applies it to decoded text.
  */
 export function isBinaryBytes(bytes: Uint8Array): boolean {
-    return bytes.subarray(0, BINARY_SNIFF_LENGTH).includes(0);
+    return bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+}
+
+const utf8 = new TextEncoder();
+
+/**
+ * {@link isBinaryBytes} over decoded text: whether the text's UTF-8 bytes hold a NUL among their first 8192. UTF-8 encodes only
+ * U+0000 as a 0 byte, and every code unit takes at least one byte, so only a NUL within the first 8192 code units can qualify;
+ * its byte offset is the UTF-8 length of the text before it.
+ */
+export function isBinaryText(text: string): boolean {
+    const at = text.slice(0, BINARY_SNIFF_BYTES).indexOf('\u0000');
+    return at >= 0 && utf8.encode(text.slice(0, at)).length < BINARY_SNIFF_BYTES;
 }
 
 /** A read source with its id set to the root-relative path and a media type filled in. */

@@ -13,7 +13,7 @@
  *
  * Stored under {@link extractorManifestKey} as fingerprints: `{ id: 'version', hash: '<version>' }`
  * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments}),
- * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} moves past `eol-lf@1` (a recorded rule that differs is an upgrade; no record never is),
+ * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} moves past {@link BASELINE_CONTENT_HASH_RULE} (no record reads as the baseline; another rule is an upgrade),
  * and one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
  * decimal number of model calls the file is still expected to cost (the plan's estimate):
  *   • a file the run reached but did not finish: the sections the budget or a failed call left
@@ -28,19 +28,13 @@
  */
 
 import type { IngestManifest } from '../ingest/types.js';
-import { CONTENT_HASH_RULE } from './contentHash.js';
+import { BASELINE_CONTENT_HASH_RULE, CONTENT_HASH_RULE, contentHashRuleOf } from './contentHash.js';
 import { compareStr } from './refs.js';
 import { EXTRACTOR_VERSION, extOf, extractorManifestKey, isBinaryPath, isDocumentPath } from './sources.js';
 
 const VERSION_ID = 'version';
 const DOCUMENTS_ID = 'documents';
 const CONTENT_HASH_ID = 'contentHash';
-/**
- * The content-hash rule whose entries carry NO `contentHash` record: the first one. A host switching to `contentHash` changes the
- * hash of every CRLF file, so those re-extract by content (`contentChanged`, an extract-cache miss) — the rule never owes a file
- * by its absence. Only a later rule writes the record, and only a recorded rule that differs from today's owes every file once.
- */
-const BASELINE_CONTENT_HASH_RULE = 'eol-lf@1';
 /** No document type claimed — also what an entry with no `documents` record means, so a root that never had a host parser stores nothing extra. */
 const NO_DOCUMENTS = '-';
 const OWED_PREFIX = 'owed:';
@@ -117,11 +111,13 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
 }
 
 /**
- * True while the files were last reviewed under another extractor version than today's, or under a RECORDED content-hash rule other
- * than today's: every file owes one re-extraction. An entry with no rule record never owes anything by it.
+ * True while the files were last reviewed under another extractor version than today's, or under another content-hash rule
+ * ({@link contentHashRuleOf}: no record is the baseline rule): every file owes one re-extraction. Adopting the baseline rule owes
+ * nothing by itself — a host switching to `contentHash` moves the hash of every CRLF file, and those re-extract by content
+ * (`contentChanged`, an extract-cache miss). The entry writes no record for the baseline; a later rule writes one.
  */
 const upgradePending = (state: ExtractorState): boolean =>
-    state.version !== EXTRACTOR_VERSION || (state.contentHashRule !== undefined && state.contentHashRule !== CONTENT_HASH_RULE);
+    state.version !== EXTRACTOR_VERSION || contentHashRuleOf(state.contentHashRule) !== CONTENT_HASH_RULE;
 
 /** The file's document extension when its asset-ness flipped (a host parser arrived or left since the last run). */
 const isFlipped = (state: ExtractorState, path: string): boolean => !!state.flipped?.size && state.flipped.has(extOf(path));

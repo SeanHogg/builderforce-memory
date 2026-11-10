@@ -15,7 +15,7 @@
 
 import { hashText } from '../ingest/hash.js';
 import type { Finding, NodeRef } from './model.js';
-import { compareStr } from './refs.js';
+import { compareStr, fileRefOf } from './refs.js';
 
 /** What a finding's primary anchor names. `group` is a named group (a clone-group badge, a pack). */
 export type AnchorKind = NonNullable<Finding['anchorKind']>;
@@ -55,8 +55,7 @@ export function anchorWithSnippet(primary: string, snippet?: string): string {
 /** The anchor kind a node ref implies: a section/symbol ref (`…#name`) → symbol, a source ref → file, else group. */
 export function anchorKindOfRef(ref: string): AnchorKind {
     if (!ref.startsWith('src:')) return ref.startsWith('ent:') ? 'symbol' : 'group';
-    const at = ref.indexOf('::', 4);
-    return at >= 0 && ref.indexOf('#', at + 2) >= 0 ? 'symbol' : 'file';
+    return fileRefOf(ref as NodeRef) === ref ? 'file' : 'symbol';
 }
 
 /** The ONE anchor string: `<kind>@<ruleVersion>:<anchorKind>:<primary>`. */

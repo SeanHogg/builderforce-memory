@@ -94,4 +94,13 @@ describe('matchLineage', () => {
             expect(matchLineage(shuffled([...before, before[0]!], seed), shuffled(after, seed + 7))).toEqual(expected);
         }
     });
+
+    it('two identities of one id: the minimum by (anchor, members) is kept, in any input order', () => {
+        // Same id, different anchor/members: which one is kept decides whether c:9 matches by anchor (rule 2).
+        const before = [ident('c:1', 'c@1:file:z', ['x', 'y']), ident('c:1', 'c@1:file:a', ['p', 'q']), ident('c:1', 'c@1:file:a', ['a', 'b'])];
+        const after = [ident('c:9', 'c@1:file:a', ['a', 'b', 'c'])];
+        const expected = [{ lineage: 'changed', change: 'grew', before: 'c:1', after: 'c:9' }];
+        expect(matchLineage(before, after)).toEqual(expected);
+        for (let seed = 1; seed <= 20; seed++) expect(matchLineage(shuffled(before, seed), after)).toEqual(expected);
+    });
 });

@@ -5,7 +5,7 @@
  * names/versions are restated below; the analyzer-RUNNING cases stay in agent-tools.
  */
 
-import { compareAnalysis, normalizeAnalysis, type CodeAnalysisSnapshot } from './comparability.js';
+import { compareAnalysis, identityOfIssue, normalizeAnalysis, type CodeAnalysisSnapshot } from './comparability.js';
 
 const ANALYZERS = [{ name: 'dependency-cruiser', version: '16.10.4' }, { name: 'jscpd', version: '4.0.5' }, { name: 'knip', version: '5.62.0' }];
 
@@ -32,6 +32,29 @@ describe('measured code analysis', () => {
     current.tools[1]!.status = 'failed';
     expect(compareAnalysis(current, baseline)).toMatchObject({ comparable: false, resolved: [] });
     expect(compareAnalysis(current)).toMatchObject({ comparable: false, resolved: [] });
+  });
+});
+
+describe('identityOfIssue: an issue saved before anchors existed', () => {
+  it('recomposes the anchor normalizeAnalysis writes, snippet hash included — also for a fragment over 4000 characters', () => {
+    const long = { duplicates: [{ ...duplicates.duplicates[0]!, fragment: `${'x = x + 1;\n'.repeat(500)}tail` }] };
+    for (const dups of [duplicates, long]) {
+      for (const issue of normalizeAnalysis(dependency, dups, unused).issues) {
+        const { anchor, ...legacy } = issue;
+        expect(identityOfIssue(legacy).anchor).toBe(anchor);
+        expect(identityOfIssue(issue).anchor).toBe(anchor);
+      }
+    }
+  });
+});
+
+describe('compareAnalysis reasons', () => {
+  it('are sorted and deduped after tools-incomplete is added', () => {
+    const fewer = snapshot(); fewer.tools = fewer.tools.slice(1); // drops dependency-cruiser: sorts before tools-incomplete
+    fewer.source.scope = 'z';
+    const { reasons } = compareAnalysis(fewer, snapshot());
+    expect(reasons).toEqual(['scope-changed', 'tool-missing:dependency-cruiser', 'tools-incomplete']);
+    expect([...reasons].sort()).toEqual(reasons);
   });
 });
 

@@ -11,7 +11,7 @@
 
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
-import { merkleTree, type MerkleTree } from './merkle.js';
+import { canonicalListing, merkleTree, type MerkleTree } from './merkle.js';
 import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls, withDocuments } from './owedFiles.js';
 import {
     claimedDocumentExts, compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf,
@@ -65,7 +65,15 @@ export interface PlannedFile {
     asset?: true;
     /** An asset only because a claimed document exceeds the size cap: its node carries `badges.oversized` so a UI can say why it has no text. */
     oversized?: true;
+    /**
+     * The source's own spelling of the path, when it differs from `path` (the normalized one: POSIX, NFC — an NFD name, a `\`).
+     * Reads go through it (`DirectorySource.read`, `readTimeoutMs`, `hashOf`, a pool read); identity, refs and the manifest use `path`.
+     */
+    listedPath?: string;
 }
+
+/** `{ listedPath }` when the listing spelled the path otherwise, else nothing. */
+const listedPathOf = (e: { listedPath?: string }): { listedPath?: string } => (e.listedPath !== undefined ? { listedPath: e.listedPath } : {});
 
 export interface PlanDetail {
     plan: ReviewPlan;
@@ -105,12 +113,16 @@ export async function planDetail(
 ): Promise<PlanDetail> {
     const maxBytes = opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
     const listed: Array<{ path: string; hash: string; size: number }> = [];
-    for await (const entry of source.list()) listed.push({ ...entry, path: entry.path.replace(/\\/g, '/').replace(/^\.?\//, '') });
-    const entries = sortBy(listed, (e) => e.path);
+    for await (const entry of source.list()) listed.push(entry);
+    // The ONE normalization (POSIX, NFC) — so plan paths are Merkle paths — and a listing that cannot break the plan: invalid and
+    // colliding paths are skipped with a reason (merkle.ts canonicalListing), never thrown.
+    const listing = canonicalListing(listed);
+    const entries = sortBy(listing.kept, (e) => e.path);
+    const listedOf = new Map(entries.filter((e) => e.listedPath !== undefined).map((e) => [e.path, e.listedPath!] as const));
 
     const ignoreTexts: Array<{ text: string; base: string }> = [];
     for (const { path, base } of ignoreSourcesOf(entries.map((e) => e.path))) {
-        const doc = await source.read(path);
+        const doc = await source.read(listedOf.get(path) ?? path);
         if (doc.content.kind === 'text') ignoreTexts.push({ text: doc.content.text, base });
     }
     const ignored = ignoreMatcher(ignoreTexts);
@@ -125,7 +137,7 @@ export async function planDetail(
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
-    const skipped: ReviewPlan['skipped'] = [];
+    const skipped: ReviewPlan['skipped'] = [...listing.skipped];
     const byPack: Record<string, number> = {};
     let assets = 0;
     let estimatedSections = 0;
@@ -138,7 +150,10 @@ export async function planDetail(
         if (document && e.size > maxBytes) oversized.add(e.path);
         if (isAssetPath(e.path, !!document && e.size <= maxBytes)) {
             const { owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
-            files.push({ path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true, ...(document && e.size > maxBytes ? { oversized: true as const } : {}) });
+            files.push({
+                path: e.path, hash: e.hash, size: e.size, pack: FALLBACK_PACK_ID, changed, owed, asset: true, ...listedPathOf(e),
+                ...(document && e.size > maxBytes ? { oversized: true as const } : {}),
+            });
             assets += 1;
             continue;
         }
@@ -146,7 +161,7 @@ export async function planDetail(
         const hit = document ?? composed.resolve(stubSource(e.path));
         if (!hit) { skipped.push({ path: e.path, reason: 'no-pack' }); continue; }
         const { contentChanged, owed, changed } = classify(extractor, prior, e.path, e.hash, opts.force === true);
-        files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed, owed });
+        files.push({ path: e.path, hash: e.hash, size: e.size, pack: hit.pack.id, changed, owed, ...listedPathOf(e) });
         byPack[hit.pack.id] = (byPack[hit.pack.id] ?? 0) + 1;
         const spec = packById.get(hit.pack.id)?.judgement;
         if (spec && (spec.claims || spec.entities)) {

@@ -31,6 +31,12 @@ describe('comparable', () => {
         expect(reasonsOf({}, { truncated: true })).toEqual(['truncated']);
     });
 
+    it('an absent content-hash rule IS the baseline rule (eol-lf@1), not a change', () => {
+        expect(comparable({}, { contentHashRule: 'eol-lf@1' })).toEqual({ comparable: true, reasons: [] });
+        expect(comparable({ contentHashRule: 'eol-lf@1' }, {})).toEqual({ comparable: true, reasons: [] });
+        expect(comparable({}, { contentHashRule: 'eol-lf@2' }).reasons).toEqual(['content-hash-rule-changed']);
+    });
+
     it('collects every reason, sorted and deduped, and is not comparable', () => {
         const r = comparable({ ...base, failed: ['knip'] }, { ...base, failed: ['knip'], scope: 'x', truncated: true });
         expect(r).toEqual({ comparable: false, reasons: ['analyzer-failed:knip', 'scope-changed', 'truncated'] });

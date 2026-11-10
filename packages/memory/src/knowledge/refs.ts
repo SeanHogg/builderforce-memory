@@ -21,6 +21,16 @@ export function compareStr(a: string, b: string): number {
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** The ONE root-relative path normalization (PRD 41 §B8.1): POSIX separators, no leading `./` or `/`, NFC. The plan and merkle.ts both use it. */
+export function normalizePath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^(\.?\/)+/, '').normalize('NFC');
+}
+
+/** Whether a normalized path names a file under the root: non-empty, with no empty, `.` or `..` segment. */
+export function isRootFilePath(path: string): boolean {
+    return path !== '' && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
+}
+
 export function srcRef(rootId: string, path: string): NodeRef {
     return `src:${rootId}::${path}`;
 }

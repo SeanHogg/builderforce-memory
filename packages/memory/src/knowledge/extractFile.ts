@@ -44,6 +44,8 @@ export interface ExtractFileArgs {
     readByPool?: boolean;
     /** With `readByPool`: the read deadline for this path (`DirectorySource.readTimeoutMs`), handed to the worker. */
     readMs?: number;
+    /** With `readByPool`: the source's own spelling of `path` (`PlannedFile.listedPath`), the path the worker opens. Default `path`. */
+    readPath?: string;
     /** Told where the time went: the cache lookup and the pool job (PRD 41 A10, so a stall names itself). */
     onTiming?: (t: { lookupMs: number; poolMs: number }) => void;
     /** Leave the extract cache write to the caller (the review writes it in plan order); default: write it. */
@@ -61,8 +63,8 @@ export interface FileExtraction {
 }
 
 /** How the file reaches the pool: its document, or `readByPool` when the pool reads it. */
-function jobSource(a: ExtractFileArgs): { doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true } {
-    return a.readByPool || !a.doc ? { readByPool: true } : { doc: a.doc };
+function jobSource(a: ExtractFileArgs): { doc: SourceDocument; readByPool?: false } | { doc?: undefined; readByPool: true; readPath?: string } {
+    return a.readByPool || !a.doc ? { readByPool: true, ...(a.readPath !== undefined ? { readPath: a.readPath } : {}) } : { doc: a.doc };
 }
 
 /** Adds `extracted` to the content-hash cache, keeping the entries of the other files that share the hash. */

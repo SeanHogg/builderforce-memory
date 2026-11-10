@@ -20,6 +20,16 @@ import { isBinaryBytes } from './sources.js';
 /** Names the normalization {@link contentHash} applies. Change it whenever the hashed bytes of some file would change. */
 export const CONTENT_HASH_RULE = 'eol-lf@1';
 
+/**
+ * The rule an ABSENT record means — in a root's extractor entry (which writes no record for it) and in a
+ * comparability meta. The first rule: every entry written before rules were recorded was hashed under it or under raw
+ * sha256, and the two agree on every LF file (a CRLF file re-extracts by its moved hash).
+ */
+export const BASELINE_CONTENT_HASH_RULE = 'eol-lf@1';
+
+/** The ONE reading of a possibly-absent rule record: absent is {@link BASELINE_CONTENT_HASH_RULE}. */
+export const contentHashRuleOf = (recorded: string | undefined): string => recorded ?? BASELINE_CONTENT_HASH_RULE;
+
 const CR = 0x0d;
 const LF = 0x0a;
 

@@ -38,9 +38,17 @@ export const LINEAGE_MIN_JACCARD = 0.5;
 /** Rule 3 needs at least this many members on BOTH sides. */
 export const LINEAGE_MIN_MEMBERS = 2;
 
+/** Orders two identities of one id by (anchor, members), so which one {@link uniqueSorted} keeps never depends on input order. */
+const compareIdentity = (a: FindingIdentity, b: FindingIdentity): number =>
+    compareStr(a.anchor, b.anchor) || compareStr(JSON.stringify(a.members), JSON.stringify(b.members));
+
+/** One identity per id — the minimum by (anchor, members) — sorted by id. */
 function uniqueSorted(list: readonly FindingIdentity[]): FindingIdentity[] {
     const byId = new Map<string, FindingIdentity>();
-    for (const f of list) if (!byId.has(f.id)) byId.set(f.id, f);
+    for (const f of list) {
+        const kept = byId.get(f.id);
+        if (!kept || compareIdentity(f, kept) < 0) byId.set(f.id, f);
+    }
     return [...byId.values()].sort((a, b) => compareStr(a.id, b.id));
 }
 
