@@ -8,10 +8,13 @@
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
 import type { Extracted, KnowledgePack, KnowledgeParser, KnowledgeStore, NodeRef } from './model.js';
-import { BinaryContent, CHANGED_SINCE_PLAN, ExtractFailed, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
+import { BinaryContent, CHANGED_SINCE_PLAN, EXTRACTOR_KEY_MISMATCH, ExtractFailed, jobOf, runExtractor, type ExtractPool } from './extractJob.js';
 import { srcRef } from './refs.js';
 import { entityName, knownKeysOf, resolveEntities } from './resolve.js';
-import { asPathSource, composePacks, EXTRACTOR_VERSION, isAssetExtract, resolveRelativePath, stubSource, type ComposedPacks } from './sources.js';
+import {
+    asPathSource, composePacks, EXTRACTOR_VERSION, isAssetExtract, isCurrentExtractor, resolveRelativePath, sameExtractorKey, stubSource,
+    type ComposedPacks,
+} from './sources.js';
 
 /** The normalized entity keys of `ent:` fact keys, for `mentions`. */
 export function knownKeysOfEntities(keys: Iterable<string>): ReadonlyMap<string, NodeRef> {
@@ -50,6 +53,16 @@ export interface ExtractFileArgs {
     onTiming?: (t: { lookupMs: number; poolMs: number }) => void;
     /** Leave the extract cache write to the caller (the review writes it in plan order); default: write it. */
     writeCache?: boolean;
+    /**
+     * An input the extractors read besides the file's bytes (agent-tools: a digest of the tsconfig path aliases). A fresh
+     * extract is stamped with it, and a cached one made under another key (or none) is not reused. Absent or '': no key, as
+     * before keys existed.
+     *
+     * With a `pool`, the job carries it but the worker extracts with what IT holds and echoes its own key
+     * (`ExtractJobResult.extractorKey`); a different echo is neither cached nor used (the file stays owed). So a host pool MUST
+     * rebuild its key-dependent inputs (re-read the aliases) whenever the key it is asked for changes.
+     */
+    extractorKey?: string;
 }
 
 export interface FileExtraction {
@@ -98,9 +111,10 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     const tLookup = Date.now();
     const cached = await a.store.getExtracted?.(a.hash);
     const lookupMs = Date.now() - tLookup;
-    // A cached entry of another extractor version is ignored: its output may differ from today's. So is an asset's entry
+    // A cached entry of another extractor version or key is ignored: its output may differ from today's. So is an asset's entry
     // (a document stored as an asset before a host parser claimed it): it holds no extraction.
-    const found = cached?.find((e) => e.sourceRef === ref && e.extractorVersion === EXTRACTOR_VERSION && !isAssetExtract(e));
+    const found = cached?.find((e) => e.sourceRef === ref && !isAssetExtract(e)
+        && isCurrentExtractor({ version: e.extractorVersion, key: e.extractorKey }, a.extractorKey));
     if (found) {
         const tSections = Date.now();
         if (a.pool && wants) {
@@ -117,7 +131,10 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     let extracted: Extracted;
     if (a.pool) {
         const tPool = Date.now();
-        const out = await a.pool(jobOf({ rootId: a.rootId, path: a.path, hash: a.hash, knownKeys, needSections: wants, ...(a.readMs ? { readMs: a.readMs } : {}), ...jobSource(a) }), a.signal);
+        const out = await a.pool(jobOf({
+            rootId: a.rootId, path: a.path, hash: a.hash, knownKeys, needSections: wants, ...(a.readMs ? { readMs: a.readMs } : {}),
+            ...(a.extractorKey ? { extractorKey: a.extractorKey } : {}), ...jobSource(a),
+        }), a.signal);
         a.onTiming?.({ lookupMs, poolMs: Date.now() - tPool });
         if (out.binary) throw new BinaryContent();
         // Exact match only: a result for another file, or none although the packs accept this one, is a failure.
@@ -125,6 +142,8 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
         if (!mine) throw new Error(`extract pool returned no extract for ${a.path}`);
         // The pool read other bytes than the plan hashed: nothing is stored under the planned hash.
         if (mine.sourceHash !== a.hash) throw new Error(CHANGED_SINCE_PLAN); // transient: the bytes may settle
+        // The worker extracted under another key than asked (it still holds old aliases): neither cached nor used, the file stays owed.
+        if (a.extractorKey && !sameExtractorKey(out.extractorKey, a.extractorKey)) throw new Error(EXTRACTOR_KEY_MISMATCH);
         if (wants) {
             if (!out.sections) throw new Error(`extract pool returned no sections for ${a.path}`);
             sections = out.sections;
@@ -133,6 +152,9 @@ export async function extractFileDetailed(a: ExtractFileArgs): Promise<FileExtra
     } else {
         extracted = proven(() => runExtractor(hit, src, sections, { rootId: a.rootId, knownKeys, resolvePath: resolveRelativePath }, a));
     }
+    // The stamp is the key the extract was made under: the worker's echo (equal to the request, checked above) or, in this thread,
+    // the caller's. No key asked: nothing is stamped, as before keys existed.
+    if (a.extractorKey) extracted = { ...extracted, extractorKey: a.extractorKey };
     if (a.writeCache !== false) await putExtract(a.store, a.hash, extracted, cached ?? []);
     return { extracted, parser: hit.parser, pack: hit.pack, sections, cached: false };
 }

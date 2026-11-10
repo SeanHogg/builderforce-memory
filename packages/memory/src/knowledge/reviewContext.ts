@@ -78,8 +78,11 @@ export async function openReview(args: ReviewArgs): Promise<ReviewContext> {
     const progress = (p: ReviewProgressEvent) => args.onProgress?.(p);
 
     const detail = args.plan
-        ? await refreshPlan(args.plan, manifest)
-        : await planDetail(source, manifest, packs, { ...(args.force ? { force: true } : {}), compare: !!args.similar && !!args.judgement });
+        ? await refreshPlan(args.plan, manifest, args.extractorKey ?? args.plan.extractor.extractorKeyNow)
+        : await planDetail(source, manifest, packs, {
+            ...(args.force ? { force: true } : {}), compare: !!args.similar && !!args.judgement,
+            ...(args.extractorKey ? { extractorKey: args.extractorKey } : {}),
+        });
     progress({ phase: 'plan', done: detail.files.length, total: detail.files.length });
     const packIds = packs.map((p) => p.id).sort(compareStr);
     const [storedFacts, storedRelations] = await Promise.all([store.facts(scope), store.relations(scope)]);

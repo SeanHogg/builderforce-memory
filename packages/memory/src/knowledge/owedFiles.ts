@@ -13,6 +13,8 @@
  *
  * Stored under {@link extractorManifestKey} as fingerprints: `{ id: 'version', hash: '<version>' }`
  * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments}),
+ * `{ id: 'extractorKey', hash: '<key>' }` when the run had a caller-supplied extractor key (another key, or none recorded while one is
+ * given, owes every file like a version change; see `isCurrentExtractor`),
  * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} moves past {@link BASELINE_CONTENT_HASH_RULE} (no record reads as the baseline; another rule is an upgrade),
  * and one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
  * decimal number of model calls the file is still expected to cost (the plan's estimate):
@@ -30,11 +32,12 @@
 import type { IngestManifest } from '../ingest/types.js';
 import { BASELINE_CONTENT_HASH_RULE, CONTENT_HASH_RULE, contentHashRuleOf } from './contentHash.js';
 import { compareStr } from './refs.js';
-import { EXTRACTOR_VERSION, extOf, extractorManifestKey, isBinaryPath, isDocumentPath } from './sources.js';
+import { EXTRACTOR_VERSION, extOf, extractorManifestKey, isBinaryPath, isCurrentExtractor, isDocumentPath } from './sources.js';
 
 const VERSION_ID = 'version';
 const DOCUMENTS_ID = 'documents';
 const CONTENT_HASH_ID = 'contentHash';
+const EXTRACTOR_KEY_ID = 'extractorKey';
 /** No document type claimed — also what an entry with no `documents` record means, so a root that never had a host parser stores nothing extra. */
 const NO_DOCUMENTS = '-';
 const OWED_PREFIX = 'owed:';
@@ -47,6 +50,10 @@ export interface ExtractorState {
     version: number | undefined;
     /** The content-hash rule (contentHash.ts) the files were hashed under, when the entry records one; absent for `eol-lf@1` and for every entry written before the rule existed. */
     contentHashRule?: string;
+    /** The caller's extractor key the files were last reviewed under (`ReviewArgs.extractorKey`); absent when none was given. */
+    extractorKey?: string;
+    /** The key this run extracts under: set by the plan, carried to *Continue*, saved by the run. Another key than `extractorKey` owes every file. */
+    extractorKeyNow?: string;
     /** Paths a previous run left unfinished under that version → model calls each still costs. */
     owed: ReadonlyMap<string, number>;
     /** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. Optional: a caller that builds a state by hand need not know it. */
@@ -88,6 +95,7 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
     let version: number | undefined;
     let documents: string | undefined;
     let contentHashRule: string | undefined;
+    let extractorKey: string | undefined;
     const owed = new Map<string, number>();
     const failures = new Map<string, { hash: string; count: number }>();
     for (const { id, hash } of (await manifest.get(extractorManifestKey(rootId))) ?? []) {
@@ -98,6 +106,8 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
             documents = hash;
         } else if (id === CONTENT_HASH_ID) {
             contentHashRule = hash;
+        } else if (id === EXTRACTOR_KEY_ID) {
+            extractorKey = hash;
         } else if (id.startsWith(FAIL_PREFIX)) {
             const at = hash.indexOf(':');
             const count = Number(hash.slice(0, at));
@@ -107,7 +117,15 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
             owed.set(id.slice(OWED_PREFIX.length), Number.isFinite(calls) && calls >= 0 ? calls : UPGRADE_CALLS);
         }
     }
-    return { version, owed, failures, documents: documents ?? NO_DOCUMENTS, ...(contentHashRule !== undefined ? { contentHashRule } : {}) };
+    return {
+        version, owed, failures, documents: documents ?? NO_DOCUMENTS,
+        ...(contentHashRule !== undefined ? { contentHashRule } : {}), ...(extractorKey !== undefined ? { extractorKey } : {}),
+    };
+}
+
+/** The state with the key this run extracts under (absent or empty: none, as before keys existed). */
+export function withExtractorKey(state: ExtractorState, keyNow: string | undefined): ExtractorState {
+    return keyNow ? { ...state, extractorKeyNow: keyNow } : state;
 }
 
 /**
@@ -116,8 +134,15 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
  * nothing by itself — a host switching to `contentHash` moves the hash of every CRLF file, and those re-extract by content
  * (`contentChanged`, an extract-cache miss). The entry writes no record for the baseline; a later rule writes one.
  */
-const upgradePending = (state: ExtractorState): boolean =>
+const versionUpgradePending = (state: ExtractorState): boolean =>
     state.version !== EXTRACTOR_VERSION || contentHashRuleOf(state.contentHashRule) !== CONTENT_HASH_RULE;
+
+/**
+ * True while the files were last reviewed under another extractor version, content-hash rule or caller extractor key
+ * ({@link isCurrentExtractor}): every file owes one re-extraction.
+ */
+const upgradePending = (state: ExtractorState): boolean =>
+    !isCurrentExtractor({ version: state.version, key: state.extractorKey }, state.extractorKeyNow) || versionUpgradePending(state);
 
 /** The file's document extension when its asset-ness flipped (a host parser arrived or left since the last run). */
 const isFlipped = (state: ExtractorState, path: string): boolean => !!state.flipped?.size && state.flipped.has(extOf(path));
@@ -136,11 +161,13 @@ const isAssetNow = (state: ExtractorState, path: string): boolean => {
 };
 
 /**
- * Model calls an owed `path` is expected to cost: its recorded count, plus one while an upgrade is pending or its asset-ness flipped.
- * An asset costs none (it is never read or judged); a file that flipped TO a document does.
+ * Model calls an owed `path` is expected to cost: its recorded count, plus one while a version (or content-hash rule) upgrade is
+ * pending or its asset-ness flipped. A change of the caller's extractor key alone adds nothing: the files re-extract, but their
+ * sections' text is the same, so the judgements are re-anchored, not made again. An asset costs none (it is never read or judged);
+ * a file that flipped TO a document does.
  */
 export const owedCalls = (state: ExtractorState, path: string): number =>
-    isAssetNow(state, path) ? 0 : (upgradePending(state) || isFlipped(state, path) ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
+    isAssetNow(state, path) ? 0 : (versionUpgradePending(state) || isFlipped(state, path) ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
 
 /**
  * Paths in the files manifest that the plan does not list yet are owed: ignored, claimed by
@@ -179,14 +206,15 @@ export function owedAfterRun(a: {
     return out;
 }
 
-/** Records today's version and exactly the files still owed after this run. */
+/** Records today's version (and extractor key, when the run had one) and exactly the files still owed after this run. */
 export async function saveExtractorState(
     manifest: IngestManifest, rootId: string, owed: ReadonlyMap<string, number>, failures: ReadonlyMap<string, { hash: string; count: number }> = new Map(),
-    documents?: string,
+    documents?: string, extractorKey?: string,
 ): Promise<void> {
     await manifest.set(extractorManifestKey(rootId), [
         { id: VERSION_ID, hash: String(EXTRACTOR_VERSION) },
         ...(CONTENT_HASH_RULE !== BASELINE_CONTENT_HASH_RULE ? [{ id: CONTENT_HASH_ID, hash: CONTENT_HASH_RULE }] : []),
+        ...(extractorKey ? [{ id: EXTRACTOR_KEY_ID, hash: extractorKey }] : []),
         ...(documents !== undefined && documents !== NO_DOCUMENTS ? [{ id: DOCUMENTS_ID, hash: documents }] : []),
         ...[...owed].sort((a, b) => compareStr(a[0], b[0])).map(([path, calls]) => ({ id: `${OWED_PREFIX}${path}`, hash: String(calls) })),
         ...[...failures].filter(([path]) => owed.has(path)).sort((a, b) => compareStr(a[0], b[0])).map(([path, f]) => ({ id: `${FAIL_PREFIX}${path}`, hash: `${f.count}:${f.hash}` })),

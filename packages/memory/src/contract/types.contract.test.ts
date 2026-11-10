@@ -22,6 +22,8 @@ import type {
 } from '../knowledge/index.js';
 import type { dedupeSymbolEdges } from '../knowledge/index.js';
 import type { PlannedFile } from '../knowledge/index.js';
+import type { ExtractFileArgs, PlanOptions, ReviewArgs, refreshPlan } from '../knowledge/index.js';
+import type { IngestManifest } from '../ingest/types.js';
 import type {
     AnalysisIssue, AnchorKind, CodeAnalysisSnapshot, ComparabilityMeta, Finding, FindingIdentity, LineageEntry,
     comparable, compareAnalysis, identityOf, matchLineage, isBinaryBytes,
@@ -108,7 +110,9 @@ export const jobTheWorkerReadsWithDeadline = { ...base, readByPool: { path: 'a.m
 // PlannedFile.oversized: an asset only because a claimed document is over the size cap; optional, so a hand-built PlannedFile stays valid.
 export type PlannedFile_oversized = Expect<Equal<PlannedFile['oversized'], true | undefined>>;
 export const resultShape = { binary: true, extracted: [anExtract], sections: someSections } satisfies ExtractJobResult;
-export type ExtractJobResult_fields = Expect<Equal<ExtractJobResult, { binary?: true; extracted: Extracted[]; sections?: ParsedSection[] }>>;
+// `extractorKey`: the key the worker ACTUALLY extracted under (it echoes its own, never the job's); a mismatch is dropped, not cached.
+export type ExtractJobResult_fields = Expect<Equal<ExtractJobResult, { binary?: true; extracted: Extracted[]; sections?: ParsedSection[]; extractorKey?: string }>>;
+export type ExtractJob_extractorKey = Expect<Equal<Pick<ExtractJob, 'extractorKey'>, { extractorKey?: string }>>;
 // ExtractFailed: the marker of a PROVEN-final extraction failure (the parser or extractor threw); every other failure is transient.
 export type ExtractFailed_is_an_Error = Expect<Equal<InstanceType<typeof ExtractFailed> extends Error ? true : false, true>>;
 export type ExtractFailed_constructor = Expect<Equal<ConstructorParameters<typeof ExtractFailed>, [message: string, options?: { cause?: unknown }]>>;
@@ -118,6 +122,15 @@ export type ExtractorState_failures = Expect<Equal<ExtractorState['failures'], R
 export type ExtractorState_oversized = Expect<Equal<ExtractorState['oversized'], ReadonlySet<string> | undefined>>;
 // ExtractorState.contentHashRule: the content-hash rule the entry recorded (absent: none recorded, which never owes a file); optional so a hand-built state stays valid.
 export type ExtractorState_contentHashRule = Expect<Equal<ExtractorState['contentHashRule'], string | undefined>>;
+// The caller-supplied extractor key (agent-tools: the tsconfig path-alias digest): optional everywhere, so a host passing none is unchanged.
+export type ExtractorState_extractorKey = Expect<Equal<Pick<ExtractorState, 'extractorKey' | 'extractorKeyNow'>, { extractorKey?: string; extractorKeyNow?: string }>>;
+export type Extracted_extractorKey = Expect<Equal<Pick<Extracted, 'extractorKey'>, { extractorKey?: string }>>;
+export type ExtractFileArgs_extractorKey = Expect<Equal<Pick<ExtractFileArgs, 'extractorKey'>, { extractorKey?: string }>>;
+export type PlanOptions_extractorKey = Expect<Equal<Pick<PlanOptions, 'extractorKey'>, { extractorKey?: string }>>;
+export type ReviewArgs_extractorKey = Expect<Equal<Pick<ReviewArgs, 'extractorKey'>, { extractorKey?: string }>>;
+export type refreshPlan_signature = Expect<Equal<
+    Parameters<typeof refreshPlan>, [detail: PlanDetail, manifest: IngestManifest, extractorKey?: string]
+>>;
 
 /* ── Content identity and directory Merkle hashes (PRD 41 §B2 steps 0 and 4) ───────────────────────────────── */
 export type contentHash_signature = Expect<Equal<typeof contentHash, (bytes: Uint8Array) => string>>;

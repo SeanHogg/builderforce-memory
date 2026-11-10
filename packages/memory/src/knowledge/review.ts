@@ -115,6 +115,7 @@ async function applyChangedFiles(c: ReviewContext): Promise<AbortSignal> {
     const prefetch = createPrefetch({
         args, signal: runSignal, rootId: c.rootId, packs: args.packs, store: args.store, composed: c.composed, knownKeys: c.knownKeys,
         width: readAhead, extractWidth: concurrency,
+        ...(c.detail.extractor.extractorKeyNow ? { extractorKey: c.detail.extractor.extractorKeyNow } : {}),
     });
     const dispatch = {
         // A mechanical run (pass 1) makes no model call: judged files stay owed.

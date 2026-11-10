@@ -6,6 +6,15 @@
 
 - **`encodeCoChange` never writes a line `decodeCoChange` would reject.** It drops an entry with an empty ref (or one holding a newline), a `together` that is not an integer ≥ 1 or exceeds `ofSelf`, or a `low` / `high` that is NaN, outside [0, 1] or with low > high. Before, one such entry voided the whole badge on read (and `coChangeHidden` with it). Encoder and decoder now share one line validator.
 
+### Added — the caller's extractor key (`./knowledge`, PRD 43)
+
+- **`extractorKey?: string`** on `ExtractFileArgs`, `PlanOptions` and `ReviewArgs`: an input the host's extractors read besides a file's bytes (agent-tools passes its tsconfig path-alias digest). A fresh extract is stamped with it (`Extracted.extractorKey?`), and the root's extractor entry records it (`{ id: 'extractorKey' }`; `ExtractorState.extractorKey?` / `extractorKeyNow?`). A cached extract made under another key — or under none when one is now given — is not reused, and a changed key owes every file like a version bump, so files whose bytes did not change still re-extract when the tsconfig did. `refreshPlan(detail, manifest, extractorKey?)` takes it for *Continue* (default: the plan's — a host must pass a freshly computed key; `''` is an explicit "no key").
+- **A host pool echoes its own key.** `ExtractJob.extractorKey?` carries the requested key; the worker extracts with what it holds and returns the key it actually used in `ExtractJobResult.extractorKey?` (`extractJob(job, packs, workerKey?)` echoes `workerKey`, never the job's). A different echo is neither cached nor used (`EXTRACTOR_KEY_MISMATCH`, transient): the file stays owed until the pool has rebuilt its aliases.
+- **A key-only change estimates no model calls** (the files re-extract; their judgements are re-anchored). A version upgrade keeps its estimate. An aborted run keeps the previously recorded key, so every file stays owed until a run under the new key finishes.
+- **No key: unchanged.** Records and extracts without a key match a call without one, and nothing new is written. The extract cache and the owed state decide by ONE comparison (`isCurrentExtractor`: version and key; an empty key reads as none).
+- Not carried by the BFKP pack: an extract that went through a pack reads as keyless, so a keyed host re-extracts it once.
+- Minor, non-breaking: optional fields and an optional parameter only.
+
 ## 2026.10.71
 
 ### Added — predicted measures P4 co-change and P7 transitions (`./knowledge`, PRD 38)

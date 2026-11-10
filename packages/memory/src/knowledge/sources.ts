@@ -25,6 +25,22 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 // 6 (2026-11-10, PRD 43 P0c): the agent-tools code pack resolves tsconfig path aliases, names callback-owner symbols,
 //   emits `new X().m()` call edges and reads JSX renders as calls, so cached code extracts re-run.
 export const EXTRACTOR_VERSION = 6;
+
+/**
+ * THE test of "this extract (or this root's extractor entry) was made by today's extractor": today's
+ * {@link EXTRACTOR_VERSION}, and the same caller-supplied extractor key (`extractorKey`: an input the host's extractors
+ * read besides the file's bytes, e.g. a digest of the tsconfig path aliases). An absent or empty key equals only an
+ * absent or empty key, so a caller that passes none behaves as before keys existed and old records still match it.
+ * The extract cache (extractFile.ts) and the owed state (owedFiles.ts) both decide by this one comparison.
+ */
+export function isCurrentExtractor(recorded: { version: number | undefined; key: string | undefined }, keyNow: string | undefined): boolean {
+    return recorded.version === EXTRACTOR_VERSION && sameExtractorKey(recorded.key, keyNow);
+}
+
+/** THE key comparison (inside {@link isCurrentExtractor}; the owed estimate also needs it alone): absent and '' both mean "no key". */
+export function sameExtractorKey(a: string | undefined, b: string | undefined): boolean {
+    return (a || undefined) === (b || undefined);
+}
 /**
  * Always ignored: VCS internals, installed dependencies, builderforce config, and lockfiles (`yarn.lock`, `Cargo.lock` …): generated,
  * huge, and plain text — extracted they would cost judgement calls for nothing; they were never stored (once skipped as binary).

@@ -55,7 +55,9 @@ export async function finishReview(c: ReviewContext, flush: () => Promise<void>)
     await saveExtractorState(manifest, c.rootId, owedAfterRun({
         state: c.detail.extractor, changed: c.changed, prior: c.detail.prior, finished: c.finished, carried: c.detail.carried,
         live: c.filesNow, measured: c.measured, unreadable: c.unreadable,
-    }), c.failures, c.detail.extractor.documentsNow);
+    }), c.failures, c.detail.extractor.documentsNow,
+    // An aborted run keeps the key the root was last reviewed under: every file stays owed until a run under the new key finishes.
+    report.aborted ? c.detail.extractor.extractorKey : c.detail.extractor.extractorKeyNow);
     await writeBatch(c, report.aborted ? c.scopeRecord : { ...c.scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(c.now()).toISOString() });
     report.durationMs = c.now() - c.started;
     c.progress({ phase: 'done', done: c.work.length, total: c.work.length });

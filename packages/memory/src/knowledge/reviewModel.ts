@@ -124,6 +124,18 @@ export interface ReviewArgs {
     plan?: PlanDetail;
     /** *Re-review all*: every file is reviewed whatever its hash (see `PlanOptions.force`). Ignored with `plan`. */
     force?: boolean;
+    /**
+     * An input the host's extractors read besides the file bytes (agent-tools: a digest of the tsconfig path aliases); see
+     * `PlanOptions.extractorKey`. A changed key owes every file and bypasses extracts cached under another key.
+     *   - Pass a FRESHLY computed key on every run, *Continue* included: with `plan`, an absent key falls back to the plan's,
+     *     which is stale if the inputs changed since the plan (new-alias extracts would be stamped with the old key).
+     *   - `''` is an explicit "no key" (also with `plan`); absent without `plan` is no key too — as before keys existed.
+     *   - With `extractPool`, the pool must rebuild its key-dependent inputs when the key changes: a worker echoing another key
+     *     (`ExtractJobResult.extractorKey`) has its result dropped and the file stays owed.
+     *   - An aborted run does not record the new key: the next run owes every file again (cheap — the extracts made under the
+     *     new key are reused).
+     */
+    extractorKey?: string;
     signal?: AbortSignal;
     /**
      * Files read + extracted ahead of judging (1..32, default 8). With an `extractPool` this is the pool's width.

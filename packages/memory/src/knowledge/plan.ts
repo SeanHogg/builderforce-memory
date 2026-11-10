@@ -12,7 +12,7 @@
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
 import { canonicalListing, merkleTree, type MerkleTree } from './merkle.js';
-import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls, withDocuments } from './owedFiles.js';
+import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls, withDocuments, withExtractorKey } from './owedFiles.js';
 import {
     claimedDocumentExts, compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf,
     isAssetPath, isDocumentPath, manifestMap, resolveDocument, stubSource,
@@ -44,6 +44,13 @@ export interface PlanOptions {
      * estimate of the plan it continues; it is not recomputed.)
      */
     compare?: boolean;
+    /**
+     * An input the host's extractors read besides the file bytes (agent-tools: a digest of the tsconfig path aliases). When it
+     * differs from the key the root was last reviewed under (or one is given where none was recorded), every file is owed a
+     * re-extraction, its content unchanged or not — at no estimated model calls (the judgements are re-anchored). Absent or '':
+     * no key, as before keys existed.
+     */
+    extractorKey?: string;
 }
 
 export interface PlannedFile {
@@ -133,7 +140,10 @@ export async function planDetail(
     // A file's asset-ness depends on the packs (a pdf is an asset until a host parser claims it): a change in the document types the
     // packs claim since the last run owes the files of those types a re-processing, whatever their hash (see withDocuments).
     const oversized = new Set<string>();
-    const extractor: ExtractorState = { ...withDocuments(await loadExtractorState(manifest, source.rootId), claimedDocumentExts(composed)), oversized };
+    const extractor: ExtractorState = {
+        ...withExtractorKey(withDocuments(await loadExtractorState(manifest, source.rootId), claimedDocumentExts(composed)), opts.extractorKey),
+        oversized,
+    };
     const packById = new Map(packs.map((p) => [p.id, p] as const));
 
     const files: PlannedFile[] = [];
@@ -212,11 +222,13 @@ export async function planDetail(
  * *Continue*: the confirmed plan without a re-walk. Only `changed` is re-read — against the
  * manifest and owed list as the last run left them — so files finished since are not reviewed
  * again, and files it left owed (an upgrade cut short, a failed read) are picked up.
+ * `extractorKey` is the key this run extracts under (`PlanOptions.extractorKey`; `''` = no key). A host must pass a FRESHLY
+ * computed key: the default, the plan's, is stale when the extractor inputs changed since the plan was made.
  */
-export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest): Promise<PlanDetail> {
+export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest, extractorKey = detail.extractor.extractorKeyNow): Promise<PlanDetail> {
     const prior = await manifestMap(manifest, filesManifestKey(detail.plan.rootId));
     const extractor: ExtractorState = {
-        ...withDocuments(await loadExtractorState(manifest, detail.plan.rootId), detail.extractor.documentsNow),
+        ...withExtractorKey(withDocuments(await loadExtractorState(manifest, detail.plan.rootId), detail.extractor.documentsNow), extractorKey),
         ...(detail.extractor.oversized ? { oversized: detail.extractor.oversized } : {}),
     };
     const files = detail.files.map((f) => {

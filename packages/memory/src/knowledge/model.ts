@@ -92,6 +92,12 @@ export interface Extracted {
     sourceHash: string;
     /** The extractor version (`EXTRACTOR_VERSION`) that produced it; a cached entry of another version is ignored. */
     extractorVersion?: number;
+    /**
+     * The caller's extractor key it was made under (`ExtractFileArgs.extractorKey`), absent when none was given. A cached entry
+     * made under another key, or with none when one is now given, is ignored (`isCurrentExtractor`). Not carried by the BFKP
+     * pack: an extract that went through a pack reads as keyless, so a keyed host re-extracts it once.
+     */
+    extractorKey?: string;
     nodes: KNode[];
     edges: KEdge[];
     /** Exact keys for entity resolution and the index's exact tier. */

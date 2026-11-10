@@ -43,6 +43,8 @@ export interface PrefetchContext {
     width: number;
     /** Files in the extract stage at once (the pool's width); default `width`. */
     extractWidth?: number;
+    /** The run's extractor key (the plan's `extractor.extractorKeyNow`), passed to every extraction. */
+    extractorKey?: string;
 }
 
 /** A {@link Prefetch} before its timing is stamped. */
@@ -110,6 +112,7 @@ export function createPrefetch(c: PrefetchContext): (f: PrefetchFile) => Promise
                 try { return await withDeadline(byPool ? extractMs + (readOverrideOf(readPath) ?? 0) : extractMs,(signal) => extractFileDetailed({
                 rootId: c.rootId, path: f.path, hash: f.hash, ...(doc ? { doc } : {}), packs: c.packs, store: c.store, composed: c.composed,
                 knownKeys: c.knownKeys, writeCache: false,
+                ...(c.extractorKey ? { extractorKey: c.extractorKey } : {}),
                 onTiming: (t) => { parts.lookupMs = t.lookupMs; parts.poolMs = t.poolMs; },
                 ...(c.args.extractPool ? { pool: c.args.extractPool, signal, wantsSections, ...(byPool ? {
                     readByPool: true, ...(f.listedPath !== undefined ? { readPath } : {}), ...(readOverrideOf(readPath) ? { readMs: readOverrideOf(readPath)! } : {}),
