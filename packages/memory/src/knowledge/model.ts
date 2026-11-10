@@ -211,12 +211,30 @@ export interface Scope {
     rootId: string;
 }
 
+/**
+ * What a review was measured with (PRD 41 §C9): the extractor version and the analyzers, name → version. Both sides of a
+ * compare state it; memory's `comparable()` reads them as `ComparabilityMeta.extractorVersion` / `tools`. The packs are
+ * NOT in `toolVersions`: they are `ScopeRecord.packs`.
+ */
+export interface MeasuredWith {
+    /** The extractor version, as text (`ComparabilityMeta.extractorVersion` compares it as a string). */
+    extractorVersion: string;
+    /** Analyzer name → version; empty when no analyzer measured the root. */
+    toolVersions: Record<string, string>;
+}
+
 export interface ScopeRecord {
     rootId: string;
     title: string;
     packs: string[];
     lastDigest?: string;
     lastReviewedAt?: string;
+    /**
+     * What the review at `lastDigest` was measured with, recorded when that review ran (`ReviewArgs.measured`) — never
+     * re-derived later, so a review queued offline across an upgrade keeps the versions it was made with. A write that
+     * moves `lastDigest` replaces it (absent ⇒ unknown); the BFKP pack carries it (its own section, PRD 41 §C9).
+     */
+    measured?: MeasuredWith;
 }
 
 /** Where knowledge is persisted: the platform API adapter or the local snapshot adapter. */

@@ -11,7 +11,7 @@ import type { Pack } from '../types.js';
 import type { SectionCodec } from './columns.js';
 import { MANIFEST_BUCKETS } from '../manifest.js';
 
-export const TAG = { STR: 1, HASH: 2, FILE: 3, EXTR: 4, FACT: 5, REL: 6, STALE: 7, DEL: 8, SCOPE: 9, ANALYSIS: 10, LEAF: 11, BKT: 12, SITE: 13 } as const;
+export const TAG = { STR: 1, HASH: 2, FILE: 3, EXTR: 4, FACT: 5, REL: 6, STALE: 7, DEL: 8, SCOPE: 9, ANALYSIS: 10, LEAF: 11, BKT: 12, SITE: 13, MEAS: 14 } as const;
 
 export const fileSection: SectionCodec = {
     tag: TAG.FILE,
@@ -123,6 +123,44 @@ export const scopeSection: SectionCodec = {
         if (flags & 2) scope.lastReviewedAt = t.str(r.varint());
         assertConsumed(r, 'SCOPE section');
         into.scope = scope;
+    },
+};
+
+/**
+ * MEAS — the scope's `measured` (PRD 41 §C9): what its review was measured with. SCOPE is a CLOSED section (frame.ts), so
+ * this is a NEW tag: a reader older than this release skips it and decodes the scope unmeasured (unknown — never "the
+ * same"). Read after SCOPE (ROW_SECTIONS order); a MEAS without a SCOPE is malformed.
+ *
+ *   extractorVersion STR · n varint · n × (tool STR · version STR), tools in sorted order
+ */
+export const measuredSection: SectionCodec = {
+    tag: TAG.MEAS,
+    write(pack, t) {
+        const m = pack.scope?.measured;
+        if (!m) return undefined;
+        // A scope may come from an unvalidated JSON snapshot: never write what this decoder would refuse.
+        if (typeof m.extractorVersion !== 'string' || !m.toolVersions || typeof m.toolVersions !== 'object') throw new PackFormatError('scope.measured is malformed');
+        const tools = Object.keys(m.toolVersions).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+        if (tools.some((tool) => tool === '__proto__' || typeof m.toolVersions[tool] !== 'string')) throw new PackFormatError('scope.measured.toolVersions is malformed');
+        const w = new ByteWriter();
+        w.varint(t.str(m.extractorVersion));
+        w.varint(tools.length);
+        for (const tool of tools) { w.varint(t.str(tool)); w.varint(t.str(m.toolVersions[tool]!)); }
+        return w.finish();
+    },
+    read(bytes, t, limits, into) {
+        if (!into.scope) throw new PackFormatError('MEAS section without a SCOPE');
+        const r = new ByteReader(bytes);
+        const extractorVersion = t.str(r.varint());
+        const n = boundedCount(r, limits.budget, 'measured tools');
+        const toolVersions: Record<string, string> = {};
+        for (let i = 0; i < n; i++) {
+            const tool = t.str(r.varint());
+            if (tool === '__proto__' || Object.prototype.hasOwnProperty.call(toolVersions, tool)) throw new PackFormatError(`MEAS names ${tool} twice or as __proto__`);
+            toolVersions[tool] = t.str(r.varint());
+        }
+        assertConsumed(r, 'MEAS section');
+        into.scope.measured = { extractorVersion, toolVersions };
     },
 };
 

@@ -29,6 +29,7 @@ import type {
     comparable, compareAnalysis, identityOf, matchLineage, isBinaryBytes,
 } from '../knowledge/index.js';
 import { placementOf } from '../knowledge/index.js';
+import type { MeasuredWith } from '../knowledge/index.js';
 import type {
     applyCoChangeHidden, coChangePartners, coChangeRecallAtK, decodeCoChange, encodeCoChange, mostLikelyWalk, stationTransitions, transitionOf,
     transitionsFromSequences, transitionsFromWeights, CoChangeBadgeEntry, CoChangeCommit, CoChangeOptions, CoChangePartner, CoChangeRecall,
@@ -58,6 +59,12 @@ export type KnowledgeSnapshot_rows_are_required = Expect<Equal<
 >>;
 export const snapshotWithoutExtracted = { version: 1, scopes: [], facts: {}, relations: {} } satisfies KnowledgeSnapshot;
 export const readsThroughTheEntriesPort = (store: LocalSnapshotStore): Promise<Record<string, Extracted[]>> => store.extractedEntries();
+
+/* ── ScopeRecord.measured (PRD 41 §C9): recorded when the review runs, carried by the pack's MEAS section ───────────── */
+export type MeasuredWith_shape = Expect<Equal<MeasuredWith, { extractorVersion: string; toolVersions: Record<string, string> }>>;
+export type ScopeRecord_measured_is_optional = Expect<Equal<IsOptional<ScopeRecord, 'measured'>, true>>;
+export type ScopeRecord_measured_shape = Expect<Equal<ScopeRecord['measured'], MeasuredWith | undefined>>;
+export type ReviewArgs_measured = Expect<Equal<Pick<import('../knowledge/index.js').ReviewArgs, 'measured'>, { measured?: MeasuredWith }>>;
 
 /* ── ReviewReport ──────────────────────────────────────────────────────────────────────────────────────────── */
 export type ReviewReport_judging_fields = Expect<Equal<

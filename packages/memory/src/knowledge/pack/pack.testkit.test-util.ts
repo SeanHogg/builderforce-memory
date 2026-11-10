@@ -81,7 +81,10 @@ export function genPack(seed: number, o: GenOptions): Pack {
             return r;
         });
     }
-    if (rich && g.chance(0.5)) pack.scope = { rootId: ROOT, title: 'Gen', packs: ['code', 'docs'], lastDigest: g.hex64().slice(0, 32), lastReviewedAt: '2026-11-07T00:00:00.000Z' };
+    if (rich && g.chance(0.5)) {
+        pack.scope = { rootId: ROOT, title: 'Gen', packs: ['code', 'docs'], lastDigest: g.hex64().slice(0, 32), lastReviewedAt: '2026-11-07T00:00:00.000Z' };
+        if (g.chance(0.5)) pack.scope.measured = { extractorVersion: String(g.int(9)), toolVersions: g.chance(0.5) ? { knip: '5.30.0', jscpd: '4.0.5' } : {} };
+    }
     if (rich && g.chance(0.5)) pack.analysis = { version: 1, nodes: ['a'], edges: [] };
     if (o.hashes) pack.hashes = [g.hex64(), '~tag:odd-id', g.hex64()];
     return pack;

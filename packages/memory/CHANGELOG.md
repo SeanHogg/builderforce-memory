@@ -25,6 +25,16 @@
 
 - **Thompson sampling is deterministic under its own seed.** `thompsonSample` / `thompsonRank` drew normals from a polar Box–Muller that cached its spare at module scope, so one caller's spare leaked into the next caller's schedule and the same seed could give a different pick. They now use the module's one stateless normal (`normalDraw`). Draws differ from before for the same seed. Regression: `src/contract/regression.thompsonDeterminism.test.ts`.
 
+## 2026.10.73
+
+### Added — a review's versions are recorded when it runs and carried by the pack (`./knowledge`, PRD 41 §C9)
+
+- **`MeasuredWith`** `{ extractorVersion: string; toolVersions: Record<string, string> }` and **`ScopeRecord.measured?: MeasuredWith`**: what the review at `lastDigest` was measured with (the extractor version and analyzer name → version; the packs stay in `ScopeRecord.packs`).
+- **`ReviewArgs.measured?`**: a finished (not aborted) review stamps it on the scope together with `lastDigest`. `LocalSnapshotStore.write` drops a stored `measured` when a write records a `lastDigest` (moved or not) without one, so an unmeasured review never inherits the versions of the review before it (absent = unknown); a write without a digest (mid-run, aborted) keeps it.
+- **BFKP: a new `MEAS` section (tag 14)** carries `scope.measured` (`extractorVersion`, then the tools in sorted order). SCOPE is closed, so this is a new tag: a reader older than this release skips it and decodes the scope unmeasured; a pack without it (every older pack) decodes with no `measured`. A MEAS without a SCOPE, a tool named twice (or `__proto__`), or trailing bytes is a `PackFormatError`; so is ENCODING a `measured` that is not all strings (a scope loaded from an unvalidated snapshot).
+- **Why**: hosts stated their versions when they BUILT a pack, so a review queued offline across an extension upgrade was stored with the newer versions and compared as "the same". Regression: `src/contract/regression.scopeMeasured.test.ts`.
+- Minor, non-breaking: optional fields and a new section tag only.
+
 ## 2026.10.72
 
 ### Fixed (`./knowledge`, PRD 38 P4)

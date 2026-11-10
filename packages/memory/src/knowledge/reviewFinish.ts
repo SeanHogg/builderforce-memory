@@ -58,7 +58,10 @@ export async function finishReview(c: ReviewContext, flush: () => Promise<void>)
     }), c.failures, c.detail.extractor.documentsNow,
     // An aborted run keeps the key the root was last reviewed under: every file stays owed until a run under the new key finishes.
     report.aborted ? c.detail.extractor.extractorKey : c.detail.extractor.extractorKeyNow);
-    await writeBatch(c, report.aborted ? c.scopeRecord : { ...c.scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(c.now()).toISOString() });
+    // What the review was measured with is recorded NOW, with its digest (PRD 41 §C9): never re-derived when it is synced.
+    await writeBatch(c, report.aborted ? c.scopeRecord : {
+        ...c.scopeRecord, lastDigest: report.digest, lastReviewedAt: new Date(c.now()).toISOString(), ...(args.measured ? { measured: args.measured } : {}),
+    });
     report.durationMs = c.now() - c.started;
     c.progress({ phase: 'done', done: c.work.length, total: c.work.length });
     return report;

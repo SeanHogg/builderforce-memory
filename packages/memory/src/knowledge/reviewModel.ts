@@ -5,7 +5,7 @@
 
 import type { IngestManifest, SourceDocument } from '../ingest/types.js';
 import type { SimilarPair } from '../retrieval/knowledge-index/types.js';
-import type { JudgementPort, KnowledgePack, KnowledgeStore } from './model.js';
+import type { JudgementPort, KnowledgePack, KnowledgeStore, MeasuredWith } from './model.js';
 import type { PlanDetail } from './plan.js';
 import type { ExtractPool } from './extractJob.js';
 import type { ReviewFailure, ReviewPhase, ReviewStep } from './reviewRunModel.js';
@@ -120,6 +120,11 @@ export interface ReviewArgs {
      */
     similar?: (ids: string[], texts?: ReadonlyMap<string, string>) => Promise<SimilarPair[]>;
     budget: { modelCalls: number; ms: number };
+    /**
+     * What this review is measured with (PRD 41 §C9): the host's extractor and analyzer versions NOW. A finished run
+     * stamps it on the scope with `lastDigest` (`ScopeRecord.measured`); absent ⇒ the scope's review is unknown-measured.
+     */
+    measured?: MeasuredWith;
     /** *Continue*: the plan the person confirmed. Reused without a re-walk; `changed` is re-read from the manifest. */
     plan?: PlanDetail;
     /** *Re-review all*: every file is reviewed whatever its hash (see `PlanOptions.force`). Ignored with `plan`. */

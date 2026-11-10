@@ -264,6 +264,10 @@ export class LocalSnapshotStore implements KnowledgeStore {
             const rootId = batch.scope.rootId;
             const prior = this.mem.scopes.find((x) => x.rootId === rootId);
             const merged: ScopeRecord = { ...(prior ?? {}), ...stripUndefined(batch.scope) } as ScopeRecord;
+            // `measured` describes the review at `lastDigest` (PRD 41 §C9): a write that records a digest (a finished review,
+            // even one whose digest did not move) replaces it, so an unmeasured review never inherits the versions of the one
+            // before it. A write without a digest (mid-run, aborted) keeps it.
+            if (batch.scope.lastDigest !== undefined && !batch.scope.measured) delete merged.measured;
             this.mem.scopes = [...this.mem.scopes.filter((x) => x.rootId !== rootId), merged];
             this.delta?.mark('scopes', [rootId]);
 
