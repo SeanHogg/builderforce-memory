@@ -636,6 +636,7 @@
     "ledoitWolfCovariance",
     "lincolnPetersenEstimate",
     "logisticProbability",
+    "meanAndSd",
     "ndcgAtK",
     "normalDraw",
     "onlineLogisticStep",

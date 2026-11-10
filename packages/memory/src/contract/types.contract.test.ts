@@ -36,6 +36,7 @@ import type {
     NodeRef, StationTransition, TransitionRow, TransitionSource, TransitionTable,
 } from '../knowledge/index.js';
 import type { betaMoments, logisticProbability, onlineLogisticStep, rateInterval, sigmoid, wilsonInterval } from '../stats/index.js';
+import type { meanAndSd, MeanAndSd } from '../stats/index.js';
 import type {
     CallFact, CapabilityImportFact, DerivedRows, EntryPointFact, EntryPointKind, ExportFact, ExtractorStamp, FactChange, FactGraph, FactGraphOptions,
     FactGraphUpdate, FactKind, FactRule, FileFacts, RuleEvaluation, RuleScope, RuleWorld, TestCaseFact, TestFacts,
@@ -323,6 +324,9 @@ export type wilsonInterval_signature = Expect<Equal<
     typeof wilsonInterval, (successes: number, n: number, z?: number) => { low: number; high: number }
 >>;
 export type betaMoments_signature = Expect<Equal<typeof betaMoments, (alpha: number, beta: number) => { mean: number; variance: number }>>;
+// PRD 41 D13: the one mean / sample sd (Welford) for predicted measures; run-delta's naturalness model migrates onto it.
+export type meanAndSd_signature = Expect<Equal<typeof meanAndSd, (values: readonly number[]) => MeanAndSd>>;
+export type MeanAndSd_fields = Expect<Equal<MeanAndSd, { n: number; mean: number; sd: number; nonFinite: number }>>;
 // PRD 38 P7: station transitions (the view groups stations; memory owns the formula). Reference rows carry no interval.
 export type TransitionSource_values = Expect<Equal<TransitionSource, 'traces' | 'references'>>;
 export type StationTransition_fields = Expect<Equal<StationTransition, { to: string; p: number; k: number; n: number; low?: number; high?: number }>>;

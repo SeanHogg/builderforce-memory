@@ -50,6 +50,9 @@ export type { CovarianceResult } from "./multivariate.js";
 
 export { entropyOfCounts, shannonEntropy } from "./information.js";
 
+export { meanAndSd } from "./moments.js";
+export type { MeanAndSd } from "./moments.js";
+
 export {
     chapmanEstimate,
     gammaPoissonPosterior,

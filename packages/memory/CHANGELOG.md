@@ -1,6 +1,12 @@
 # Changelog — @seanhogg/builderforce-memory
 
-## Unreleased
+## 2026.10.75
+
+### Added — stats: `meanAndSd` (`./stats`, PRD 41 §D13)
+
+- stats: `meanAndSd` (Welford, sample sd, non-finite skipped) — the one mean/sd for predicted measures (PRD 41 §D13). Returns `{ n, mean, sd, nonFinite }` (type `MeanAndSd`); n = 0 gives mean NaN, sd 0; n = 1 gives sd 0.
+
+## 2026.10.74
 
 ### Fixed — Wilcoxon signed-rank, paired Hodges–Lehmann and the paired bootstrap (`./stats`, shipped wrong in 2026.10.72)
 
@@ -13,6 +19,18 @@
 - **The paired Hodges–Lehmann estimate dropped zero differences**, biasing it away from 0. It is now the median of the Walsh averages of ALL paired differences, zeros included (Hollander & Wolfe; R's `wilcox.test` drops zeros for its estimate). It is computed by exact value-space selection in O(n log n), not by sorting the n(n+1)/2 averages. The result is the same double as the full sort. At n = 200 the Hodges–Lehmann bootstrap takes about 0.12 s, down from 6.3 s.
 - **`pairedBootstrapCi` gains `statistic: 'mean' | 'hodges-lehmann'`** (default `'mean'`, unchanged). With `'hodges-lehmann'` it resamples pairs and reports the percentile CI of the paired Hodges–Lehmann estimate (PRD 41 C6.2), centred on that estimate. Still seeded with a fixed resample count. New type `PairedStatistic`.
 - Regression tests: `src/contract/regression.wilcoxon.test.ts`. They cover null data (p = 1), all-positive n = 10 (p = 2/1024), the α = 0.05 critical values for n = 5..20, ties, exact vs normal at n = 50, the far tail without underflow, non-finite pairs, Hodges–Lehmann with zeros, the selection against a brute-force median (200 seeded inputs with ties, zero clusters and mixed scales), and the Hodges–Lehmann bootstrap with its cost.
+
+## 2026.10.73
+
+### Added — a review's versions are recorded when it runs and carried by the pack (`./knowledge`, PRD 41 §C9)
+
+- **`MeasuredWith`** `{ extractorVersion: string; toolVersions: Record<string, string> }` and **`ScopeRecord.measured?: MeasuredWith`**: what the review at `lastDigest` was measured with (the extractor version and analyzer name → version; the packs stay in `ScopeRecord.packs`).
+- **`ReviewArgs.measured?`**: a finished (not aborted) review stamps it on the scope together with `lastDigest`. `LocalSnapshotStore.write` drops a stored `measured` when a write records a `lastDigest` (moved or not) without one, so an unmeasured review never inherits the versions of the review before it (absent = unknown); a write without a digest (mid-run, aborted) keeps it.
+- **BFKP: a new `MEAS` section (tag 14)** carries `scope.measured` (`extractorVersion`, then the tools in sorted order). SCOPE is closed, so this is a new tag: a reader older than this release skips it and decodes the scope unmeasured; a pack without it (every older pack) decodes with no `measured`. A MEAS without a SCOPE, a tool named twice (or `__proto__`), or trailing bytes is a `PackFormatError`; so is ENCODING a `measured` that is not all strings (a scope loaded from an unvalidated snapshot).
+- **Why**: hosts stated their versions when they BUILT a pack, so a review queued offline across an extension upgrade was stored with the newer versions and compared as "the same". Regression: `src/contract/regression.scopeMeasured.test.ts`.
+- Minor, non-breaking: optional fields and a new section tag only.
+
+## 2026.10.72
 
 ### Added — FileFacts v3, FactRule and the incremental evaluator (`./knowledge`, PRD 41 WS4 phase 1, §B1/§B3/§B5/§B8.6)
 
@@ -36,18 +54,6 @@
 ### Fixed (`./stats`)
 
 - **Thompson sampling is deterministic under its own seed.** `thompsonSample` / `thompsonRank` drew normals from a polar Box–Muller that cached its spare at module scope, so one caller's spare leaked into the next caller's schedule and the same seed could give a different pick. They now use the module's one stateless normal (`normalDraw`). Draws differ from before for the same seed. Regression: `src/contract/regression.thompsonDeterminism.test.ts`.
-
-## 2026.10.73
-
-### Added — a review's versions are recorded when it runs and carried by the pack (`./knowledge`, PRD 41 §C9)
-
-- **`MeasuredWith`** `{ extractorVersion: string; toolVersions: Record<string, string> }` and **`ScopeRecord.measured?: MeasuredWith`**: what the review at `lastDigest` was measured with (the extractor version and analyzer name → version; the packs stay in `ScopeRecord.packs`).
-- **`ReviewArgs.measured?`**: a finished (not aborted) review stamps it on the scope together with `lastDigest`. `LocalSnapshotStore.write` drops a stored `measured` when a write records a `lastDigest` (moved or not) without one, so an unmeasured review never inherits the versions of the review before it (absent = unknown); a write without a digest (mid-run, aborted) keeps it.
-- **BFKP: a new `MEAS` section (tag 14)** carries `scope.measured` (`extractorVersion`, then the tools in sorted order). SCOPE is closed, so this is a new tag: a reader older than this release skips it and decodes the scope unmeasured; a pack without it (every older pack) decodes with no `measured`. A MEAS without a SCOPE, a tool named twice (or `__proto__`), or trailing bytes is a `PackFormatError`; so is ENCODING a `measured` that is not all strings (a scope loaded from an unvalidated snapshot).
-- **Why**: hosts stated their versions when they BUILT a pack, so a review queued offline across an extension upgrade was stored with the newer versions and compared as "the same". Regression: `src/contract/regression.scopeMeasured.test.ts`.
-- Minor, non-breaking: optional fields and a new section tag only.
-
-## 2026.10.72
 
 ### Fixed (`./knowledge`, PRD 38 P4)
 
