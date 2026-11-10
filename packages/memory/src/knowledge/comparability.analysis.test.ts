@@ -5,7 +5,7 @@
  * names/versions are restated below; the analyzer-RUNNING cases stay in agent-tools.
  */
 
-import { compareAnalysis, identityOfIssue, normalizeAnalysis, type CodeAnalysisSnapshot } from './comparability.js';
+import { analysisMeta, compareAnalysis, identityOfIssue, normalizeAnalysis, type CodeAnalysisSnapshot } from './comparability.js';
 
 const ANALYZERS = [{ name: 'dependency-cruiser', version: '16.10.4' }, { name: 'jscpd', version: '4.0.5' }, { name: 'knip', version: '5.62.0' }];
 
@@ -69,5 +69,20 @@ describe('compareAnalysis delegates to comparable()', () => {
     expect(compareAnalysis(fewer, snapshot()).reasons).toEqual(['tool-missing:knip', 'tools-incomplete']);
     const scoped = snapshot(); scoped.source.scope = 'packages/app';
     expect(compareAnalysis(scoped, snapshot()).reasons).toEqual(['scope-changed']);
+  });
+});
+
+describe('a truncated snapshot (PRD 41 B2, C9)', () => {
+  it('carries truncated into its meta only when set', () => {
+    expect(analysisMeta({ ...snapshot(), truncated: true })).toMatchObject({ truncated: true });
+    expect(analysisMeta(snapshot())).not.toHaveProperty('truncated');
+  });
+  it('is not comparable on either side, so it reports nothing added or resolved', () => {
+    const full = snapshot(); const cut = { ...snapshot(), truncated: true as const, issues: snapshot().issues.slice(1) };
+    for (const [current, baseline] of [[cut, full], [full, cut]] as const) {
+      const result = compareAnalysis(current, baseline);
+      expect(result).toMatchObject({ comparable: false, reasons: ['truncated'], added: [], resolved: [] });
+    }
+    expect(compareAnalysis(snapshot(), snapshot())).toMatchObject({ comparable: true, reasons: [] });
   });
 });

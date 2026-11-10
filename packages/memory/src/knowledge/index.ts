@@ -89,7 +89,7 @@ export {
     DEFAULT_REVIEW_MODEL_CALLS, DEFAULT_REVIEW_JUDGE_CONCURRENCY, REVIEW_FACT_SOURCE,
 } from './judge.js';
 export {
-    composePacks, ignoreMatcher, ignoreSourcesOf, isAssetPath, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,
+    composePacks, ignoreMatcher, ignoreSourcesOf, isAssetPath, isBinaryBytes, isBinaryPath, isBinaryText, isDocumentPath, mediaTypeOfPath,
     resolveDocument, resolveRelativePath,
     DEFAULT_MAX_FILE_BYTES, EXTRACTOR_VERSION, filesManifestKey, extractorManifestKey, judgedManifestKey, compareManifestKey,
 } from './sources.js';

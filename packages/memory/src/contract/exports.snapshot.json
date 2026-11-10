@@ -385,6 +385,7 @@
     "ignoreMatcher",
     "ignoreSourcesOf",
     "isAssetPath",
+    "isBinaryBytes",
     "isBinaryPath",
     "isBinaryText",
     "isDocumentPath",

@@ -24,7 +24,7 @@ import type { dedupeSymbolEdges } from '../knowledge/index.js';
 import type { PlannedFile } from '../knowledge/index.js';
 import type {
     AnalysisIssue, AnchorKind, CodeAnalysisSnapshot, ComparabilityMeta, Finding, FindingIdentity, LineageEntry,
-    comparable, compareAnalysis, identityOf, matchLineage,
+    comparable, compareAnalysis, identityOf, matchLineage, isBinaryBytes,
 } from '../knowledge/index.js';
 import { placementOf } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
@@ -294,6 +294,9 @@ export type compareAnalysis_result = Expect<Equal<
     { comparable: boolean; reasons: string[]; added: AnalysisIssue[]; unchanged: AnalysisIssue[]; resolved: AnalysisIssue[] }
 >>;
 export type CodeAnalysisSnapshot_version = Expect<Equal<CodeAnalysisSnapshot['version'], 1>>;
+export type CodeAnalysisSnapshot_truncated = Expect<Equal<CodeAnalysisSnapshot['truncated'], true | undefined>>;
+export type CodeAnalysisSnapshot_truncated_is_optional = Expect<Equal<IsOptional<CodeAnalysisSnapshot, 'truncated'>, true>>;
+export type isBinaryBytes_signature = Expect<Equal<typeof isBinaryBytes, (bytes: Uint8Array) => boolean>>;
 
 describe('type contract', () => {
     it('is enforced by `npm run check:contract-types` (tsc over tsconfig.contract.json), not at run time', () => {

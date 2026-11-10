@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added — truncated analyses and the binary rule (`./knowledge`, PRD 41 WS2/WS6)
+
+- **`CodeAnalysisSnapshot.truncated?: true`**: set when the analyzed scope was cut short. `analysisMeta` carries it (only when set), so `comparable()` gives reason `truncated` and `compareAnalysis` reports no `added` or `resolved` issues for a truncated side — an issue missing from a partial scan is never a fix. Hosts no longer wrap `compareAnalysis` for it.
+- **`isBinaryBytes(bytes)`** is exported: THE binary rule (a NUL among the first 8192 bytes) `contentHash` uses, so a host hashing natively or sniffing raw bytes calls it instead of restating it.
+- Minor, non-breaking: new names and an optional field only.
+
 ## 2026.10.69
 
 ### Added — symbol-level edges (`./knowledge`, `./knowledge/pack`, PRD 43 P0b)

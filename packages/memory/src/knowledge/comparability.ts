@@ -83,6 +83,8 @@ export interface CodeAnalysisSnapshot {
   nodes: string[];
   edges: Array<{ from: string; to: string; circular: boolean }>;
   issues: AnalysisIssue[];
+  /** Set when the analyzed scope was cut short (the host's file cap, or a listing that stopped early): the analysis is partial, so it is never comparable (reason `truncated`). */
+  truncated?: true;
 }
 export interface CodeAnalysisComparison { current: CodeAnalysisSnapshot; baseline?: CodeAnalysisSnapshot }
 
@@ -155,12 +157,13 @@ export function identityOfIssue(issue: AnalysisIssue): FindingIdentity {
   return { id: issue.id, anchor: issue.anchor ?? composeAnchor(issue.kind, ANALYSIS_ANCHOR_VERSION, anchorKind, anchorWithSnippet(primary, issue.snippet)), anchorKind, members };
 }
 
-/** A snapshot's comparability meta: source scope/repo/branch, tool versions, and every tool not `complete` as failed. */
+/** A snapshot's comparability meta: source scope/repo/branch, tool versions, every tool not `complete` as failed, and `truncated` (only when set). */
 export function analysisMeta(snapshot: CodeAnalysisSnapshot): ComparabilityMeta {
   return {
     scope: snapshot.source.scope, repo: snapshot.source.repository, branch: snapshot.source.branch ?? undefined,
     tools: Object.fromEntries(snapshot.tools.map((t) => [t.name, t.version])),
     failed: snapshot.tools.filter((t) => t.status !== 'complete').map((t) => t.name),
+    ...(snapshot.truncated ? { truncated: true } : {}),
   };
 }
 
