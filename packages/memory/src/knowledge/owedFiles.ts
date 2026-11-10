@@ -12,7 +12,8 @@
  * retired it drops out.
  *
  * Stored under {@link extractorManifestKey} as fingerprints: `{ id: 'version', hash: '<version>' }`
- * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments})
+ * plus `{ id: 'documents', hash: '<pdf,docx|->' }` (the document types the packs claimed, see {@link withDocuments}),
+ * `{ id: 'contentHash', hash: '<rule>' }` once {@link CONTENT_HASH_RULE} differs from the rule the version implies (a rule change is an upgrade),
  * and one `{ id: 'owed:<path>', hash: '<calls>' }` per owed file, where `<calls>` is the
  * decimal number of model calls the file is still expected to cost (the plan's estimate):
  *   • a file the run reached but did not finish: the sections the budget or a failed call left
@@ -27,11 +28,19 @@
  */
 
 import type { IngestManifest } from '../ingest/types.js';
+import { CONTENT_HASH_RULE } from './contentHash.js';
 import { compareStr } from './refs.js';
 import { EXTRACTOR_VERSION, extOf, extractorManifestKey, isBinaryPath, isDocumentPath } from './sources.js';
 
 const VERSION_ID = 'version';
 const DOCUMENTS_ID = 'documents';
+const CONTENT_HASH_ID = 'contentHash';
+/**
+ * The content-hash rule an entry WITHOUT a `contentHash` record was written under: `eol-lf@1` from extractor version 5 (the release
+ * that introduced the rule), raw sha256 before. So the record is written only once the rule moves past what the version implies —
+ * a rule change owes every file one re-extraction, and the rule's introduction rides on the version-5 upgrade instead of adding one.
+ */
+const impliedContentHashRule = (version: number | undefined): string => (version !== undefined && version >= 5 ? 'eol-lf@1' : 'raw');
 /** No document type claimed — also what an entry with no `documents` record means, so a root that never had a host parser stores nothing extra. */
 const NO_DOCUMENTS = '-';
 const OWED_PREFIX = 'owed:';
@@ -42,6 +51,8 @@ const UPGRADE_CALLS = 1;
 export interface ExtractorState {
     /** The version the files were last reviewed with; undefined when never recorded. */
     version: number | undefined;
+    /** The content-hash rule (contentHash.ts) the files were hashed under, when the entry records one; absent, the rule the version implies. */
+    contentHashRule?: string;
     /** Paths a previous run left unfinished under that version → model calls each still costs. */
     owed: ReadonlyMap<string, number>;
     /** Consecutive transient failures of a path at one content hash (stored beside its owed entry); a success or a new hash resets it. Optional: a caller that builds a state by hand need not know it. */
@@ -82,6 +93,7 @@ export function withDocuments(state: ExtractorState, now: string | undefined): E
 export async function loadExtractorState(manifest: IngestManifest, rootId: string): Promise<ExtractorState> {
     let version: number | undefined;
     let documents: string | undefined;
+    let contentHashRule: string | undefined;
     const owed = new Map<string, number>();
     const failures = new Map<string, { hash: string; count: number }>();
     for (const { id, hash } of (await manifest.get(extractorManifestKey(rootId))) ?? []) {
@@ -90,6 +102,8 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
             if (Number.isFinite(v)) version = v;
         } else if (id === DOCUMENTS_ID) {
             documents = hash;
+        } else if (id === CONTENT_HASH_ID) {
+            contentHashRule = hash;
         } else if (id.startsWith(FAIL_PREFIX)) {
             const at = hash.indexOf(':');
             const count = Number(hash.slice(0, at));
@@ -99,15 +113,19 @@ export async function loadExtractorState(manifest: IngestManifest, rootId: strin
             owed.set(id.slice(OWED_PREFIX.length), Number.isFinite(calls) && calls >= 0 ? calls : UPGRADE_CALLS);
         }
     }
-    return { version, owed, failures, documents: documents ?? NO_DOCUMENTS };
+    return { version, owed, failures, documents: documents ?? NO_DOCUMENTS, ...(contentHashRule !== undefined ? { contentHashRule } : {}) };
 }
+
+/** True while the files were last reviewed under another extractor version or content-hash rule than today's: every file owes one re-extraction. */
+const upgradePending = (state: ExtractorState): boolean =>
+    state.version !== EXTRACTOR_VERSION || (state.contentHashRule ?? impliedContentHashRule(state.version)) !== CONTENT_HASH_RULE;
 
 /** The file's document extension when its asset-ness flipped (a host parser arrived or left since the last run). */
 const isFlipped = (state: ExtractorState, path: string): boolean => !!state.flipped?.size && state.flipped.has(extOf(path));
 
-/** True when `path` is owed a re-extraction: another extractor version than today's, left unfinished before, or its asset-ness flipped. */
+/** True when `path` is owed a re-extraction: another extractor version or content-hash rule than today's, left unfinished before, or its asset-ness flipped. */
 export const isOwed = (state: ExtractorState, path: string): boolean =>
-    state.version !== EXTRACTOR_VERSION || state.owed.has(path) || isFlipped(state, path);
+    upgradePending(state) || state.owed.has(path) || isFlipped(state, path);
 
 /** Whether `path` is an asset under the packs the plan was made with: binary, and not a document some parser claims. */
 const isAssetNow = (state: ExtractorState, path: string): boolean => {
@@ -123,7 +141,7 @@ const isAssetNow = (state: ExtractorState, path: string): boolean => {
  * An asset costs none (it is never read or judged); a file that flipped TO a document does.
  */
 export const owedCalls = (state: ExtractorState, path: string): number =>
-    isAssetNow(state, path) ? 0 : (state.version !== EXTRACTOR_VERSION || isFlipped(state, path) ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
+    isAssetNow(state, path) ? 0 : (upgradePending(state) || isFlipped(state, path) ? UPGRADE_CALLS : 0) + (state.owed.get(path) ?? 0);
 
 /**
  * Paths in the files manifest that the plan does not list yet are owed: ignored, claimed by
@@ -169,6 +187,7 @@ export async function saveExtractorState(
 ): Promise<void> {
     await manifest.set(extractorManifestKey(rootId), [
         { id: VERSION_ID, hash: String(EXTRACTOR_VERSION) },
+        ...(CONTENT_HASH_RULE !== impliedContentHashRule(EXTRACTOR_VERSION) ? [{ id: CONTENT_HASH_ID, hash: CONTENT_HASH_RULE }] : []),
         ...(documents !== undefined && documents !== NO_DOCUMENTS ? [{ id: DOCUMENTS_ID, hash: documents }] : []),
         ...[...owed].sort((a, b) => compareStr(a[0], b[0])).map(([path, calls]) => ({ id: `${OWED_PREFIX}${path}`, hash: String(calls) })),
         ...[...failures].filter(([path]) => owed.has(path)).sort((a, b) => compareStr(a[0], b[0])).map(([path, f]) => ({ id: `${FAIL_PREFIX}${path}`, hash: `${f.count}:${f.hash}` })),

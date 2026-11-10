@@ -121,9 +121,20 @@ export function claimedDocumentExts(composed: ComposedPacks): string {
     return [...DOCUMENT_EXT].filter((ext) => resolveDocument(composed, `x.${ext}`)).sort(compareStr).join(',') || '-';
 }
 
+/** How far the binary sniff looks: a NUL in this prefix means binary. */
+const BINARY_SNIFF_LENGTH = 8192;
+
 /** A NUL in the first 8 KB means binary, whatever the extension said. */
 export function isBinaryText(text: string): boolean {
-    return text.slice(0, 8192).includes('\u0000');
+    return text.slice(0, BINARY_SNIFF_LENGTH).includes('\u0000');
+}
+
+/**
+ * The same rule over raw bytes, for a caller that has not decoded the file (contentHash.ts). UTF-8 never encodes anything but
+ * U+0000 as a 0 byte, so a NUL in the first 8 KB of bytes is a NUL {@link isBinaryText} sees too.
+ */
+export function isBinaryBytes(bytes: Uint8Array): boolean {
+    return bytes.subarray(0, BINARY_SNIFF_LENGTH).includes(0);
 }
 
 /** A read source with its id set to the root-relative path and a media type filled in. */

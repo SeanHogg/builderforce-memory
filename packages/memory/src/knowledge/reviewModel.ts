@@ -53,6 +53,8 @@ export interface ReviewPlan {
     estimatedModelCalls: number;
     /** The file budget of the judge pass this run will run after the map is complete (PRD 41 A10); set by the host, so the confirm chip states it. */
     judgeFiles?: number;
+    /** The directory Merkle root over the planned files (PRD 41 §B2 step 4, knowledge/merkle.ts): an equal root means an equal listing. Absent on a plan from an older host. */
+    merkleRoot?: string;
 }
 
 export interface ReviewProgress {

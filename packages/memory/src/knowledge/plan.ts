@@ -11,6 +11,7 @@
 
 import type { IngestManifest } from '../ingest/types.js';
 import type { DirectorySource, KnowledgePack, ReviewPlan } from './model.js';
+import { merkleTree, type MerkleTree } from './merkle.js';
 import { carriedOwed, type ExtractorState, isOwed, loadExtractorState, owedCalls, withDocuments } from './owedFiles.js';
 import {
     claimedDocumentExts, compareManifestKey, composePacks, DEFAULT_MAX_FILE_BYTES, filesManifestKey, ignoreMatcher, ignoreSourcesOf,
@@ -76,6 +77,8 @@ export interface PlanDetail {
     extractor: ExtractorState;
     /** Owed paths the manifest holds that `files` does not list (ignored, no pack, an older plan, removed). */
     carried: string[];
+    /** The directory Merkle tree over `files` (PRD 41 §B2 step 4): `plan.merkleRoot` is its root. Optional so a hand-built detail stays valid. */
+    merkle?: MerkleTree;
 }
 
 /** The ONE classification of a listed file: did its content move, is it owed, is it re-processed. */
@@ -168,6 +171,7 @@ export async function planDetail(
     const awaiting = compares ? (await manifestMap(manifest, compareManifestKey(source.rootId))).size : 0;
     const compareCalls = compares ? Math.ceil((compareSections + awaiting) / SECTIONS_PER_COMPARE) : 0;
     const sortedByPack = Object.fromEntries(Object.keys(byPack).sort(compareStr).map((k) => [k, byPack[k]!]));
+    const merkle = merkleTree(files);
     return {
         plan: {
             rootId: source.rootId,
@@ -179,11 +183,13 @@ export async function planDetail(
             removed,
             skipped,
             estimatedModelCalls: estimatedSections + compareCalls,
+            merkleRoot: merkle.root,
         },
         files,
         prior,
         extractor,
         carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
+        merkle,
     };
 }
 
@@ -210,5 +216,6 @@ export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest):
         prior,
         extractor,
         carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
+        ...(detail.merkle ? { merkle: detail.merkle } : {}),
     };
 }

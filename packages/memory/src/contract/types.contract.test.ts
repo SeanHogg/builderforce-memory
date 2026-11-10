@@ -12,6 +12,7 @@
  */
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
+import type { changedPaths, contentHash, CONTENT_HASH_RULE, merkleTree, MerkleEntry, MerkleTree, PlanDetail, ReviewPlan } from '../knowledge/index.js';
 import type {
     DirectorySource, Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
     OutlineFile, OutlineCommunity, NodePlacement, ReviewFailure, ReviewFailureChunks, ReviewPhase, ReviewReport, ReviewRun, ReviewRunPhase, ReviewStep, ScopeRecord,
@@ -103,6 +104,20 @@ export type ExtractFailed_constructor = Expect<Equal<ConstructorParameters<typeo
 export type ExtractorState_failures = Expect<Equal<ExtractorState['failures'], ReadonlyMap<string, { hash: string; count: number }> | undefined>>;
 // ExtractorState.oversized: claimed documents over the size cap, planned as assets; optional so a hand-built state stays valid.
 export type ExtractorState_oversized = Expect<Equal<ExtractorState['oversized'], ReadonlySet<string> | undefined>>;
+// ExtractorState.contentHashRule: the content-hash rule the entry recorded (absent: the one its version implies); optional so a hand-built state stays valid.
+export type ExtractorState_contentHashRule = Expect<Equal<ExtractorState['contentHashRule'], string | undefined>>;
+
+/* ── Content identity and directory Merkle hashes (PRD 41 §B2 steps 0 and 4) ───────────────────────────────── */
+export type contentHash_signature = Expect<Equal<typeof contentHash, (bytes: Uint8Array) => string>>;
+export type CONTENT_HASH_RULE_type = Expect<Equal<typeof CONTENT_HASH_RULE, 'eol-lf@1'>>;
+export type MerkleEntry_shape = Expect<Equal<MerkleEntry, { name: string; kind: 'file' | 'dir'; hash: string }>>;
+export type MerkleTree_shape = Expect<Equal<MerkleTree, {
+    root: string; dirs: ReadonlyMap<string, string>; entries: ReadonlyMap<string, ReadonlyArray<MerkleEntry>>;
+}>>;
+export type merkleTree_signature = Expect<Equal<typeof merkleTree, (files: ReadonlyArray<{ path: string; hash: string }>) => MerkleTree>>;
+export type changedPaths_signature = Expect<Equal<typeof changedPaths, (before: MerkleTree, after: MerkleTree) => string[]>>;
+export type ReviewPlan_merkleRoot = Expect<Equal<ReviewPlan['merkleRoot'], string | undefined>>;
+export type PlanDetail_merkle = Expect<Equal<PlanDetail['merkle'], MerkleTree | undefined>>;
 
 /* ── DirectorySource: optional per-path hooks ──────────────────────────────────────────────────────────────── */
 // hashOf takes the path (a host whose read() transforms bytes returns the listing hash for it); a one-argument hashOf still satisfies it.

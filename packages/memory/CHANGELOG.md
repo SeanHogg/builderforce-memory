@@ -1,5 +1,16 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## Unreleased
+
+### Added — EOL-normalized content identity and directory Merkle hashes (`./knowledge`, PRD 41 WS2 §B2 steps 0 and 4)
+
+- **`contentHash(bytes)`**: lowercase hex sha256 of a file's bytes with CRLF and lone CR converted to LF when the bytes are text; binary bytes (a NUL in the first 8 KB, the rule of `isBinaryText`) are hashed raw. A Windows `core.autocrlf` checkout and a Linux checkout of one commit now hash identically; an LF-only file hashes exactly as its raw sha256 did. Byte-level, never decoded. **`CONTENT_HASH_RULE`** (`'eol-lf@1'`) names the rule.
+- **The rule is part of the extractor identity**: `ExtractorState.contentHashRule` (optional) is read from a `contentHash` record of the extractor entry; an entry without one is read as the rule its version implies (`eol-lf@1` from extractor version 5, raw before), so the rule's introduction rides on the version-5 upgrade (one re-extraction, not two) and a later rule change owes every file one re-extraction. The record is written only once the rule moves past what the version implies.
+- **`merkleTree(files)`** → `{ root, dirs, entries }`: a directory's hash is sha256 over the canonical JSON of its `{ name, kind: 'file' | 'dir', hash }` entries, sorted bytewise; paths POSIX and NFC; the root's key is `""`. Any input order gives the same tree. **`changedPaths(before, after)`**: the changed, added and removed file paths, never descending into a directory whose hash is equal on both sides (O(changed)). Types `MerkleTree`, `MerkleEntry`, `MerkleKind`.
+- **`ReviewPlan.merkleRoot?`** and **`PlanDetail.merkle?`**: `planDetail` hashes the planned files' tree; *Continue* (`refreshPlan`) keeps it.
+- Hosts: a `DirectorySource` that lists content hashes (and its `hashOf`) should hash with `contentHash`, so its listing agrees across OSes.
+- Minor, non-breaking: new names and optional fields only.
+
 ## 2026.10.63
 
 ### Advisory folds of the working transcript (`./working`, PRD 45 §4.7 B6/B7)
