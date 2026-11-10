@@ -11,7 +11,7 @@ export type {
     PartitionRule, PartitionRegistry, JudgementSpec, JudgementRequest, JudgedClaim, JudgedEntity, JudgementResult,
     JudgementPort, AnalyzerPort, AnalyzerProgress, KnowledgeParser, KnowledgePack, StoredFact, StoredRelation, Scope, ScopeRecord, MeasuredWith,
     KnowledgeStore, DirectorySource, LiveOverlay, KnowledgeGraph, ReviewPlan, ReviewProgress, ReviewReport,
-    ReviewArgs, BuildGraphInput, BuildGraphOptions, TraceStep, Trace, GraphOutline, OutlineFile, OutlineCommunity,
+    ReviewArgs, BuildGraphInput, BuildGraphOptions, FindingsProvider, TraceStep, Trace, GraphOutline, OutlineFile, OutlineCommunity,
     GraphSystem, GraphApp, GraphReadSkip, CallSite,
 } from './model.js';
 export {
@@ -48,7 +48,7 @@ export {
 } from './trace.js';
 export type { LanedTrace, TraceOptions } from './trace.js';
 export {
-    computeFindings, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
+    computeFindings, computeFindingsWith, genericFindings, finding, findingId, partitionSeverity, requestKeyFor, components, CLONE_GROUP_BADGE, MAX_FINDING_NODES,
     GENERIC_FINDING_RULES, KNOWLEDGE_FINDING_RULES,
 } from './findings.js';
 // PRD 41 §B1/§B3/§B5: FileFacts v3, the composite extractor version, FactRule + the incremental evaluator, the fact graph.

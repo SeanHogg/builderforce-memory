@@ -24,7 +24,7 @@ import type {
     PartitionRegistry, StoredFact,
 } from './model.js';
 import { crossesSystems, placeInSystem } from './systems.js';
-import { computeFindings } from './findings.js';
+import { computeFindings, computeFindingsWith } from './findings.js';
 import { pageRank } from './importance.js';
 import { applyCommunities } from './communities.js';
 import { applyCoChangeHidden } from './coChange.js';
@@ -219,7 +219,10 @@ export function buildGraph(input: BuildGraphInput, opts: BuildGraphOptions = {})
         ...(systems.length > 0 ? { meta: { systems: systemsMeta(systems, allNodes) } } : {}),
         stats: { sources: sources.size, nodes: allNodes.length, edges: allEdges.length, stale: 0, truncated: false, modularity, communityMethod },
     };
-    full.findings = computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
+    // A findings provider (the host's fact index) sees the WHOLE graph, so its findings hold whether or not the view is cut.
+    full.findings = opts.findings
+        ? computeFindingsWith(full, input.packs, registries, input.nearDuplicates ?? [], opts.findings)
+        : computeFindings(full, input.packs, registries, input.nearDuplicates ?? []);
     full.stats.stale = allNodes.filter((n) => n.stale).length;
 
     const maxNodes = Math.min(MAX_NODES_CAP, Math.max(1, Math.floor(opts.maxNodes ?? DEFAULT_MAX_NODES)));

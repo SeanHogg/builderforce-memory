@@ -45,7 +45,7 @@ import type {
 import type {
     Awaitable, DerivedRow, EffectiveEntryPoint, EffectiveGuardsOptions, EffectiveGuardsResult, FactManifestDelta, FactManifestEntry,
     FactStoreManifest, FactStorePort, FactStoreSaveResult, FactStoreVersion, LoadFactGraphOptions, MemoryFactStore, MountFact, ResolvedMount,
-    StoredFactGraph, UseFact, RootRouter, MountTarget,
+    StoredFactGraph, UseFact, RootRouter, MountTarget, BuildGraphOptions, FindingsProvider, KnowledgeFacts, computeFindingsWith,
     effectiveGuards, factStoreDump, loadFactGraph, memoryFactStore, rootRouters, saveFactGraph, sweepFactStore,
 } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
@@ -460,6 +460,14 @@ export type EffectiveGuardsOptions_shape = Expect<Equal<EffectiveGuardsOptions, 
 export type rootRouters_signature = Expect<Equal<
     typeof rootRouters, (files: ReadonlyMap<string, FileFacts>, resolveMount: (from: string, mount: MountFact) => MountTarget | undefined) => RootRouter[]
 >>;
+/* ── buildGraph findings provider (PRD 41 §B5 host seam) ────────────────────────────────────────────────────── */
+export type BuildGraphOptions_findings_is_optional = Expect<Equal<IsOptional<BuildGraphOptions, 'findings'>, true>>;
+export type BuildGraphOptions_findings = Expect<Equal<BuildGraphOptions['findings'], FindingsProvider | undefined>>;
+export type FindingsProvider_keys = Expect<Equal<keyof FindingsProvider, 'kinds' | 'findings'>>;
+export type FindingsProvider_findings = Expect<Equal<
+    FindingsProvider['findings'], (input: { graph: KnowledgeGraph; knowledge: KnowledgeFacts }) => Finding[]
+>>;
+export type computeFindingsWith_last_param = Expect<Equal<Parameters<typeof computeFindingsWith>[4], FindingsProvider>>;
 export type RootRouter_shape = Expect<Equal<RootRouter, { path: string; router: string }>>;
 export type MountTarget_shape = Expect<Equal<MountTarget, { path: string; router?: string }>>;
 export type ResolvedMount_shape = Expect<Equal<ResolvedMount, {

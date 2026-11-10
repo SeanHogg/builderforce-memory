@@ -13,6 +13,7 @@
 import type { SourceDocument, ParsedSection } from '../ingest/types.js';
 import type { IndexDoc, SimilarPair } from '../retrieval/knowledge-index/types.js';
 import type { Finding, FindingRule } from './findingModel.js';
+import type { KnowledgeFacts } from './rules/knowledgeInput.js';
 
 /** The finding types live beside the rules (findingModel.ts); re-exported so one import serves. */
 export type { Finding, FindingRule } from './findingModel.js';
@@ -410,6 +411,29 @@ export interface BuildGraphOptions {
     /** Default 400; cap 2000. */
     maxNodes?: number;
     focus?: NodeRef[];
+    /**
+     * Replaces the built-in and pack findings of the kinds it owns with its own, computed over the WHOLE graph (before
+     * truncation). Absent ⇒ output identical to before. See {@link FindingsProvider}.
+     */
+    findings?: FindingsProvider;
+}
+
+/**
+ * A host's own source of findings for some kinds (e.g. the VS Code fact index serving incremental rule rows): `buildGraph`
+ * calls `findings` ONCE with the whole, untruncated graph (its `findings` still empty) and the knowledge-rule input built
+ * from it, and keeps the result only for `kinds`. Truncation then keeps those findings' nodes like any other finding's.
+ *
+ * Contract:
+ *   - Ids: return findings built with `finding()` (findingBuilder.ts), so their ids match the built-in rules' ids for the
+ *     same finding. An empty id still falls back to `findingId(kind, nodes)`, as for a pack finding.
+ *   - Read-only: `graph` is the LIVE full graph `buildGraph` is assembling (and `knowledge` indexes it); never mutate either.
+ *   - Errors: a provider that throws makes `buildGraph` throw. Pass a provider only once the host's index has synced;
+ *     until then omit it, and the built-in findings stand.
+ */
+export interface FindingsProvider {
+    /** The finding kinds the provider owns (a generic rule whose id is owned is not run). */
+    kinds: readonly string[];
+    findings(input: { graph: KnowledgeGraph; knowledge: KnowledgeFacts }): Finding[];
 }
 
 export interface TraceStep {

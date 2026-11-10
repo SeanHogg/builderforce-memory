@@ -375,6 +375,7 @@
     "composeAnchor",
     "composePacks",
     "computeFindings",
+    "computeFindingsWith",
     "contentHash",
     "contentHashRuleOf",
     "contradictionRule",

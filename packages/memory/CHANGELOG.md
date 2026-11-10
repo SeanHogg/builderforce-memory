@@ -1,5 +1,36 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.80
+
+### Changed — `saveFactGraph` fast path: O(changes), not O(files) (`./knowledge`, PRD 41 §B4)
+
+- **Fast path.** With a `previous` `StoredFactGraph`, `saveFactGraph` reads only `readVersion()`. When the store is at `previous`'s epoch and generation it holds exactly `previous.graph`, so the manifest and derived rows are diffed against it in memory, and neither `readManifest()` nor `derivedRows()` is called.
+- **Fallback.** Without a `previous`, or with a stale or foreign one, the save diffs against the stored manifest and rows as before.
+- **Unchanged.** The commit is still the `writeManifest` version compare-and-swap, so a writer that lands between the version read and the commit makes the save reject `fact_store_generation_conflict`.
+- **Fewer derived writes.** A derived row whose identity changed but whose content is equal is no longer rewritten.
+- Regression tests (`src/contract/regression.factStoreFastPath.test.ts`):
+  - a counting adapter shows zero `readManifest` / `derivedRows` calls on matched saves;
+  - incremental fast-path saves equal a from-scratch save;
+  - the stale-`previous` and reset (ABA) cases fall back to the store diff and still dump equal to the graph;
+  - a racing writer makes the save conflict.
+- Minor, non-breaking: same signature, fewer reads.
+
+### Added — `buildGraph` findings provider (`./knowledge`, PRD 41 §B5 host seam)
+
+- **`BuildGraphOptions.findings?: FindingsProvider`** (`{ kinds: readonly string[]; findings({ graph, knowledge }): Finding[] }`).
+  - `buildGraph` calls it ONCE with the WHOLE, untruncated graph (its `findings` still empty) and the `KnowledgeFacts` built from it.
+  - Its findings replace every built-in and pack finding of the kinds it owns. A generic rule whose id is owned is not run at all, and provider output of other kinds is dropped.
+  - Provider findings are normalized like pack findings, and truncation keeps their nodes like any finding's.
+- **`computeFindingsWith(g, packs, registries, nearDuplicates, provider)`** is the same composition outside `buildGraph`. `computeFindings` is unchanged; both now share one normalize/dedupe/sort tail.
+- **Why a provider, not a returned `fullGraph`.** Findings were already computed over the whole graph before truncation, so the gap was never the input: it was that the host (the VS Code fact index) had no way to serve its own incrementally maintained findings for the kinds it owns. A provider plugs in at the one point that already sees the whole graph:
+  - it adds no second graph to every `buildGraph` result (a `fullGraph` would roughly double the payload of a cut view);
+  - it runs no built-in rule twice;
+  - when absent, the output is byte-identical.
+- Regression tests (`src/contract/regression.findingsProvider.test.ts`):
+  - without a provider (and with one that owns no kinds) the output is byte-identical, and its findings equal an untruncated build's;
+  - a truncated build with a provider gets the provider's findings for its kinds, computed over the whole graph, and keeps their nodes.
+- Minor, non-breaking: an optional option and new exports (`computeFindingsWith`; type `FindingsProvider`).
+
 ## 2026.10.79
 
 - Depends on `@seanhogg/builderforce-memory-engine` 2026.10.65, which adds the light `./ml/tasks/check-scheduler` subpath (no engine root). No API change in this package.

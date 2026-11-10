@@ -109,17 +109,41 @@ const conflict = (why: string) => new Error(`fact_store_generation_conflict:${wh
 
 /**
  * Persists `graph`, writing ONLY the delta against what the store holds: the objects of new or changed manifest entries,
- * the manifest entries that moved, the derived rows that moved and the keys that went away. Derived rows are diffed by
- * identity against `previous.graph` (a reused row is the same object) ONLY when `previous` is at the stored epoch and
- * generation; otherwise against the stored rows. Rejects `fact_store_generation_conflict` when another writer committed
- * in between (see the recovery contract in the header).
+ * the manifest entries that moved, the derived rows that moved and the keys that went away.
+ *
+ * FAST PATH: with `previous`, the save reads only the version (`readVersion`). When it is `previous`'s epoch and
+ * generation, the store holds exactly `previous.graph`, so the manifest and the derived rows are diffed against it in
+ * memory (a reused row is the same object) and neither `readManifest` nor `derivedRows` is called — O(changes), not
+ * O(files). Otherwise (no `previous`, or a stale one) the save diffs against the stored manifest and rows. Either way the
+ * commit is the version CAS of `writeManifest`, so a writer that lands in between makes this save reject
+ * `fact_store_generation_conflict` (see the recovery contract in the header).
+ *
+ * `previous` must be EXACTLY a result of `saveFactGraph` or `loadFactGraph` on this port — never hand-built or patched: the
+ * fast path trusts that its `graph` is what the store holds at its `{ epoch, generation }`.
  */
 export async function saveFactGraph(port: FactStorePort, graph: FactGraph, previous?: StoredFactGraph): Promise<FactStoreSaveResult> {
+    if (previous) {
+        const version = await port.readVersion();
+        if (sameVersion(previous, version)) return commitDelta(port, graph, version, previous.graph.manifest, previous.graph.derived);
+    }
     const stored = await port.readManifest();
+    return commitDelta(port, graph, stored, stored.files, await port.derivedRows());
+}
 
+/**
+ * Writes the delta of `graph` against `base` (the manifest and derived rows the store holds at `version`): objects first,
+ * then one `writeManifest`. A base row that is the same object as the graph's row is unchanged without serializing it.
+ */
+async function commitDelta(
+    port: FactStorePort,
+    graph: FactGraph,
+    version: FactStoreVersion,
+    baseFiles: ReadonlyMap<string, FactManifestEntry>,
+    baseRows: ReadonlyMap<string, DerivedRow>,
+): Promise<FactStoreSaveResult> {
     const puts = new Map<string, FactManifestEntry>();
-    for (const [path, e] of graph.manifest) if (!sameManifestEntry(e, stored.files.get(path))) puts.set(path, e);
-    const deletes = [...stored.files.keys()].filter((p) => !graph.manifest.has(p)).sort(compareStr);
+    for (const [path, e] of graph.manifest) if (!sameManifestEntry(e, baseFiles.get(path))) puts.set(path, e);
+    const deletes = [...baseFiles.keys()].filter((p) => !graph.manifest.has(p)).sort(compareStr);
 
     const objects = [...new Set([...puts.values()].map((e) => e.factsHash))].sort(compareStr);
     if (objects.length > 0) {
@@ -133,25 +157,18 @@ export async function saveFactGraph(port: FactStorePort, graph: FactGraph, previ
     }
 
     const derivedPuts: DerivedRow[] = [];
-    let derivedDeletes: string[];
-    if (previous && sameVersion(previous, stored)) {
-        for (const [key, row] of graph.derived) if (previous.graph.derived.get(key) !== row) derivedPuts.push(row);
-        derivedDeletes = [...previous.graph.derived.keys()].filter((k) => !graph.derived.has(k));
-    } else {
-        const rows = await port.derivedRows();
-        for (const [key, row] of graph.derived) {
-            const prior = rows.get(key);
-            if (!prior || rowJson(prior) !== rowJson(row)) derivedPuts.push(row);
-        }
-        derivedDeletes = [...rows.keys()].filter((k) => !graph.derived.has(k));
+    for (const [key, row] of graph.derived) {
+        const prior = baseRows.get(key);
+        if (prior !== row && (!prior || rowJson(prior) !== rowJson(row))) derivedPuts.push(row);
     }
+    const derivedDeletes = [...baseRows.keys()].filter((k) => !graph.derived.has(k));
     derivedPuts.sort((a, b) => compareStr(derivedRowKey(a.rule, a.focus), derivedRowKey(b.rule, b.focus)));
     derivedDeletes.sort(compareStr);
 
-    const generation = stored.generation + 1;
-    await port.writeManifest({ epoch: stored.epoch, generation, puts, deletes }, derivedPuts, derivedDeletes);
+    const generation = version.generation + 1;
+    await port.writeManifest({ epoch: version.epoch, generation, puts, deletes }, derivedPuts, derivedDeletes);
     return {
-        epoch: stored.epoch,
+        epoch: version.epoch,
         generation,
         graph,
         objects,
