@@ -22,6 +22,7 @@
 - **ONE binary rule**: a NUL among the first 8192 BYTES. `isBinaryText` now applies it to the text's UTF-8 bytes (it counted 8192 UTF-16 code units, so a NUL after 5000 × `é` was binary to the text sniff and text to the byte sniff).
 - Review fixes to finding identity: `anchorKindOfRef` splits refs with `fileRefOf`; `identityOfIssue` recomposes a legacy issue's anchor exactly as `normalizeAnalysis` writes it (the stored, 4000-character snippet's hash; `<file>#<name>` for symbols and packages); `matchLineage` keeps the minimum identity by (anchor, members) when an id repeats, so input order never matters; `compareAnalysis` reasons are sorted and deduped.
 - Hosts: a `DirectorySource` that lists content hashes (and its `hashOf`) should hash with `contentHash`, so its listing agrees across OSes.
+- Upgrading: plan paths are now NFC-normalized, so a root indexed by 2026.10.67 with NFD-named files re-keys those files once (the old NFD key is removed and the NFC key re-extracted), and their findings re-anchor once.
 - Minor, non-breaking: new names and optional fields only.
 
 ## 2026.10.63

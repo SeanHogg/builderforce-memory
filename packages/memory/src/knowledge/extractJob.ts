@@ -32,7 +32,9 @@ export interface ExtractJobBase {
 
 /**
  * How the file reaches the worker (PRD 41 A10 rule 8): `doc` is the document the review read (plain data); `readByPool` says the
- * worker reads and binary-checks `path` itself at the planned `hash` — no stand-in document, no text copied across the thread.
+ * worker reads and binary-checks `readByPool.path` itself at the planned `hash` — no stand-in document, no text copied across the thread.
+ * A pool host must open `readByPool.path`, the source's listed spelling (`PlannedFile.listedPath`), never `job.path`: `job.path` is the
+ * file's identity (normalized: POSIX, NFC) and may differ from the spelling the source can open (an NFD-named file, for one).
  */
 export type ExtractJobSource =
     | { doc: SourceDocument; readByPool?: never }

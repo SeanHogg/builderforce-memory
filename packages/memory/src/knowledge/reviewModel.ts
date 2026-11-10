@@ -14,6 +14,10 @@ import type { ReviewFailure, ReviewPhase, ReviewStep } from './reviewRunModel.js
 export interface DirectorySource {
     rootId: string;
     title: string;
+    /**
+     * The root's files. `read()` (and `hashOf`, `readTimeoutMs`) receive exactly the spelling `list()` yielded, so a source must not
+     * list paths that resolve outside its root (no leading `/`, no `..`).
+     */
     list(): AsyncIterable<{ path: string; hash: string; size: number }>;
     /** `signal` aborts the read when the review gives up on it (a per-job timeout, a stop); a source that cannot cancel may ignore it. */
     read(path: string, signal?: AbortSignal): Promise<SourceDocument>;
