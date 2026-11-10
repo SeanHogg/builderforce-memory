@@ -1,5 +1,13 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.76
+
+### Fixed — createRng (xoshiro128**) used a rotate where the algorithm shifts (`./stats`, shipped wrong in 2026.10.72)
+
+- **What broke.** `createRng` computed `t = rotl(s1, 9)`; the reference xoshiro128** (Blackman & Vigna) uses a plain shift, `t = s1 << 9`. With the rotate the state degenerates: streams collapse to 0 after about 120 draws (every stream stuck at 0 from draw 118–135; 98.8% of 2,000 seeds × 10,000 draws were exact zeros). Every stochastic routine in `./stats` inherited it: `pairedBootstrapCi` (2,000 × n draws from one stream) returned collapsed CIs, and `thompsonSample` / `thompsonRank` / `normalDraw` draws were biased over long streams. The step now matches the reference line for line; `seedWords` cannot produce the all-zero state (a bijective finaliser over four distinct inputs), so no guard is needed.
+- **Every seeded output changes once.** Same seed, same output still holds, but the values are new: seeded layouts, bootstrap bounds, Thompson picks and anything else drawn from `createRng`. Callers that pinned seeded values must re-pin them.
+- Regression tests: `src/contract/regression.prng.test.ts`. They cover a match against an inline BigInt transcription of the reference C over 10,000 draws for 50 seeds (plus a hand-derived known answer for the state (1, 2, 3, 4)), no stream collapse across 200 seeds × 2,000 draws (fails on the rotate: every seed collapses), mean and variance of 1M draws, and a bootstrap CI on a noisy no-shift series that contains 0.
+
 ## 2026.10.75
 
 ### Added — stats: `meanAndSd` (`./stats`, PRD 41 §D13)
