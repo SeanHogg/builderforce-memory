@@ -1,5 +1,11 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## Unreleased
+
+### Changed
+
+- EXTRACTOR_VERSION 6 → 7, so cached code extracts re-run after the code pack began extracting deploy descriptors (Dockerfile, wrangler, compose, k8s, workflows, package.json) as deployable units and adding a per-file `concurrency` badge (PRD 43).
+
 ## 2026.10.80
 
 ### Changed — `saveFactGraph` fast path: O(changes), not O(files) (`./knowledge`, PRD 41 §B4)

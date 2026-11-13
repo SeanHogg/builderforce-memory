@@ -172,8 +172,8 @@ describe('regression: the asset lifecycle', () => {
         expect((await stateOf(manifest)).version).toBe(EXTRACTOR_VERSION);
     });
 
-    it('regression: EXTRACTOR_VERSION is 6, so cached code extracts re-run after the PRD 43 P0c code-pack changes', () => {
-        expect(EXTRACTOR_VERSION).toBe(6);
+    it('regression: EXTRACTOR_VERSION is 7, so cached code extracts re-run after the PRD 43 deploy-unit and concurrency code-pack changes', () => {
+        expect(EXTRACTOR_VERSION).toBe(7);
     });
 
     it('regression: a removed asset is retired like any removed file', async () => {

@@ -24,7 +24,9 @@ export const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 // 5 (2026-11-10, PRD 43 P0b): the code pack's file nodes carry the file→file rollup of the symbol-level edge kinds.
 // 6 (2026-11-10, PRD 43 P0c): the agent-tools code pack resolves tsconfig path aliases, names callback-owner symbols,
 //   emits `new X().m()` call edges and reads JSX renders as calls, so cached code extracts re-run.
-export const EXTRACTOR_VERSION = 6;
+// 7 (2026-11-10, PRD 43): the code pack extracts deploy descriptors (Dockerfile, wrangler, compose, k8s, workflows, package.json)
+//   as deployable units and adds a per-file `concurrency` badge.
+export const EXTRACTOR_VERSION = 7;
 
 /**
  * THE test of "this extract (or this root's extractor entry) was made by today's extractor": today's
