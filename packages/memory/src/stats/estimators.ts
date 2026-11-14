@@ -57,7 +57,14 @@ export function kaplanMeier(rows: readonly { time: number; event: 0 | 1 }[]): Ka
 /**
  * Goel–Okumoto NHPP MLE: mean failures μ(t) = a(1 − e^{−bt}). a is solved in
  * closed form given b; b is refined by bisection on the score equation
- * Σ tᵢ = n/b − n·t̄·e^{−b·t̄}/(1 − e^{−b·t̄}). Needs n ≥ 2 distinct times.
+ * Σ tᵢ = n/b − n·tMax·e^{−b·tMax}/(1 − e^{−b·tMax}). Needs n ≥ 2 distinct times.
+ *
+ * The score uses tMax (the censoring horizon), not tMean: with likelihood
+ * L ∝ aⁿ e^{−a(1−e^{−bT})} · bⁿ e^{−bΣtᵢ} · Πe^{−btᵢ}, the b score after profiling out a
+ * substitutes the END time T = tMax in the per-observation exposure term, giving the
+ * root-finding target below. An earlier version used tMean, which has no stationary point
+ * on the data and drove b to the search bound (a saturated, meaningless fit) for every
+ * input.
  */
 export function goelOkumotoMLE(
     times: readonly number[],
@@ -66,19 +73,23 @@ export function goelOkumotoMLE(
     const n = sorted.length;
     if (n < 2) return { status: "insufficient-data" };
     const tMax = sorted[n - 1]!;
-    const tMean = sorted.reduce((a, b) => a + b, 0) / n;
+    const tSum = sorted.reduce((a, b) => a + b, 0);
+    // g(b) = n/b − n·tMax·e^{−b·tMax}/(1 − e^{−b·tMax}); the MLE b is the root of tSum = g(b).
+    // g is strictly decreasing in b (n/b falls, and the subtracted term grows toward n·tMax),
+    // so tSum − g(b) is strictly INCREASING: negative below the root, positive above it.
     const score = (b: number) => {
-        if (b <= 0) return Infinity;
+        if (b <= 0) return -Infinity;
         const denom = 1 - Math.exp(-b * tMax);
-        return n / b - (n * tMean * Math.exp(-b * tMean)) / denom;
+        return tSum - (n / b - (n * tMax * Math.exp(-b * tMax)) / denom);
     };
     let lo = 1e-9;
     let hi = 1;
-    while (score(hi) > 0 && hi < 1e6) hi *= 2;
+    // Expand until the score is positive (past the increasing root); cap the search.
+    while (score(hi) < 0 && hi < 1e6) hi *= 2;
     for (let i = 0; i < 100; i++) {
         const mid = (lo + hi) / 2;
-        if (score(mid) > 0) lo = mid;
-        else hi = mid;
+        if (score(mid) > 0) hi = mid;
+        else lo = mid;
     }
     const b = (lo + hi) / 2;
     const a = n / (1 - Math.exp(-b * tMax));
