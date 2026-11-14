@@ -291,7 +291,8 @@ function closeEndpoints(g: GraphBuilder): void {
         }
     }
     for (const [id, e] of [...g.edges.entries()].sort((a, b) => compareStr(a[0], b[0]))) {
-        let { from, to } = e;
+        const { from } = e;
+        let { to } = e;
         // An extensionless `links` target may name an existing sibling document; otherwise a placeholder is fabricated below.
         if (e.kind === 'links' && !g.nodes.has(to)) {
             const path = pathOfRef(to);
