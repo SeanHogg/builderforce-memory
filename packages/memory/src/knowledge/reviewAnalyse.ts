@@ -38,7 +38,12 @@ export async function runAnalyzers(c: ReviewContext): Promise<void> {
             try {
                 return await p.analyzers!.analyse(c.rootId, signal, onProgress);
             } catch (error) {
-                c.report.failures.push({ kind: 'analyzer', path: analyzerFailurePath(p.id), phase: 'analyse', reason: reasonOf(error) });
+                // Never silent, never zero-findings: the run records the failure AND flags the pack's analysis as not
+                // measured, so the compare marks its findings `not_comparable` (`analyzer-failed:<id>`) instead of
+                // presenting a missing run as a fix (PRD 41 §8 Part B, §C9).
+                const reason = reasonOf(error);
+                c.report.failures.push({ kind: 'analyzer', path: analyzerFailurePath(p.id), phase: 'analyse', reason });
+                (c.report.analyzerStatus ??= []).push({ id: p.id, status: 'failed', reason });
                 return [];
             } finally { settled = true; }
         }),

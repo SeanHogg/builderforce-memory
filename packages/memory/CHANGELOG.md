@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added — stat prefilter and stratified fixed-point rule evaluation (`./knowledge`, PRD 41 §B2 steps 1–2, §B5, §B8)
+
+- **Stat prefilter** (`statManifest.ts`): a per-root manifest of `(path, size, mtimeNs, fileId, hash, recordedAtMs)` so a warm plan reuses a stored content hash without reading the file. Stats are BigInt (Windows file ids and ns mtimes lose precision as JS numbers); git's racy-file rule re-hashes any file whose mtime is within `RACY_WINDOW_MS` of the manifest write or of plan time. New exports: `RACY_WINDOW_MS`, `statManifestKey`, `statMatches`, `isRacy`, `prefilterStats`, `createStatPrefilter`, `loadStatManifest`, `saveStatManifest`, and types `StatRecord`, `StatManifestEntry`, `PrefilterDecision`.
+- **Fixed-point rules** (`rules/fixpointRules.ts`): stratified, semi-naive fixed-point evaluation over the one-pass `evaluateRules`. A rule's `extraInputs` entry may name a derived row source (`RowSourceInput`); rules are stratified by their declared row dependencies (a cycle is `fact_rule_unstratifiable:<id>`, recursion rejected not guessed), and each stratum iterates to a fixed point bounded by `MAX_FIXPOINT_ITERATIONS` (`fact_rule_fixpoint_unbounded:<ids>`). New exports: `evaluateRulesFixpoint`, `isRowSourceInput`, `MAX_FIXPOINT_ITERATIONS`, type `FixpointResult`.
+- `PlanDetail.planShapeVersion` (now 2) is included in `ReviewReport.digest`, so a manifest/plan shape change moves every scope's digest and a run delta never compares across one (§B8.4).
+- Analyzer failures are recorded on `ReviewReport.analyzerStatus` so a failed analyzer's findings compare `not_comparable` instead of reading as a fix (§8, C9).
+- Minor, non-breaking: new names only, plus one new required `PlanDetail` field the plan itself sets.
+
 ### Changed
 
 - EXTRACTOR_VERSION 6 → 7, so cached code extracts re-run after the code pack began extracting deploy descriptors (Dockerfile, wrangler, compose, k8s, workflows, package.json) as deployable units and adding a per-file `concurrency` badge (PRD 43).

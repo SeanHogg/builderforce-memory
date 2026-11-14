@@ -99,6 +99,12 @@ export interface ReviewReport {
     awaitingJudgeCount?: number;
     /** Pass 2 (`only`): files of the slice judged to completion. */
     judgedFiles?: number;
+    /**
+     * Analyzers that did not complete (PRD 41 §8, C9): status `'failed'` when it ran and errored, `'not_measured'` when it did
+     * not run at all. A failed analyzer is NEVER presented as zero findings — the compare marks that tool's findings
+     * `not_comparable` (reason `analyzer-failed:<tool>`) rather than resolving them.
+     */
+    analyzerStatus?: Array<{ id: string; status: 'failed' | 'not_measured'; reason?: string }>;
     /** Judging was stopped for this run after consecutive provider failures (A10 rule 9); the files stay owed. */
     judgeStopped?: string;
     aborted: boolean;

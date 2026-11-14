@@ -66,6 +66,8 @@ export { defineRule, DEFAULT_RULE_HOPS, MAX_RULE_HOPS } from './rules/factRule.j
 export type { FactRule, RuleInput, RuleScope } from './rules/factRule.js';
 export { evaluateRules, importNeighbours, derivedRowKey } from './rules/evaluateRules.js';
 export type { RuleWorld, DerivedRow, DerivedRows, RuleTraceEntry, RuleEvaluation } from './rules/evaluateRules.js';
+export { evaluateRulesFixpoint, isRowSourceInput, MAX_FIXPOINT_ITERATIONS } from './rules/fixpointRules.js';
+export type { FixpointResult, RowSourceInput } from './rules/fixpointRules.js';
 export { emptyFactGraph, updateFactGraph, buildFactGraph, factGraphDump, FACT_GRAPH_DUMP_VERSION } from './rules/factGraph.js';
 export type { FactGraph, FactManifestEntry, FactChange, FactGraphOptions, FactGraphUpdate } from './rules/factGraph.js';
 export { knowledgeFacts, knowledgeInputHash, runKnowledgeRules, packOfRef, KNOWLEDGE_INPUT } from './rules/knowledgeInput.js';
@@ -107,6 +109,11 @@ export type { ExtractorState } from './owedFiles.js';
 export { contentHash, CONTENT_HASH_RULE, BASELINE_CONTENT_HASH_RULE, contentHashRuleOf } from './contentHash.js';
 export { merkleTree, changedPaths, canonicalListing } from './merkle.js';
 export type { MerkleTree, MerkleEntry, MerkleKind, ListingSkipReason } from './merkle.js';
+// PRD 41 §B2 steps 1–2: the stat prefilter (size + mtimeNs + fileId, BigInt) with git's racy-file rule.
+export {
+    RACY_WINDOW_MS, statManifestKey, statMatches, isRacy, prefilterStats, createStatPrefilter, loadStatManifest, saveStatManifest,
+} from './statManifest.js';
+export type { StatRecord, StatManifestEntry, PrefilterDecision } from './statManifest.js';
 export { normalizePath, isRootFilePath } from './refs.js';
 export { reviewDirectory, assertStoredBatch } from './review.js';
 export { orderForJudging } from './judgePriority.js';

@@ -47,7 +47,13 @@ export async function finishReview(c: ReviewContext, flush: () => Promise<void>)
     report.judged = c.batch.judged;
     report.unjudged = c.batch.unjudged;
     report.invalidJudgements = c.batch.invalid;
-    report.digest = sha256Hex(canonicalJson({ rootId: c.rootId, packs: c.packIds, files: [...c.filesNow].sort((a, b) => compareStr(a[0], b[0])) }));
+    // The digest covers the root, the packs, the files manifest AND the plan/manifest shape version (PRD 41 §B8.4): a shape
+    // change moves every scope's digest, so two sides of a run delta never compare across one.
+    report.digest = sha256Hex(canonicalJson({
+        rootId: c.rootId, packs: c.packIds,
+        files: [...c.filesNow].sort((a, b) => compareStr(a[0], b[0])),
+        planShapeVersion: c.detail.planShapeVersion ?? 1,
+    }));
     await saveManifestMap(manifest, filesManifestKey(c.rootId), c.filesNow);
     await saveManifestMap(manifest, judgedManifestKey(c.rootId), c.judgedNow);
     // After every run: today's version and every file still owed a re-extraction — the unfinished ones,

@@ -94,6 +94,12 @@ export interface PlanDetail {
     carried: string[];
     /** The directory Merkle tree over `files` (PRD 41 §B2 step 4): `plan.merkleRoot` is its root. Optional so a hand-built detail stays valid. */
     merkle?: MerkleTree;
+    /**
+     * Bumped whenever the manifest or PlanDetail shape changes (PRD 41 §B8: a result built from a mixed generation is
+     * discarded). The plan digest (`ReviewReport.digest`) includes it, so a shape change moves every scope's digest and
+     * the two sides of a run delta never compare across a shape change.
+     */
+    planShapeVersion: number;
 }
 
 /** The ONE classification of a listed file: did its content move, is it owed, is it re-processed. */
@@ -197,6 +203,7 @@ export async function planDetail(
     const compareCalls = compares ? Math.ceil((compareSections + awaiting) / SECTIONS_PER_COMPARE) : 0;
     const sortedByPack = Object.fromEntries(Object.keys(byPack).sort(compareStr).map((k) => [k, byPack[k]!]));
     const merkle = merkleTree(files);
+    const planShapeVersion = 2; // 2 (2026-11-14, PRD 41 B2): the plan gained the stat-manifest identity; bump on any PlanDetail/manifest-shape change
     return {
         plan: {
             rootId: source.rootId,
@@ -215,6 +222,7 @@ export async function planDetail(
         extractor,
         carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
         merkle,
+        planShapeVersion,
     };
 }
 
@@ -244,5 +252,7 @@ export async function refreshPlan(detail: PlanDetail, manifest: IngestManifest, 
         extractor,
         carried: carriedOwed(extractor, prior, files.map((f) => f.path)),
         ...(detail.merkle ? { merkle: detail.merkle } : {}),
+        // *Continue* is the same manifest generation: the shape of what it continues is the shape it had.
+        planShapeVersion: detail.planShapeVersion,
     };
 }
