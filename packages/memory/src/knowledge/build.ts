@@ -36,6 +36,7 @@ import {
 } from './refs.js';
 import { buildOutline } from './outline.js';
 import { truncateGraph } from './truncate.js';
+import { LINKABLE_DOC_EXT } from './sources.js';
 
 export const DEFAULT_MAX_NODES = 400;
 export const MAX_NODES_CAP = 2000;
@@ -268,19 +269,46 @@ function repointByName(e: KEdge, rootId: string, resolve: (name: string) => stri
     return fileRefOf(e.from) === to ? null : { ...edge, to };
 }
 
-/** A missing `src:` endpoint becomes a `missing` placeholder (a broken link); a missing fact drops the edge. */
+/**
+ * A missing `src:` endpoint becomes a `missing` placeholder (a broken link); a missing fact drops the edge.
+ * A `links` target with no file of its own name is resolved against the files present NOW — an extensionless
+ * document target may name a sibling file like `troubleshooting.md`: an extract is cached, so it must record
+ * the written target, but whether the file exists is decided here. (The docs pack's broken-link rule only
+ * judges extensionless/document targets, so those are the only ones resolved.)
+ */
 function closeEndpoints(g: GraphBuilder): void {
+    const byFolderExt = new Map<string, NodeRef>();
+    for (const n of g.nodes.values()) {
+        if (n.kind !== 'file') continue;
+        const path = pathOfRef(n.ref);
+        if (path === undefined || path.startsWith('../')) continue;
+        const slash = path.lastIndexOf('/');
+        const folder = slash === -1 ? '' : path.slice(0, slash + 1);
+        const dot = path.lastIndexOf('.');
+        if (dot === -1 || dot < slash + 1) continue;
+        for (const ext of LINKABLE_DOC_EXT) {
+            if (ext === path.slice(dot + 1).toLowerCase()) { byFolderExt.set(folder + path.slice(slash + 1, dot), n.ref); break; }
+        }
+    }
     for (const [id, e] of [...g.edges.entries()].sort((a, b) => compareStr(a[0], b[0]))) {
-        const ends = [e.from, e.to].filter((end) => !g.nodes.has(end));
+        let { from, to } = e;
+        // An extensionless `links` target may name an existing sibling document; otherwise a placeholder is fabricated below.
+        if (e.kind === 'links' && !g.nodes.has(to)) {
+            const path = pathOfRef(to);
+            const resolved = path === undefined ? undefined : byFolderExt.get(path);
+            if (resolved !== undefined) to = resolved;
+        }
+        const ends = [from, to].filter((end) => !g.nodes.has(end));
         if (ends.some((end) => pathOfRef(end) === undefined)) { g.edges.delete(id); continue; }
         for (const end of ends) {
             const path = pathOfRef(end)!;
-            const other = g.nodes.get(end === e.from ? e.to : e.from);
+            const other = g.nodes.get(end === from ? to : from);
             g.node({
                 ref: end, kind: 'missing', label: basenameOf(path) || path, pack: other?.pack ?? FALLBACK_PACK_ID,
                 importance: 0, origin: 'extracted', badges: { missing: 1 },
             });
         }
+        if (to !== e.to) g.edges.set(id, { ...e, to });
     }
 }
 

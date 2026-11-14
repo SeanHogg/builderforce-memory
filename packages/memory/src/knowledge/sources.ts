@@ -80,6 +80,13 @@ const MEDIA_TYPES: Record<string, string> = {
 /** Binary documents whose text a HOST extractor may supply (§4.5); otherwise stored as an asset (never read). */
 const DOCUMENT_EXT = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp']);
 
+/**
+ * A markdown/html/text link target with no extension may name a sibling document (`troubleshooting` →
+ * `troubleshooting.md`). The set of extensions a target may resolve to — the docs pack's broken-link rule
+ * only judges targets that match these, so a target it would never flag is not resolved here either.
+ */
+export const LINKABLE_DOC_EXT = ['md', 'markdown', 'mdx', 'html', 'htm', 'txt', 'rst', 'adoc'];
+
 const BINARY_EXT = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'icns', 'tif', 'tiff', 'psd', 'avif', 'heic',
     'mp3', 'mp4', 'mov', 'avi', 'mkv', 'webm', 'wav', 'flac', 'ogg', 'm4a',

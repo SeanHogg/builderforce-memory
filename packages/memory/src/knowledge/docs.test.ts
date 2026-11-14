@@ -119,3 +119,33 @@ describe('docs findings and cards', () => {
         expect(setup.hash).toMatch(/^[0-9a-f]{64}$/);
     });
 });
+
+describe('extensionless link resolution (build time)', () => {
+    const LINK_FILES: Record<string, string> = {
+        'gateway/index.md': '# Gateway\n\nSee [trouble](/gateway/troubleshooting), [rel](./authentication) and [gone](/gateway/nope).\n',
+        'gateway/troubleshooting.md': '# Trouble\n\nx\n',
+        'gateway/authentication.md': '# Auth\n\ny\n',
+    };
+    const linkSource = (path: string): SourceDocument =>
+        asPathSource({ id: path, tenantId: 't', content: { kind: 'text', text: LINK_FILES[path]! } }, path, `h:${path}`);
+    const linkExtract = (path: string): Extracted => {
+        const src = linkSource(path);
+        return markdownParser.extract!(src, markdownParser.parse(src), ctx);
+    };
+    const lg = buildGraph({ rootId: ROOT, extracted: Object.keys(LINK_FILES).map(linkExtract), facts: [], relations: [], packs: [DOCS_PACK] });
+
+    it('resolves an extensionless link to the existing sibling document, not a missing placeholder', () => {
+        expect(lg.nodes.some((n) => n.kind === 'missing' && n.ref === ref('gateway/troubleshooting'))).toBe(false);
+        expect(lg.nodes.some((n) => n.kind === 'missing' && n.ref === ref('gateway/authentication'))).toBe(false);
+        // the links edge now targets the real .md file node, in the same folder as the written target
+        expect(lg.edges.some((e) => e.kind === 'links' && e.to === ref('gateway/troubleshooting.md'))).toBe(true);
+        expect(lg.edges.some((e) => e.kind === 'links' && e.to === ref('gateway/authentication.md'))).toBe(true);
+    });
+
+    it('still reports a link with no matching file as broken', () => {
+        expect(lg.nodes.find((n) => n.ref === ref('gateway/nope'))?.kind).toBe('missing');
+        const broken = lg.findings.filter((f) => f.kind === 'broken-link');
+        expect(broken).toHaveLength(1);
+        expect(broken[0]!.nodes).toEqual([ref('gateway/index.md'), ref('gateway/nope')]);
+    });
+});
