@@ -11,6 +11,7 @@
  */
 
 import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
+import { cooperativeBudget, type CooperativeBudget } from './cooperative.js';
 import { canonicalJson, isRootFilePath, normalizePath } from './refs.js';
 
 export type MerkleKind = 'file' | 'dir';
@@ -29,6 +30,17 @@ export interface MerkleTree {
     dirs: ReadonlyMap<string, string>;
     /** Directory path → its entries, sorted by name. */
     entries: ReadonlyMap<string, ReadonlyArray<MerkleEntry>>;
+}
+
+/**
+ * Options for the cooperative Merkle helpers. A host that plans on its UI thread over tens of
+ * thousands of files passes its own {@link CooperativeBudget} (the plan shares its walk's budget,
+ * so the yields are one budget across the whole plan); the default yields to the event loop
+ * every ~12 ms ({@link cooperativeBudget}).
+ */
+export interface MerkleOptions {
+    /** The work budget the long loops hand back to the event loop on. Default {@link cooperativeBudget}. */
+    budget?: CooperativeBudget;
 }
 
 /** Bytewise UTF-8 order (code-point order), which UTF-16 `<` is not for astral characters. */
@@ -61,13 +73,18 @@ export type ListingSkipReason = 'invalid-path' | 'duplicate-path';
  *     bytewise, is kept and the rest are skipped as `duplicate-path`; so is a path below a kept FILE (`a` and `a/b`).
  * Skipped entries carry the listed spelling. `kept` is sorted bytewise by normalized path.
  */
-export function canonicalListing<T extends { path: string }>(entries: readonly T[]): {
+export async function canonicalListing<T extends { path: string }>(
+    entries: readonly T[],
+    opts: MerkleOptions = {},
+): Promise<{
     kept: Array<T & { listedPath?: string }>;
     skipped: Array<{ path: string; reason: ListingSkipReason }>;
-} {
+}> {
+    const budget = opts.budget ?? cooperativeBudget();
     const skipped: Array<{ path: string; reason: ListingSkipReason }> = [];
     const candidates: Array<{ entry: T; path: string }> = [];
     for (const entry of entries) {
+        if (budget.due()) await budget.pause();
         const path = normalizePath(entry.path);
         if (isRootFilePath(path)) candidates.push({ entry, path });
         else skipped.push({ path: entry.path, reason: 'invalid-path' });
@@ -76,6 +93,7 @@ export function canonicalListing<T extends { path: string }>(entries: readonly T
     const files = new Set<string>();
     const kept: Array<T & { listedPath?: string }> = [];
     for (const { entry, path } of candidates) {
+        if (budget.due()) await budget.pause();
         let clash = files.has(path);
         for (let dir = dirOf(path); !clash && dir !== ''; dir = dirOf(dir)) clash = files.has(dir);
         if (clash) { skipped.push({ path: entry.path, reason: 'duplicate-path' }); continue; }
@@ -89,8 +107,15 @@ export function canonicalListing<T extends { path: string }>(entries: readonly T
  * The Merkle tree of a file listing. Throws on an invalid path, a path listed twice with different hashes, or a path
  * that is both a file and a directory — each would make the root depend on input order. {@link canonicalListing}
  * first makes a host listing safe.
+ *
+ * Async and cooperative: over a large listing the loop yields to the event loop every ~12 ms (or on the
+ * caller's {@link MerkleOptions.budget}), so a UI-thread host stays responsive. Callers `await` the tree.
  */
-export function merkleTree(files: ReadonlyArray<{ path: string; hash: string }>): MerkleTree {
+export async function merkleTree(
+    files: ReadonlyArray<{ path: string; hash: string }>,
+    opts: MerkleOptions = {},
+): Promise<MerkleTree> {
+    const budget = opts.budget ?? cooperativeBudget();
     const children = new Map<string, Map<string, { kind: MerkleKind; hash?: string }>>([['', new Map()]]);
     const childrenOf = (dir: string) => {
         let c = children.get(dir);
@@ -98,6 +123,7 @@ export function merkleTree(files: ReadonlyArray<{ path: string; hash: string }>)
         return c;
     };
     for (const f of files) {
+        if (budget.due()) await budget.pause();
         const path = normalizePath(f.path);
         if (!isRootFilePath(path)) throw new Error(`merkleTree: not a file path: ${JSON.stringify(f.path)}`);
         const own = childrenOf(dirOf(path)).get(nameOf(path));
@@ -117,6 +143,7 @@ export function merkleTree(files: ReadonlyArray<{ path: string; hash: string }>)
     // Deepest first, so every child directory is hashed before its parent.
     const order = [...children.keys()].sort((a, b) => depth(b) - depth(a) || compareBytewise(a, b));
     for (const dir of order) {
+        if (budget.due()) await budget.pause();
         const list = [...children.get(dir)!].map(([name, c]): MerkleEntry => ({
             name, kind: c.kind, hash: c.kind === 'file' ? c.hash! : dirs.get(joinPath(dir, name))!,
         })).sort((a, b) => compareBytewise(a.name, b.name));
@@ -139,18 +166,21 @@ function filesUnder(tree: MerkleTree, dir: string, out: string[]): void {
 
 /**
  * The file paths changed, added or removed between two trees, sorted bytewise. Walks top-down
- * and never descends into a directory whose hash is equal on both sides.
+ * and never descends into a directory whose hash is equal on both sides. Async and cooperative:
+ * the walk yields to the event loop on the caller's budget (default every ~12 ms).
  */
-export function changedPaths(before: MerkleTree, after: MerkleTree): string[] {
+export async function changedPaths(before: MerkleTree, after: MerkleTree, opts: MerkleOptions = {}): Promise<string[]> {
+    const budget = opts.budget ?? cooperativeBudget();
     const out: string[] = [];
-    const walk = (dir: string): void => {
+    const walk = async (dir: string): Promise<void> => {
         if (before.dirs.get(dir) === after.dirs.get(dir)) return;
+        if (budget.due()) await budget.pause();
         const was = new Map((before.entries.get(dir) ?? []).map((e) => [e.name, e] as const));
         const is = new Map((after.entries.get(dir) ?? []).map((e) => [e.name, e] as const));
         for (const name of new Set([...was.keys(), ...is.keys()])) {
             const a = was.get(name), b = is.get(name);
             const path = joinPath(dir, name);
-            if (a?.kind === 'dir' && b?.kind === 'dir') { if (a.hash !== b.hash) walk(path); continue; }
+            if (a?.kind === 'dir' && b?.kind === 'dir') { if (a.hash !== b.hash) await walk(path); continue; }
             if (a && b && a.kind === 'file' && b.kind === 'file') { if (a.hash !== b.hash) out.push(path); continue; }
             // Added, removed, or a file replaced by a directory (or back): every file on either side.
             for (const [side, e] of [[before, a], [after, b]] as const) {
@@ -159,6 +189,6 @@ export function changedPaths(before: MerkleTree, after: MerkleTree): string[] {
             }
         }
     };
-    walk('');
+    await walk('');
     return [...new Set(out)].sort(compareBytewise);
 }

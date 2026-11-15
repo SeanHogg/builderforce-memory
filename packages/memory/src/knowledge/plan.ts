@@ -134,9 +134,8 @@ export async function planDetail(
         if (budget.due()) await budget.pause();
     }
     // The ONE normalization (POSIX, NFC) — so plan paths are Merkle paths — and a listing that cannot break the plan: invalid and
-    // colliding paths are skipped with a reason (merkle.ts canonicalListing), never thrown.
-    const listing = canonicalListing(listed);
-    if (budget.due()) await budget.pause();
+    // colliding paths are skipped with a reason (merkle.ts canonicalListing), never thrown. One budget across the whole plan.
+    const listing = await canonicalListing(listed, { budget });
     const entries = sortBy(listing.kept, (e) => e.path);
     const listedOf = new Map(entries.filter((e) => e.listedPath !== undefined).map((e) => [e.path, e.listedPath!] as const));
 
@@ -211,7 +210,7 @@ export async function planDetail(
     const compareCalls = compares ? Math.ceil((compareSections + awaiting) / SECTIONS_PER_COMPARE) : 0;
     const sortedByPack = Object.fromEntries(Object.keys(byPack).sort(compareStr).map((k) => [k, byPack[k]!]));
     if (budget.due()) await budget.pause();
-    const merkle = merkleTree(files);
+    const merkle = await merkleTree(files, { budget });
     const planShapeVersion = 2; // 2 (2026-11-14, PRD 41 B2): the plan gained the stat-manifest identity; bump on any PlanDetail/manifest-shape change
     return {
         plan: {

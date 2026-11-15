@@ -12,7 +12,7 @@
  */
 
 import type { ParsedSection, SourceDocument } from '../ingest/types.js';
-import type { changedPaths, contentHash, CONTENT_HASH_RULE, merkleTree, MerkleEntry, MerkleTree, PlanDetail, ReviewPlan } from '../knowledge/index.js';
+import type { changedPaths, contentHash, CONTENT_HASH_RULE, merkleTree, MerkleEntry, MerkleOptions, MerkleTree, PlanDetail, ReviewPlan } from '../knowledge/index.js';
 import type { BASELINE_CONTENT_HASH_RULE, canonicalListing, contentHashRuleOf, ListingSkipReason } from '../knowledge/index.js';
 import type {
     DirectorySource, Extracted, ExtractJob, ExtractJobResult, GraphApp, GraphOutline, GraphReadSkip, GraphSystem, KEdge, KNode, KnowledgeGraph, KnowledgeStore,
@@ -158,8 +158,8 @@ export type MerkleEntry_shape = Expect<Equal<MerkleEntry, { name: string; kind: 
 export type MerkleTree_shape = Expect<Equal<MerkleTree, {
     root: string; dirs: ReadonlyMap<string, string>; entries: ReadonlyMap<string, ReadonlyArray<MerkleEntry>>;
 }>>;
-export type merkleTree_signature = Expect<Equal<typeof merkleTree, (files: ReadonlyArray<{ path: string; hash: string }>) => MerkleTree>>;
-export type changedPaths_signature = Expect<Equal<typeof changedPaths, (before: MerkleTree, after: MerkleTree) => string[]>>;
+export type merkleTree_signature = Expect<Equal<typeof merkleTree, (files: ReadonlyArray<{ path: string; hash: string }>, opts?: MerkleOptions) => Promise<MerkleTree>>>;
+export type changedPaths_signature = Expect<Equal<typeof changedPaths, (before: MerkleTree, after: MerkleTree, opts?: MerkleOptions) => Promise<string[]>>>;
 export type ReviewPlan_merkleRoot = Expect<Equal<ReviewPlan['merkleRoot'], string | undefined>>;
 export type PlanDetail_merkle = Expect<Equal<PlanDetail['merkle'], MerkleTree | undefined>>;
 export type BASELINE_CONTENT_HASH_RULE_type = Expect<Equal<typeof BASELINE_CONTENT_HASH_RULE, 'eol-lf@1'>>;
@@ -170,7 +170,7 @@ export type ReviewPlan_skipped_reason = Expect<Equal<
 >>;
 export type PlannedFile_listedPath = Expect<Equal<PlannedFile['listedPath'], string | undefined>>;
 export type canonicalListing_skipped = Expect<Equal<
-    ReturnType<typeof canonicalListing<{ path: string }>>['skipped'], Array<{ path: string; reason: ListingSkipReason }>
+    Awaited<ReturnType<typeof canonicalListing<{ path: string }>>>['skipped'], Array<{ path: string; reason: ListingSkipReason }>
 >>;
 export type ListingSkipReason_values = Expect<Equal<ListingSkipReason, 'invalid-path' | 'duplicate-path'>>;
 

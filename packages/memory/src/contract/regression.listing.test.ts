@@ -22,7 +22,7 @@ describe('regression: a host listing cannot break the plan', () => {
         expect(detail.files.map((f) => f.path)).toEqual([NFC, 'ok.md']);
         expect(detail.files[0]!.listedPath).toBe(NFD); // the first by (normalized, listed) bytewise
         expect(detail.plan.skipped).toContainEqual({ path: NFC, reason: 'duplicate-path' });
-        expect(detail.plan.merkleRoot).toBe(merkleTree(detail.files).root);
+        expect(detail.plan.merkleRoot).toBe((await merkleTree(detail.files)).root);
     });
 
     it('regression: a `.`/`..` path or a path listed twice is skipped with a reason, never thrown', async () => {

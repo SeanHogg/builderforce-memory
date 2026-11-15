@@ -21,10 +21,10 @@ const listing = (files: Record<string, string>, eol: (s: string) => string = (s)
     Object.entries(files).map(([path, text]) => ({ path, hash: contentHash(utf8(eol(text))) }));
 
 describe('regression: cross-OS content identity', () => {
-    it('regression: a Windows autocrlf checkout and a Linux checkout hash differently', () => {
+    it('regression: a Windows autocrlf checkout and a Linux checkout hash differently', async () => {
         const linux = listing(COMMIT);
         const windows = listing(COMMIT, autocrlf);
         expect(windows).toEqual(linux);
-        expect(merkleTree(windows).root).toBe(merkleTree(linux).root);
+        expect((await merkleTree(windows)).root).toBe((await merkleTree(linux)).root);
     });
 });

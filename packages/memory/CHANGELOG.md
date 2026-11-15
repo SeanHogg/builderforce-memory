@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed — `merkleTree`, `canonicalListing` and `changedPaths` are async and cooperative (`./knowledge`, PRD 41 §B2 step 4 follow-up)
+
+- The three Merkle helpers (`merkle.ts`) now return Promises and yield to the event loop on a
+  {@link CooperativeBudget} every ~12 ms by default (the plan passes its own walk's budget, so
+  the yields are one budget across the whole plan). A host that plans on its UI thread (the
+  VS Code extension host) no longer blocks the event loop over a tens-of-thousands-of-files
+  listing. New export: the `MerkleOptions` type. BREAKING: `await` the results at every call
+  site (`planDetail`, the VS Code run-delta side facts).
+
 ### Added — stat prefilter and stratified fixed-point rule evaluation (`./knowledge`, PRD 41 §B2 steps 1–2, §B5, §B8)
 
 - **Stat prefilter** (`statManifest.ts`): a per-root manifest of `(path, size, mtimeNs, fileId, hash, recordedAtMs)` so a warm plan reuses a stored content hash without reading the file. Stats are BigInt (Windows file ids and ns mtimes lose precision as JS numbers); git's racy-file rule re-hashes any file whose mtime is within `RACY_WINDOW_MS` of the manifest write or of plan time. New exports: `RACY_WINDOW_MS`, `statManifestKey`, `statMatches`, `isRacy`, `prefilterStats`, `createStatPrefilter`, `loadStatManifest`, `saveStatManifest`, and types `StatRecord`, `StatManifestEntry`, `PrefilterDecision`.
