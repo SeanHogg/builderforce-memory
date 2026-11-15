@@ -233,7 +233,7 @@ describe('regression: an oversized claimed document stays an asset', () => {
         const again = await reviewDirectory(args(source, store, manifest, { packs: [withPdf] }));
         expect(again.extracted).toBe(1);
         expect((await store.getExtracted(hashText('small pdf text')))![0]!.nodes[0]!.badges?.asset).toBeUndefined();
-    });
+    }, 30_000); // CPU-bound (a 3 MB text hashed by two plans and two reviews): ~2 s alone, 5–6.5 s beside other suites.
 
     it('regression: an oversized claimed pdf still owes no calls after an aborted run and a refreshed (Continue) plan', async () => {
         const source = memSource({ 'big.pdf': 'x'.repeat(3 * 1024 * 1024) });

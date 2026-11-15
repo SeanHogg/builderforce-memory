@@ -172,7 +172,11 @@ export type PlannedFile_listedPath = Expect<Equal<PlannedFile['listedPath'], str
 export type canonicalListing_skipped = Expect<Equal<
     Awaited<ReturnType<typeof canonicalListing<{ path: string }>>>['skipped'], Array<{ path: string; reason: ListingSkipReason }>
 >>;
-export type ListingSkipReason_values = Expect<Equal<ListingSkipReason, 'invalid-path' | 'duplicate-path'>>;
+export type canonicalListing_signature = Expect<Equal<typeof canonicalListing, <T extends { path: string }>(entries: readonly T[], opts?: MerkleOptions) => Promise<{
+    kept: Array<T & { listedPath?: string }>;
+    skipped: Array<{ path: string; reason: ListingSkipReason }>;
+}>>>;
+export type ListingSkipReason_values =Expect<Equal<ListingSkipReason, 'invalid-path' | 'duplicate-path'>>;
 
 /* ── DirectorySource: optional per-path hooks ──────────────────────────────────────────────────────────────── */
 // hashOf takes the path (a host whose read() transforms bytes returns the listing hash for it); a one-argument hashOf still satisfies it.
