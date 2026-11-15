@@ -18,6 +18,7 @@ import {
     isAssetPath, isDocumentPath, manifestMap, resolveDocument, stubSource,
 } from './sources.js';
 import { compareStr, FALLBACK_PACK_ID, sortBy } from './refs.js';
+import { cooperativeBudget } from './cooperative.js';
 
 /** ≈ bytes per judged section, for the estimate (the plan does not read changed files). */
 export const AVG_SECTION_BYTES = 1500;
@@ -125,11 +126,17 @@ export async function planDetail(
     opts: PlanOptions = {},
 ): Promise<PlanDetail> {
     const maxBytes = opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+    // A host may plan on its UI thread over tens of thousands of files: every long loop hands the event loop back (cooperative.ts).
+    const budget = cooperativeBudget();
     const listed: Array<{ path: string; hash: string; size: number }> = [];
-    for await (const entry of source.list()) listed.push(entry);
+    for await (const entry of source.list()) {
+        listed.push(entry);
+        if (budget.due()) await budget.pause();
+    }
     // The ONE normalization (POSIX, NFC) — so plan paths are Merkle paths — and a listing that cannot break the plan: invalid and
     // colliding paths are skipped with a reason (merkle.ts canonicalListing), never thrown.
     const listing = canonicalListing(listed);
+    if (budget.due()) await budget.pause();
     const entries = sortBy(listing.kept, (e) => e.path);
     const listedOf = new Map(entries.filter((e) => e.listedPath !== undefined).map((e) => [e.path, e.listedPath!] as const));
 
@@ -159,6 +166,7 @@ export async function planDetail(
     let estimatedSections = 0;
     let compareSections = 0;
     for (const e of entries) {
+        if (budget.due()) await budget.pause();
         if (ignored(e.path)) { skipped.push({ path: e.path, reason: 'ignored' }); continue; }
         const document = isDocumentPath(e.path) ? resolveDocument(composed, e.path) : undefined;
         // An asset is never read, so the size cap does not apply: it is planned, hashed and diffed, and costs no model call.
@@ -202,6 +210,7 @@ export async function planDetail(
     const awaiting = compares ? (await manifestMap(manifest, compareManifestKey(source.rootId))).size : 0;
     const compareCalls = compares ? Math.ceil((compareSections + awaiting) / SECTIONS_PER_COMPARE) : 0;
     const sortedByPack = Object.fromEntries(Object.keys(byPack).sort(compareStr).map((k) => [k, byPack[k]!]));
+    if (budget.due()) await budget.pause();
     const merkle = merkleTree(files);
     const planShapeVersion = 2; // 2 (2026-11-14, PRD 41 B2): the plan gained the stat-manifest identity; bump on any PlanDetail/manifest-shape change
     return {

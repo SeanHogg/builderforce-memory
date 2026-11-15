@@ -33,6 +33,7 @@
  */
 
 import { canonicalJson, compareStr } from '../refs.js';
+import { cooperativeBudget, type CooperativeBudget } from '../cooperative.js';
 import { readFileFacts, type FileFacts } from '../facts/fileFacts.js';
 import { factKindHashes, factsHash, factsJson } from '../facts/factsHash.js';
 import { derivedRowKey, type DerivedRow } from './evaluateRules.js';
@@ -191,11 +192,30 @@ export interface LoadFactGraphOptions {
 /** How many times a load retries when a write lands under it before rejecting `fact_store_generation_conflict:load`. */
 export const FACT_STORE_LOAD_ATTEMPTS = 3;
 
+/**
+ * How many hashes one `getObjects` call asks for during a load. A port may serve a call synchronously (the SQLite adapter
+ * reads it in one transaction on the caller's thread), so a load asks in bounded batches and yields between them.
+ */
+const LOAD_OBJECTS_BATCH = 512;
+
+/** Every object of `hashes` the port holds, read in {@link LOAD_OBJECTS_BATCH}-sized calls with a yield between them. */
+async function getObjectsBatched(port: FactStorePort, hashes: readonly string[], budget: CooperativeBudget): Promise<Map<string, string>> {
+    const raw = new Map<string, string>();
+    for (let i = 0; i < hashes.length; i += LOAD_OBJECTS_BATCH) {
+        if (i > 0 && budget.due()) await budget.pause();
+        for (const [hash, json] of await port.getObjects(hashes.slice(i, i + LOAD_OBJECTS_BATCH))) raw.set(hash, json);
+    }
+    return raw;
+}
+
 async function loadOnce(port: FactStorePort, stored: FactStoreManifest, verify: 'full' | 'manifest'): Promise<FactGraph> {
+    // A host may load on its UI thread: parsing and hashing every object hands the event loop back (cooperative.ts).
+    const budget = cooperativeBudget();
     const hashes = [...new Set([...stored.files.values()].map((e) => e.factsHash))].sort(compareStr);
-    const raw = await port.getObjects(hashes);
+    const raw = await getObjectsBatched(port, hashes, budget);
     const objects = new Map<string, FileFacts>();
     for (const hash of hashes) {
+        if (budget.due()) await budget.pause();
         const json = raw.get(hash);
         if (json === undefined) throw new Error(`fact_store_object_missing:${hash}`);
         let facts: FileFacts;
@@ -209,6 +229,7 @@ async function loadOnce(port: FactStorePort, stored: FactStoreManifest, verify: 
     }
     const manifest = new Map<string, FactManifestEntry>();
     for (const path of [...stored.files.keys()].sort(compareStr)) {
+        if (budget.due()) await budget.pause();
         const e = stored.files.get(path)!;
         const facts = objects.get(e.factsHash)!;
         const entry: FactManifestEntry = { contentHash: facts.contentHash, factsHash: e.factsHash, kinds: factKindHashes(facts) };

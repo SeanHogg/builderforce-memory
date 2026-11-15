@@ -8,7 +8,6 @@ import { htmlParser, markdownParser, ParserRegistry, plainTextParser } from '../
 import { isBinaryDocumentType, mediaTypeOf } from '../ingest/parserSupport.js';
 import { CONTENT_HASH_FIELD, type ChunkFingerprint, type IngestManifest, type SourceDocument } from '../ingest/types.js';
 import type { Extracted, KnowledgePack, KnowledgeParser } from './model.js';
-import { matchGlob } from './partitions.js';
 import { compareStr, walkRelative } from './refs.js';
 
 /** Default per-file size cap (bytes). */
@@ -43,13 +42,6 @@ export function isCurrentExtractor(recorded: { version: number | undefined; key:
 export function sameExtractorKey(a: string | undefined, b: string | undefined): boolean {
     return (a || undefined) === (b || undefined);
 }
-/**
- * Always ignored: VCS internals, installed dependencies, builderforce config, and lockfiles (`yarn.lock`, `Cargo.lock` …): generated,
- * huge, and plain text — extracted they would cost judgement calls for nothing; they were never stored (once skipped as binary).
- * A `.builderforce/ignore` rule can still re-include one (`!yarn.lock`).
- */
-const DEFAULT_IGNORES = ['.git/', 'node_modules/', '.builderforce/', '.gitignore', '*.lock'];
-
 const MEDIA_TYPES: Record<string, string> = {
     md: 'text/markdown', markdown: 'text/markdown', mdx: 'text/markdown',
     html: 'text/html', htm: 'text/html', xhtml: 'application/xhtml+xml', xml: 'application/xml',
@@ -226,43 +218,8 @@ export function composePacks(packs: readonly KnowledgePack[]): ComposedPacks {
     };
 }
 
-/**
- * A `.gitignore`-style matcher: `#` comments, `!` negation (last match wins), a trailing
- * `/` for directories only, a `/` elsewhere anchors to the root, otherwise any depth.
- */
-export function ignoreMatcher(texts: ReadonlyArray<string | { text: string; base: string }>): (path: string) => boolean {
-    const rules: Array<{ glob: string; negate: boolean; dirOnly: boolean }> = [];
-    const lines = [
-        ...DEFAULT_IGNORES.map((line) => ({ line, base: '' })),
-        ...texts.flatMap((t) => {
-            const { text, base } = typeof t === 'string' ? { text: t, base: '' } : t;
-            return text.split(/\r?\n/).map((line) => ({ line, base }));
-        }),
-    ];
-    for (const { line, base } of lines) {
-        let p = line.replace(/\s+$/, '');
-        if (!p || p.startsWith('#')) continue;
-        const negate = p.startsWith('!');
-        if (negate) p = p.slice(1);
-        const dirOnly = p.endsWith('/');
-        if (dirOnly) p = p.slice(0, -1);
-        const anchored = p.includes('/');
-        p = p.replace(/^\//, '');
-        // A nested `.gitignore` scopes its patterns to its own folder.
-        const prefix = base ? `${base}/` : '';
-        if (p) rules.push({ glob: anchored ? `${prefix}${p}` : `${prefix}**/${p}`, negate, dirOnly });
-    }
-    return (path) => {
-        const segments = path.split('/');
-        const dirs = segments.slice(0, -1).map((_, i) => segments.slice(0, i + 1).join('/'));
-        let ignored = false;
-        for (const r of rules) {
-            const hit = (r.dirOnly ? dirs : [...dirs, path]).some((c) => matchGlob(c, r.glob));
-            if (hit) ignored = !r.negate;
-        }
-        return ignored;
-    };
-}
+/** The `.gitignore`-style matcher lives in its own module (ignoreMatcher.ts); re-exported here, where callers import it. */
+export { ignoreMatcher } from './ignoreMatcher.js';
 
 /**
  * The ignore files present in a listing, each with the folder its patterns are relative to,
