@@ -87,7 +87,10 @@ describe('read-ahead with a pool that reads', () => {
         const run = reviewDirectory(args(source, new LocalSnapshotStore(memPersistence()), new InMemoryIngestManifest(), {
             judgement: fakeJudge(), mechanical: true, extractPool: pool, deferRead: true, concurrency: 8, signal: ctl.signal,
         }));
-        await jest.advanceTimersByTimeAsync(50);
+        // The cooperative plan (async merkleTree/canonicalListing, 2026-11-14) yields to the event loop over several real
+        // macrotasks before the pool opens; each advanceTimersByTimeAsync drains one round, and the count varies with the
+        // runner's load. Poll-advance until the pool has opened (bounded, so a real stall still fails the test).
+        for (let i = 0; started() === 0 && i < 20; i++) await jest.advanceTimersByTimeAsync(50);
         expect(started()).toBe(8);
         ctl.abort();
         // No timer is advanced past the 10 s extract deadline: the stop alone settles every in-flight and queued job.
