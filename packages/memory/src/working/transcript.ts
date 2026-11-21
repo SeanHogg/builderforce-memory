@@ -15,6 +15,7 @@
 import { defaultEstimateTokens, messageTokens as handoffMessageTokens, tokensOf as handoffTokensOf } from '../handoff/budget.js';
 import type { HandoffMessage } from '../handoff/types.js';
 import { CONSOLIDATION_MARKER_PREFIX } from './consolidationMarker.js';
+import { elideRunResults, type RunElisionBudget } from './runElision.js';
 
 /** A transcript message — the hand-off packer's shape, so both count a message alike. */
 export type TranscriptMessage = HandoffMessage;
@@ -137,8 +138,12 @@ function tokenWindowStart(convo: readonly TranscriptMessage[]): number {
  * invalid for strict vendors — Gemini rejects a request whose conversation does not
  * begin with a user turn (the cascade `[googleai] 400 INVALID_ARGUMENT` after a long
  * tool loop crossed the window boundary). The most recent user turn is never dropped:
- * correctness over the size cap, when a tool loop outgrows the window or a single turn
- * is itself oversized.
+ * correctness over the size cap, when a single turn is itself oversized.
+ *
+ * A RUN that outgrows the budget after that user turn is cut inside ({@link elideRunResults}):
+ * its older tool results become one-line stubs, keeping the user turn, every assistant turn
+ * and a ~{@link COMPACT_TAIL_TOKEN_BUDGET}-token verbatim tail. Without it one long run grew
+ * the prompt by every result it produced (chat #128305: 31k → 191k tokens).
  *
  * A consolidation marker that LEADS the transcript (a reloaded chat's seed begins with its saved
  * fold note) is never dropped: it is the note that stands for everything before the rest, and
@@ -152,8 +157,19 @@ export function windowed<M extends TranscriptMessage>(convo: M[]): M[] {
   let start = Math.min(Math.max(messageWindowStart(convo.length), tokenWindowStart(convo)), lastUser);
   while (convo[start]!.role !== 'user') start += 1;
   const lead = convo[0]!;
-  if (start > 0 && isLeadingMarker(lead)) return [lead, ...convo.slice(start)];
-  return convo.slice(start);
+  const window = start > 0 && isLeadingMarker(lead) ? [lead, ...convo.slice(start)] : convo.slice(start);
+  return elideRunResults(window, runElisionBudget());
+}
+
+/** The in-run cut's budget: the history budget, the compacted tail, the token drop chunk. */
+function runElisionBudget(extraTokens = 0): RunElisionBudget {
+  return {
+    budgetTokens: HISTORY_TOKEN_BUDGET,
+    tailTokens: COMPACT_TAIL_TOKEN_BUDGET,
+    chunkTokens: HISTORY_TOKEN_DROP_CHUNK,
+    minTailMessages: COMPACT_TAIL_TURNS,
+    extraTokens,
+  };
 }
 
 /** Is this row a saved consolidation note (the visible marker the next seed starts from)? */
@@ -167,12 +183,18 @@ function isLeadingMarker(m: TranscriptMessage): boolean {
  * front. Deliberately conservative: it judges against the CURRENT transcript (which has
  * grown since the last working set was built), so it can only ever call a message gone a
  * turn early — a needless replay costs tokens, a stub for a vanished result costs the run.
+ * A result the in-run cut elided ({@link elideRunResults}) is gone too: the model sees its
+ * stub, not the row.
  */
 export function stillInWorkingContext<M extends TranscriptMessage>(state: WorkingTranscriptState<M>, anchor: unknown): boolean {
   const convo = state.transcript;
   const idx = convo.indexOf(anchor as M);
   if (idx < 0) return false;
-  if (state.compactMemo) return idx >= verbatimStart(convo, state.compactMemo.coveredEnd);
+  const memo = state.compactMemo;
+  if (memo) {
+    if (idx < verbatimStart(convo, memo.coveredEnd)) return false;
+    return boundedCompacted('', convo, memo.note, memo.coveredEnd).includes(convo[idx]!);
+  }
   return windowed(convo).includes(convo[idx]!);
 }
 
@@ -269,6 +291,17 @@ export function assembleCompacted<M extends TranscriptMessage>(
   return out;
 }
 
+/**
+ * {@link assembleCompacted}, kept inside the history budget: when the note's verbatim
+ * remainder has outgrown it and no new fold was made (the summary failed or timed out),
+ * the current run's older tool results are elided ({@link elideRunResults}) — the note and
+ * the system prompt are kept, the note charged to the budget as the window charges it.
+ */
+function boundedCompacted<M extends TranscriptMessage>(systemPrompt: string, convo: M[], note: string, coveredEnd: number): M[] {
+  const [system, noteRow, ...rest] = assembleCompacted(systemPrompt, convo, note, coveredEnd);
+  return [system!, noteRow!, ...elideRunResults(rest, runElisionBudget(transcriptTokens([noteRow!])))];
+}
+
 /** Estimated tokens of a message list — the ONE count compaction budgets by, exported so
  *  a run measures what compaction kept out of a call with the same rule. */
 export function transcriptTokens(msgs: readonly TranscriptMessage[]): number {
@@ -324,9 +357,10 @@ export async function buildWorkingTranscript<M extends TranscriptMessage>(
     : convo.slice(from, to);
   const summary = to > from ? await summarize(fold) : null;
   if (summary == null) {
-    // Nothing new to fold, or no summarizer: keep the note already held, else drop-oldest.
+    // Nothing new to fold, or no summarizer: keep the note already held, else drop-oldest —
+    // either way cut inside the run once it outgrows the budget (`elideRunResults`).
     return memo
-      ? assembleCompacted(systemPrompt, convo, memo.note, memo.coveredEnd)
+      ? boundedCompacted(systemPrompt, convo, memo.note, memo.coveredEnd)
       : [{ role: 'system', content: systemPrompt } as M, ...windowed(convo)];
   }
   const note = `Compressed memory of the earlier part of this conversation:\n${summary}`;
