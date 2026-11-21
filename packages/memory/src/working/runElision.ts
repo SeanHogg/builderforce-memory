@@ -42,8 +42,11 @@ export interface RunElisionBudget {
 /** A result this small costs less to keep than its stub saves — never elided. */
 export const MIN_ELIDED_RESULT_TOKENS = 200;
 
-/** Tools whose results ARE the run's plan or ledger: never elided — the model steers by them. */
-const PINNED_RESULT_TOOL = /plan|todo|ledger/i;
+/**
+ * Tools whose results the model steers by, never elided: the run's plan or ledger, and the answer to a question the
+ * run asked (`ask_user` answered in the run is the person's — or Auto's — direction, a directive like the user turn).
+ */
+const PINNED_RESULT_TOOL = /plan|todo|ledger|ask_?user/i;
 
 /** The arguments a stub names as the call's target, in order of preference. */
 const TARGET_ARGS = ['path', 'file_path', 'file', 'pattern', 'query', 'url', 'command'] as const;

@@ -8,7 +8,7 @@
   fold's summary timing out, a VS Code run's prompt grew from 31k to 191k tokens, the 64k `HISTORY_TOKEN_BUDGET` never
   applying. Once over the budget, the run's older tool results now become one-line stubs
   (`[result elided: <tool> <target>, N KB — re-read if needed]`); the user turn, every assistant turn, plan/ledger
-  results, small results and a ~40k (`COMPACT_TAIL_TOKEN_BUDGET`) verbatim tail are kept, and no row is removed, so a
+  results, answered `ask_user` results, small results and a ~40k (`COMPACT_TAIL_TOKEN_BUDGET`) verbatim tail are kept, and no row is removed, so a
   call is never split from its result. The cut moves in 16k (`HISTORY_TOKEN_DROP_CHUNK`) steps counted from the run's
   start, so the prompt prefix changes once per chunk of new work.
 - `buildWorkingTranscript`'s other fallback — a memo already held and the next summary failing — applies the same cut to

@@ -144,6 +144,15 @@ describe('regression: chat #128305 — the fallback window cuts inside one long 
         expect(String(w[8]!.content)).toMatch(/^\[result elided: read_file src\/f2\.ts, \d+ KB — re-read if needed\]$/);
     });
 
+    it('regression: an answered ask_user result (the run\'s direction) is never elided, however old or large', () => {
+        const answer = `Use the second approach. ${'z'.repeat(4_000)}`; // a detailed answer, well over MIN_ELIDED_RESULT_TOKENS
+        const convo: TranscriptMessage[] = [{ role: 'user', content: 'the request' }, ...step(0, 'ask_user', answer)];
+        for (let i = 1; i < 30; i++) convo.push(...step(i));
+        const w = windowed(convo);
+        expect(w[2]).toBe(convo[2]); // the answer, verbatim
+        expect(String(w[4]!.content).startsWith('[result elided: read_file')).toBe(true); // an older read beside it IS cut
+    });
+
     it('returns the input itself when it fits, and is idempotent once elided', () => {
         const short = run(3);
         expect(windowed(short)).toEqual(short);
