@@ -9,10 +9,12 @@
  * The stale content leaves the model's window (the edit changed those bytes — anything
  * the model still needs it re-reads), and stays in the trace at full fidelity.
  *
- * B7 — fold repeated narration: assistant text PRECEDING tool calls whose word-set
- * overlaps the previous such text by ≥ {@link NARRATION_OVERLAP} becomes
- * `"(progress note)"`. A final answer and a turn without tool calls are NEVER folded —
- * those carry the run's actual output.
+ * B7 — fold repeated narration: assistant text PRECEDING tool calls that restates the
+ * previous such text — lead-sentence overlap ≥ {@link LEAD_SENTENCE_OVERLAP} OR whole-text
+ * overlap ≥ {@link NARRATION_OVERLAP} — keeps only its genuinely NEW sentences; the
+ * restated ones collapse to {@link RESTATEMENT_NOTE} (or {@link PROGRESS_NOTE} when the
+ * whole narration restates). A final answer and a turn without tool calls are NEVER
+ * folded — those carry the run's actual output.
  *
  * A "step" is the index of the assistant message carrying the tool call, in the message
  * list the fold runs over (the model transcript, system prompt included).
@@ -21,9 +23,30 @@
  */
 
 import type { TranscriptMessage } from './transcript.js';
+import {
+  LEAD_SENTENCE_OVERLAP,
+  NARRATION_OVERLAP,
+  RESTATEMENT_NOTE,
+  isRepeatedNarration,
+  leadSentenceOverlap,
+  newNarrationSentences,
+  splitSentences,
+} from './narrationOverlap.js';
 
-/** B7's fold threshold: |intersection| / |union| of the two texts' word sets (Jaccard). */
-export const NARRATION_OVERLAP = 0.8;
+// The ONE normalizer lives in narrationOverlap.ts (the host-side repeatedNarration
+// detector imports the same functions). Re-exported here so fold.ts's existing
+// consumers keep importing the measures from the fold module.
+export {
+  NARRATION_OVERLAP,
+  LEAD_SENTENCE_OVERLAP,
+  RESTATEMENT_NOTE,
+  wordOverlap,
+  wordContained,
+  isRepeatedNarration,
+  leadSentenceOverlap,
+  splitSentences,
+  newNarrationSentences,
+} from './narrationOverlap.js';
 
 /** B6's replacement for a read result whose file a later successful edit superseded. */
 export function supersededReadMarker(path: string, step: number): string {
@@ -95,48 +118,6 @@ function succeeded(m: TranscriptMessage | undefined): boolean {
 
 const EDIT_OR_WRITE = /^(edit|write)/i;
 const READ = /^read/i;
-
-function wordSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^a-z0-9_]+/)
-      .filter((w) => w.length > 0),
-  );
-}
-
-/**
- * Jaccard similarity of two texts' word sets (lower-cased `[a-z0-9_]` words): |A ∩ B| / |A ∪ B|, 0 when either has no word.
- * The measure B7 folds repeated narration by (see {@link isRepeatedNarration}).
- */
-export function wordOverlap(a: string, b: string): number {
-  const sa = wordSet(a);
-  const sb = wordSet(b);
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let intersection = 0;
-  for (const w of sa) if (sb.has(w)) intersection += 1;
-  return intersection / (sa.size + sb.size - intersection);
-}
-
-/** Containment: is every word of the smaller set present in the larger? True when one
- *  narration is the other plus a trailing qualifier ("…once more", "…again", "…now") —
- *  a repeat Jaccard under-counts because the union grows with the qualifier's words. */
-export function wordContained(a: string, b: string): boolean {
-  const sa = wordSet(a);
-  const sb = wordSet(b);
-  if (sa.size === 0 || sb.size === 0) return false;
-  const [small, large] = sa.size <= sb.size ? [sa, sb] : [sb, sa];
-  for (const w of small) if (!large.has(w)) return false;
-  return true;
-}
-
-/**
- * B7's detector: `text` merely repeats `previous` — their {@link wordOverlap} is at least `overlap`
- * (default {@link NARRATION_OVERLAP}), or one's words are all in the other ({@link wordContained}).
- */
-export function isRepeatedNarration(text: string, previous: string, overlap = NARRATION_OVERLAP): boolean {
-  return wordOverlap(text, previous) >= overlap || wordContained(text, previous);
-}
 
 /** The narration an assistant turn carries before its tool calls — null when it carries
  *  none (an empty-content tool-call turn, or any turn without tool calls). */
@@ -212,15 +193,22 @@ export function foldSupersededReads<M extends TranscriptMessage>(msgs: readonly 
 }
 
 /**
- * B7 — fold a tool-call turn's narration when it merely repeats the previous one.
+ * B7 — fold a tool-call turn's narration when it restates an earlier one.
  * Only assistant messages WITH tool calls are candidates: a final answer and a turn
  * without tool calls are never folded. The FIRST narration is kept verbatim (it has no
- * predecessor to repeat); each later one folds when its word-set overlap with the most
- * recent kept narration is ≥ {@link NARRATION_OVERLAP}. Once folded, it does not become
- * the comparison text — the model keeps the last thing actually said.
+ * predecessor to repeat); each later one folds when its lead-sentence overlap with the
+ * most recent kept narration is ≥ {@link LEAD_SENTENCE_OVERLAP} OR their whole-text
+ * overlap is ≥ `overlap` (default {@link NARRATION_OVERLAP}).
+ *
+ * On fold, only the narration's genuinely NEW sentences survive — sentences whose own
+ * overlap with EVERY earlier kept sentence is < {@link LEAD_SENTENCE_OVERLAP}; the
+ * restated ones collapse to {@link RESTATEMENT_NOTE} ({@link PROGRESS_NOTE} when nothing
+ * new remains). A fully folded note does not become the comparison text — the model
+ * keeps the last thing actually said; surviving new sentences join the kept record.
  */
 export function foldRepeatedNarration<M extends TranscriptMessage>(msgs: readonly M[], overlap = NARRATION_OVERLAP): M[] {
   let lastKept: string | null = null;
+  const keptSentences: string[] = [];
   let changed = false;
   const out = msgs.map((m) => {
     if (m.role !== 'assistant') return m;
@@ -230,13 +218,21 @@ export function foldRepeatedNarration<M extends TranscriptMessage>(msgs: readonl
     // read — it never folds itself, but it IS what a later repeat is compared against.
     if (callsOf(m).some((call) => SUPERSEDED_CALL.has(call))) {
       lastKept = narration;
+      keptSentences.push(...splitSentences(narration));
       return m;
     }
-    if (lastKept != null && isRepeatedNarration(narration, lastKept, overlap)) {
+    const restates =
+      lastKept != null &&
+      (leadSentenceOverlap(narration, lastKept) >= LEAD_SENTENCE_OVERLAP || isRepeatedNarration(narration, lastKept, overlap));
+    if (restates) {
       changed = true;
-      return { ...m, content: PROGRESS_NOTE } as M;
+      const fresh = newNarrationSentences(narration, keptSentences);
+      if (fresh.length === 0) return { ...m, content: PROGRESS_NOTE } as M;
+      keptSentences.push(...fresh);
+      return { ...m, content: `${fresh.join(' ')} ${RESTATEMENT_NOTE}` } as M;
     }
     lastKept = narration;
+    keptSentences.push(...splitSentences(narration));
     return m;
   });
   return changed ? out : (msgs as M[]);

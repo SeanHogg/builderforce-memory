@@ -64,6 +64,11 @@ export {
   wordOverlap,
   wordContained,
   isRepeatedNarration,
+  leadSentenceOverlap,
+  LEAD_SENTENCE_OVERLAP,
+  RESTATEMENT_NOTE,
+  splitSentences,
+  newNarrationSentences,
 } from './fold.js';
 export { DEFAULT_MAX_MERGE_DEPTH, chunkText, chunkedTextSummary } from './textSummary.js';
 export type { ChunkedTextSummaryOptions } from './textSummary.js';

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Changed — B7 folds growing restatements and keeps their new sentences (`./working`, chat #168571 W5)
+
+- **One normalizer.** The word-set measures (`wordOverlap`, `wordContained`, `isRepeatedNarration`,
+  `NARRATION_OVERLAP`) moved verbatim to `working/narrationOverlap.ts` and are re-exported from
+  `fold.ts` and `./working` unchanged. New shared export `leadSentenceOverlap(a, b)`: token Jaccard
+  of the two texts' FIRST sentence, normalized case/punctuation/backtick-insensitively. The host-side
+  `repeatedNarration` detector imports this same function — no second copy.
+- **`foldRepeatedNarration` folds on lead overlap.** A tool-call narration now folds when its
+  lead-sentence overlap with the most recent kept narration is ≥ `LEAD_SENTENCE_OVERLAP` (0.7) OR the
+  whole-text overlap is ≥ `NARRATION_OVERLAP` (0.8) as before. A growing restatement keeps its lead
+  sentence while its whole-text Jaccard falls below 0.8 — the lead rule is what catches it.
+- **On fold, new sentences survive.** Only sentences whose own overlap with EVERY earlier kept
+  sentence is < 0.7 are kept (`newNarrationSentences`); the restated ones collapse to
+  `RESTATEMENT_NOTE` (`"(restates earlier finding)"`). When nothing new remains the whole narration
+  still becomes `PROGRESS_NOTE`, so the existing B7 behaviour is unchanged for pure repeats.
+- New exports (`./working`): `leadSentenceOverlap`, `LEAD_SENTENCE_OVERLAP`, `RESTATEMENT_NOTE`,
+  `splitSentences`, `newNarrationSentences`. Minor, non-breaking: added names only; existing
+  assertions run unchanged. Regression: `src/contract/regression.narrationFold.test.ts` (7 growing
+  restatements modeled on chat #168571).
+
 ### Changed — `merkleTree`, `canonicalListing` and `changedPaths` are async and cooperative (`./knowledge`, PRD 41 §B2 step 4 follow-up)
 
 - The three Merkle helpers (`merkle.ts`) now return Promises and yield to the event loop on a
