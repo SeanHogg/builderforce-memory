@@ -56,7 +56,8 @@ export function supersededReadMarker(path: string, step: number): string {
 /** B7's replacement for a tool-call turn's narration that merely repeats the previous one. */
 export const PROGRESS_NOTE = '(progress note)';
 
-interface NamedToolCall {
+/** An OpenAI-style tool call, read defensively (a host's shape is not trusted). Shared with `runElision.ts`. */
+export interface NamedToolCall {
   id?: unknown;
   function?: { name?: unknown; arguments?: unknown };
 }
@@ -66,17 +67,20 @@ interface ToolResult {
   error?: unknown;
 }
 
-function callsOf(m: TranscriptMessage): NamedToolCall[] {
+export function callsOf(m: TranscriptMessage): NamedToolCall[] {
   return Array.isArray(m.tool_calls) ? (m.tool_calls as NamedToolCall[]) : [];
 }
 
-function nameOf(call: NamedToolCall): string | null {
+export function nameOf(call: NamedToolCall): string | null {
   const name = call.function?.name;
   return typeof name === 'string' && name.length > 0 ? name : null;
 }
 
-/** The `path` argument of a tool call — from the object form or parsed out of a JSON string. */
-function pathOf(call: NamedToolCall): string | null {
+/**
+ * The first non-empty string argument of a tool call among `keys`, in that order — from the object form or parsed out of
+ * a JSON string. Null when none is present or the arguments are not JSON (a malformed call names no target).
+ */
+export function stringArgOf(call: NamedToolCall, keys: readonly string[]): string | null {
   const raw = call.function?.arguments;
   let parsed: unknown = raw;
   if (typeof raw === 'string') {
@@ -87,8 +91,16 @@ function pathOf(call: NamedToolCall): string | null {
     }
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const path = (parsed as { path?: unknown }).path;
-  return typeof path === 'string' && path.length > 0 ? path : null;
+  for (const key of keys) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+/** The `path` argument of a tool call. */
+function pathOf(call: NamedToolCall): string | null {
+  return stringArgOf(call, ['path']);
 }
 
 /** The tool result answering `call`: by `tool_call_id` when present, else positionally. */

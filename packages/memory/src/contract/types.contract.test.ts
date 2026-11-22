@@ -49,6 +49,7 @@ import type {
     effectiveGuards, factStoreDump, loadFactGraph, memoryFactStore, rootRouters, saveFactGraph, sweepFactStore,
 } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
+import type { elidedResultStub, elideRunResults, RunElisionBudget, TranscriptMessage, windowed } from '../working/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -478,6 +479,16 @@ export type ResolvedMount_shape = Expect<Equal<ResolvedMount, {
     target: string; path: string; facts: FileFacts; router?: string; mounts?: readonly ResolvedMount[];
 }>>;
 export type EffectiveEntryPoint_extra_keys = Expect<Equal<Exclude<keyof EffectiveEntryPoint, keyof EntryPointFact>, 'file' | 'via' | 'guardsInferred'>>;
+
+/* ── working transcript: the in-run cut (chat #128305) ──────────────────────────────────────────────────────── */
+// `windowed` keeps its signature (brain-embedded's fallback window and read-cache check call it); the cut is inside it.
+export type windowed_signature = Expect<Equal<typeof windowed, <M extends TranscriptMessage>(convo: M[]) => M[]>>;
+export type elideRunResults_signature = Expect<Equal<
+    typeof elideRunResults, <M extends TranscriptMessage>(msgs: readonly M[], budget: RunElisionBudget) => M[]
+>>;
+export type RunElisionBudget_keys = Expect<Equal<keyof RunElisionBudget, 'budgetTokens' | 'tailTokens' | 'chunkTokens' | 'minTailMessages' | 'extraTokens'>>;
+export type RunElisionBudget_extraTokens_is_optional = Expect<Equal<IsOptional<RunElisionBudget, 'extraTokens'>, true>>;
+export type elidedResultStub_signature = Expect<Equal<typeof elidedResultStub, (tool: string, target: string | null, chars: number) => string>>;
 
 describe('type contract', () => {
     it('is enforced by `npm run check:contract-types` (tsc over tsconfig.contract.json), not at run time', () => {

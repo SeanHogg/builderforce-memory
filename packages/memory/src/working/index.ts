@@ -54,6 +54,8 @@ export {
   buildWorkingTranscript,
 } from './transcript.js';
 export type { TranscriptMessage, CompactMemo, WorkingTranscriptState, TranscriptFold } from './transcript.js';
+export { MIN_ELIDED_RESULT_TOKENS, elideRunResults, elidedResultStub } from './runElision.js';
+export type { RunElisionBudget } from './runElision.js';
 export {
   NARRATION_OVERLAP,
   PROGRESS_NOTE,
