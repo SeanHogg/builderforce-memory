@@ -1,25 +1,6 @@
 # Changelog — @seanhogg/builderforce-memory
 
-## 2026.10.83
-
-### Fixed — the drop-oldest window now cuts INSIDE a long run (`./working`, chat #128305)
-
-- `windowed` clamped its cut at the last user turn, so within one run nothing after the prompt was ever dropped: with the
-  fold's summary timing out, a VS Code run's prompt grew from 31k to 191k tokens, the 64k `HISTORY_TOKEN_BUDGET` never
-  applying. Once over the budget, the run's older tool results now become one-line stubs
-  (`[result elided: <tool> <target>, N KB — re-read if needed]`); the user turn, every assistant turn, plan/ledger
-  results, answered `ask_user` results, small results and a ~40k (`COMPACT_TAIL_TOKEN_BUDGET`) verbatim tail are kept, and no row is removed, so a
-  call is never split from its result. The cut moves in 16k (`HISTORY_TOKEN_DROP_CHUNK`) steps counted from the run's
-  start, so the prompt prefix changes once per chunk of new work.
-- `buildWorkingTranscript`'s other fallback — a memo already held and the next summary failing — applies the same cut to
-  the note's verbatim remainder, which also grew without bound.
-- `stillInWorkingContext` reports an elided result as gone, so a host's read cache replays it instead of pointing the
-  model at a stub.
-- New exports: `elideRunResults`, `elidedResultStub`, `MIN_ELIDED_RESULT_TOKENS`, type `RunElisionBudget`.
-- Regression tests: `src/contract/regression.inRunWindow.test.ts` (a synthetic 40-turn run: ~182k → ~38k history tokens).
-- Minor, non-breaking: same signatures; `windowed` may now return shallow copies of elided tool rows.
-
-## Unreleased
+## 2026.10.84
 
 ### Changed — B7 folds growing restatements and keeps their new sentences (`./working`, chat #168571 W5)
 
@@ -626,7 +607,7 @@ The context logic every Builderforce run uses moved here from `brain-embedded`. 
 - **`summarizeTranscript`.** This is the one summarizer prompt that every fold, hand-off note and "Consolidate" compresses with. The model call is injected (`SummaryCompletion`).
 - **Consolidation markers.** Manual markers cover everything before them. **Auto** markers, a persisted fold, carry `keepFromId`. `scopeToConsolidation` seeds the next run from the note plus every message from that id on. `foldKeepFromId` maps a fold's transcript cut to that id: exact at a persisted message, conservative otherwise, so nothing is lost.
 
-## Unreleased
+## 2026.10.84
 
 ### Durable memory storage (schema v3)
 
@@ -704,3 +685,22 @@ IndexedDB databases are upgraded on first open (`DB_VERSION` 3). No action is ne
 - The note that replaces the dropped middle is sent as a `user` turn when an
   assistant turn follows it, and as an `assistant` turn before a user turn. Roles
   always alternate, so the result never has two assistant turns in a row.
+
+## 2026.10.83
+
+### Fixed — the drop-oldest window now cuts INSIDE a long run (`./working`, chat #128305)
+
+- `windowed` clamped its cut at the last user turn, so within one run nothing after the prompt was ever dropped: with the
+  fold's summary timing out, a VS Code run's prompt grew from 31k to 191k tokens, the 64k `HISTORY_TOKEN_BUDGET` never
+  applying. Once over the budget, the run's older tool results now become one-line stubs
+  (`[result elided: <tool> <target>, N KB — re-read if needed]`); the user turn, every assistant turn, plan/ledger
+  results, answered `ask_user` results, small results and a ~40k (`COMPACT_TAIL_TOKEN_BUDGET`) verbatim tail are kept, and no row is removed, so a
+  call is never split from its result. The cut moves in 16k (`HISTORY_TOKEN_DROP_CHUNK`) steps counted from the run's
+  start, so the prompt prefix changes once per chunk of new work.
+- `buildWorkingTranscript`'s other fallback — a memo already held and the next summary failing — applies the same cut to
+  the note's verbatim remainder, which also grew without bound.
+- `stillInWorkingContext` reports an elided result as gone, so a host's read cache replays it instead of pointing the
+  model at a stub.
+- New exports: `elideRunResults`, `elidedResultStub`, `MIN_ELIDED_RESULT_TOKENS`, type `RunElisionBudget`.
+- Regression tests: `src/contract/regression.inRunWindow.test.ts` (a synthetic 40-turn run: ~182k → ~38k history tokens).
+- Minor, non-breaking: same signatures; `windowed` may now return shallow copies of elided tool rows.
