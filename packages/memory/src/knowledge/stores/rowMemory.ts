@@ -79,6 +79,9 @@ export class RowMemory implements RowState {
         this.refs.seed(hash, sourceRefsOf(entries));
     }
 
+    /** Drops every body held in memory; {@link refs} keeps tracking them by key (as after a reload), so a lazy read restores one. */
+    dropBodies(): void { this.extracted.clear(); }
+
     /** Stores a body with the reference state a compacted log recorded for it (extractRefs.ts `stateOf`). */
     restoreBody(hash: string, entries: Extracted[], state: { current: readonly string[]; previous: readonly string[] }): void {
         this.extracted.set(hash, entries);

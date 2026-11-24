@@ -1,5 +1,17 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.85
+
+### Changed — a stored graph's build holds memory in proportion to one item, not the repository (`./knowledge`)
+
+- **Streaming digest.** `graphDigest` writes its canonical input straight into the incremental `Sha256`
+  (new export `writeCanonicalJson(value, write)`, the same bytes as `canonicalJson`; a generator is written
+  as an array). It no longer builds the mapped, key-sorted copy, the one JSON string and its UTF-8 buffer of
+  every extract at once. Digests are byte-identical, so no cache key changes.
+- **Bodies can be released.** New `LocalSnapshotStore.releaseExtracted()`: in row mode it drops the extract
+  bodies held in memory (a later `getExtracted` reads them again) and returns true. It refuses (false) while a
+  row waits to be written or an apply is in flight, and is always false in snapshot mode.
+
 ## 2026.10.84
 
 ### Changed — B7 folds growing restatements and keeps their new sentences (`./working`, chat #168571 W5)

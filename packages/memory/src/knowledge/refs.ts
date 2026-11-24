@@ -130,6 +130,40 @@ function sortKeys(value: unknown): unknown {
     return out;
 }
 
+/**
+ * {@link canonicalJson}`(value)` written in pieces to `write`: the same bytes, but never one string of the whole value (a digest over
+ * a whole repository's extracts must not hold it twice). A generator is written as an array, so a caller can map items lazily;
+ * every other value follows `canonicalJson` exactly (a Map, Set or Date is `{}`, an `undefined` / function / symbol member is
+ * dropped from an object and `null` in an array).
+ */
+export function writeCanonicalJson(value: unknown, write: (chunk: string) => void): void {
+    if (value === null || typeof value !== 'object') { write(JSON.stringify(value) ?? 'null'); return; }
+    if (Array.isArray(value) || isGenerator(value)) {
+        write('[');
+        let first = true;
+        for (const item of value as Iterable<unknown>) {
+            if (!first) write(',');
+            first = false;
+            writeCanonicalJson(item, write);
+        }
+        write(']');
+        return;
+    }
+    write('{');
+    let first = true;
+    for (const key of Object.keys(value as Record<string, unknown>).sort(compareStr)) {
+        const v = (value as Record<string, unknown>)[key];
+        if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
+        if (!first) write(',');
+        first = false;
+        write(`${JSON.stringify(key)}:`);
+        writeCanonicalJson(v, write);
+    }
+    write('}');
+}
+
+const isGenerator = (value: object): boolean => Object.prototype.toString.call(value) === '[object Generator]';
+
 /** Sorts a copy by the given string keys, in order. */
 export function sortBy<T>(items: readonly T[], ...keys: Array<(t: T) => string>): T[] {
     return [...items].sort((a, b) => {

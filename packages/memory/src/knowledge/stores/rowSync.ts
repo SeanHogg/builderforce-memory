@@ -106,6 +106,19 @@ export class RowSync {
         for (let i = 0; i < want.length; i += PRELOAD_CHUNK) await Promise.all(want.slice(i, i + PRELOAD_CHUNK).map((h) => this.body(h)));
     }
 
+    /**
+     * INSIDE the mutation queue: drops the extract bodies held in memory (content-addressed, so `body` reads them again). Refused
+     * (false) while a row waits to be written or an apply is in flight (it reads the rows from memory), or with no lazy read.
+     */
+    releaseBodies(): boolean {
+        if (!this.rows.loadExtracted || this.delta.pending || this.host.busy()) return false;
+        this.host.mem().dropBodies();
+        this.misses.clear();
+        // A read in flight started before the release: its miss is not recorded.
+        this.generation += 1;
+        return true;
+    }
+
     /** A `putExtracted` of this hash makes an earlier miss stale. */
     forget(hash: string): void { this.misses.delete(hash); }
 

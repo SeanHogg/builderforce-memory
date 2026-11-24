@@ -18,7 +18,7 @@
  */
 
 import { areaOfPath } from '../working/codemapAreas.js';
-import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
+import { Sha256 } from '../retrieval/knowledge-index/sha256.js';
 import type {
     BuildGraphInput, BuildGraphOptions, Extracted, GraphSystem, KEdge, KNode, KnowledgeGraph, NodeRef,
     PartitionRegistry, StoredFact,
@@ -32,7 +32,7 @@ import { loadPartitions, partitionOf, verdictOf } from './partitions.js';
 import { entityName } from './resolve.js';
 import { isSymbolEdgeKind } from './symbolEdges.js';
 import {
-    basenameOf, canonicalJson, compareStr, factRef, FALLBACK_PACK_ID, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef,
+    basenameOf, compareStr, factRef, FALLBACK_PACK_ID, fileRefOf, nameResolver, pathOfRef, round6, sortBy, srcRef, writeCanonicalJson,
 } from './refs.js';
 import { buildOutline } from './outline.js';
 import { truncateGraph } from './truncate.js';
@@ -41,19 +41,26 @@ import { LINKABLE_DOC_EXT } from './sources.js';
 export const DEFAULT_MAX_NODES = 400;
 export const MAX_NODES_CAP = 2000;
 const LABEL_CHARS = 120;
+const DIGEST_CHUNK_CHARS = 1 << 16;
 
 const edgeId = (from: string, to: string, kind: string) => `${from}\u0000${to}\u0000${kind}`;
 export const compareEdges = (a: KEdge, b: KEdge): number =>
     compareStr(a.from, b.from) || compareStr(a.to, b.to) || compareStr(a.kind, b.kind)
     || compareStr(a.byName ?? '', b.byName ?? '');
 
-/** sha-256 over the canonical input: equal inputs (in any order) ⇒ equal digests. */
+/**
+ * sha-256 over the canonical input: equal inputs (in any order) ⇒ equal digests. Streamed into the hash a piece at a time
+ * (`writeCanonicalJson`), so a whole repository's input is never held as one string; the bytes are `canonicalJson`'s.
+ */
 export function graphDigest(input: BuildGraphInput): string {
-    return sha256Hex(canonicalJson({
+    const hash = new Sha256();
+    // Pieces are single tokens: hashing each alone would encode millions of tiny strings, so they go in ~64K at a time.
+    let pending = '';
+    writeCanonicalJson({
         rootId: input.rootId,
         packs: input.packs.map((p) => p.id).sort(compareStr),
-        extracted: sortBy(input.extracted, (e) => e.sourceRef, (e) => e.sourceHash).map(canonicalExtracted),
-        facts: sortBy(input.facts, (f) => f.key).map((f) => ({ ...f, fileAnchors: sortBy(f.fileAnchors, (a) => a.path) })),
+        extracted: lazyMap(sortBy(input.extracted, (e) => e.sourceRef, (e) => e.sourceHash), canonicalExtracted),
+        facts: lazyMap(sortBy(input.facts, (f) => f.key), (f) => ({ ...f, fileAnchors: sortBy(f.fileAnchors, (a) => a.path) })),
         relations: sortBy(input.relations, (r) => r.from, (r) => r.to, (r) => r.kind),
         live: input.live && {
             changes: sortBy(input.live.changes, (c) => c.path),
@@ -61,7 +68,16 @@ export function graphDigest(input: BuildGraphInput): string {
         },
         nearDuplicates: nonEmpty(input.nearDuplicates) && sortBy(input.nearDuplicates!, (p) => p.a, (p) => p.b),
         systems: nonEmpty(input.systems) && sortBy(input.systems!, (s) => s.path),
-    }));
+    }, (chunk) => {
+        pending += chunk;
+        if (pending.length >= DIGEST_CHUNK_CHARS) { hash.update(pending); pending = ''; }
+    });
+    return hash.update(pending).hex();
+}
+
+/** `items.map(f)`, one item at a time: the digest holds one canonical copy, not a copy of the whole list. */
+function* lazyMap<T, U>(items: readonly T[], f: (t: T) => U): Generator<U> {
+    for (const item of items) yield f(item);
 }
 
 /** The systems with the file nodes each holds (the graph's own count, before any cut). */

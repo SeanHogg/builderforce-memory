@@ -98,6 +98,7 @@ export type {
 } from './comparability.js';
 export { GOD_MODULE_LIMITS, GOD_MODULE_KIND, godModuleFindings } from './godModule.js';
 export type { GodModuleLimits } from './godModule.js';
+export { IO_IN_LOOP_KIND, ioInLoopFindings } from './ioInLoop.js';
 export {
     resolveEntities, knownKeysOf, possibleSameFindings, normalizeKey, entityName, entityKey,
 } from './resolve.js';

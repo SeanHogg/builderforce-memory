@@ -4,7 +4,9 @@
  * near-duplicate/duplicate rule, live overlay, and the truncation keep-rules.
  */
 
-import { buildGraph, graphDigest } from './build.js';
+import { buildGraph, compareEdges, graphDigest } from './build.js';
+import { sha256Hex } from '../retrieval/knowledge-index/sha256.js';
+import { canonicalJson, compareStr, sortBy } from './refs.js';
 import { brokenLinkRule } from './packs/docs.js';
 import type { BuildGraphInput, KnowledgePack, StoredFact } from './model.js';
 import { edge, extractedOf, fileNode, ref, ROOT } from './testkit.test-util.js';
@@ -52,6 +54,27 @@ describe('buildGraph — determinism', () => {
         expect(a).toBe(b);
         expect(graphDigest(fixture())).toBe(graphDigest(reversed(fixture())));
         expect(graphDigest(fixture())).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('the streamed digest is the hash of the whole canonical string (no cache key changes)', () => {
+        // The pre-streaming digest over this fixture's shape (with the private `canonicalExtracted` restated).
+        const wholeString = (input: BuildGraphInput) => sha256Hex(canonicalJson({
+            rootId: input.rootId,
+            packs: input.packs.map((p) => p.id).sort(compareStr),
+            extracted: sortBy(input.extracted, (e) => e.sourceRef, (e) => e.sourceHash).map((e) => ({
+                sourceRef: e.sourceRef, sourceHash: e.sourceHash, nodes: sortBy(e.nodes, (n) => n.ref), edges: [...e.edges].sort(compareEdges), keys: sortBy(e.keys, (k) => k.ref, (k) => k.key),
+            })),
+            facts: sortBy(input.facts, (f) => f.key).map((f) => ({ ...f, fileAnchors: sortBy(f.fileAnchors, (a) => a.path) })),
+            relations: sortBy(input.relations, (r) => r.from, (r) => r.to, (r) => r.kind),
+            // The fixture has no `live` and no `systems` (both keys dropped), and near-duplicates.
+            nearDuplicates: sortBy(input.nearDuplicates!, (p) => p.a, (p) => p.b),
+        }));
+        const input = fixture();
+        expect(graphDigest(input)).toBe(wholeString(input));
+        // Past one hashing chunk (64K chars), so the buffered pieces cross several `update`s.
+        const big = fixture();
+        big.facts = Array.from({ length: 2000 }, (_, i) => ({ key: `k${i}`, content: `fact ${i} é😀 ${'x'.repeat(40)}`, source: 's', importance: 1, origin: 'model' as const, fileAnchors: [] }));
+        expect(graphDigest(big)).toBe(wholeString(big));
     });
 
     it('a different input gives a different digest', () => {

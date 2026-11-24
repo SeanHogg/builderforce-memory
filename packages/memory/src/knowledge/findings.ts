@@ -22,6 +22,7 @@ import { duplicateCopyRule } from './rules/duplicateCopy.js';
 import { unpartitionedRule } from './rules/unpartitioned.js';
 import { staleRule } from './rules/stale.js';
 import { godModuleRule } from './rules/godModule.js';
+import { ioInLoopRule } from './rules/ioInLoop.js';
 import { possibleSameRule } from './rules/possibleSame.js';
 import { components } from './rules/components.js';
 
@@ -32,6 +33,7 @@ const SEVERITY_RANK = { error: 0, warn: 1, info: 2 } as const;
 /** The generic finding rules, in emission order. */
 export const GENERIC_FINDING_RULES: readonly KnowledgeRule[] = Object.freeze([
     cycleRule, cloneGroupRule, nearDuplicateRule, partitionViolationRule, duplicateCopyRule, unpartitionedRule, staleRule, godModuleRule,
+    ioInLoopRule,
 ]);
 
 /** Every knowledge rule `computeFindings` runs: the generic ones plus `possible-same`. */

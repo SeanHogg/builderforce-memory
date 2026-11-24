@@ -10,7 +10,7 @@
 
 import type { Finding, KnowledgeGraph } from './model.js';
 import { finding, refAnchor } from './findingBuilder.js';
-import { compareStr } from './refs.js';
+import { filesWithPattern } from './patternFindings.js';
 
 /** What a file may grow to before it is a god module: more lines, exports or worst-function complexity than this. */
 export const GOD_MODULE_LIMITS = Object.freeze({ lines: 1_000, exports: 40, complexity: 60 } as const);
@@ -19,17 +19,13 @@ export type GodModuleLimits = typeof GOD_MODULE_LIMITS;
 /** The finding kind (also the pattern id in the `patterns` badge). */
 export const GOD_MODULE_KIND = 'god-module';
 
-const PATTERNS_BADGE = 'patterns';
 const MEASURE_BADGES = { lines: 'lines', exports: 'exports', complexity: 'maxComplexity' } as const;
 
 const numberOf = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
 export function godModuleFindings(g: KnowledgeGraph): Finding[] {
     const out: Finding[] = [];
-    for (const n of [...g.nodes].sort((a, b) => compareStr(a.ref, b.ref))) {
-        if (n.kind !== 'file') continue;
-        const patterns = n.badges?.[PATTERNS_BADGE];
-        if (typeof patterns !== 'string' || !patterns.split(',').includes(GOD_MODULE_KIND)) continue;
+    for (const n of filesWithPattern(g, GOD_MODULE_KIND)) {
         const params: Record<string, number> = {};
         for (const [key, badge] of Object.entries(MEASURE_BADGES)) {
             const value = numberOf(n.badges?.[badge]);

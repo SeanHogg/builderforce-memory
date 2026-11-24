@@ -352,6 +352,30 @@ describe('regression: row persistence', () => {
         expect((await store.facts({ rootId: 'a' })).map((x) => x.key).sort()).toEqual(['claim:later', 'claim:theirs']); // the next read outside the batch sees it
     });
 
+    it('regression: releaseExtracted drops the bodies held in memory and a read loads them again; refused while an apply is in flight', async () => {
+        const rows = fakeRows();
+        rows.lazyBodies = true;
+        rows.db.extracted.set('h1', ex('one'));
+        const store = rowStore(rows);
+        expect(await store.getExtracted('h1')).toEqual(ex('one'));
+        expect(await store.releaseExtracted()).toBe(true);
+        expect(await store.getExtracted('h1')).toEqual(ex('one'));
+        expect(rows.bodyReads).toEqual(['h1', 'h1']); // reloaded after the release
+        rows.hold = deferred();
+        await store.putExtracted('h2', ex('two'));
+        await settle();
+        expect(await store.releaseExtracted()).toBe(false); // the apply reads its rows from memory
+        rows.hold.resolve();
+        await settle();
+        expect(rows.db.extracted.get('h2')).toEqual(ex('two'));
+    });
+
+    it('regression: releaseExtracted is false without rows (memory is the store) and keeps every body', async () => {
+        const store = loadedFrom(snapshotOf({ scopes: new Map(), facts: new Map(), relations: new Map(), extracted: new Map([['h1', ex('one')]]), recheck: new Set() }));
+        expect(await store.releaseExtracted()).toBe(false);
+        expect(await store.getExtracted('h1')).toEqual(ex('one'));
+    });
+
     it('regression: an extract body missing from memory is read through loadExtracted once, and kept', async () => {
         const rows = fakeRows();
         rows.lazyBodies = true;

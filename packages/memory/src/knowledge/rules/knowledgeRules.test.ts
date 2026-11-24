@@ -16,7 +16,7 @@ const edge = (a: string, b: string, extra: Partial<KEdge>): KEdge => ({ from: re
 
 const graph = (): KnowledgeGraph => ({
     scope: { rootId: 'r', packs: ['code'], digest: 'd1' },
-    nodes: [node('a.ts', { partition: 'ui' }), node('b.ts', { partition: 'db' }), node('c.ts', { stale: true }), node('d.ts', { badges: { patterns: 'god-module', lines: 2000 } })],
+    nodes: [node('a.ts', { partition: 'ui' }), node('b.ts', { partition: 'db' }), node('c.ts', { stale: true }), node('d.ts', { badges: { patterns: 'god-module,io-in-loop', lines: 2000 } })],
     edges: [
         edge('a.ts', 'b.ts', { cycle: true, verdict: 'upward' }), edge('b.ts', 'a.ts', { cycle: true }),
         edge('a.ts', 'c.ts', { kind: 'duplicate' }), edge('b.ts', 'd.ts', { kind: 'near-duplicate', weight: 0.91 }),
@@ -30,7 +30,7 @@ describe('knowledge finding rules registry', () => {
         const ids = KNOWLEDGE_FINDING_RULES.map((r) => r.id);
         expect(new Set(ids).size).toBe(ids.length);
         expect([...ids].sort(compareStr)).toEqual([
-            'clone-group', 'cycle', 'duplicate-copy', 'god-module', 'near-duplicate', 'partition-violation', 'possible-same', 'stale', 'unpartitioned',
+            'clone-group', 'cycle', 'duplicate-copy', 'god-module', 'io-in-loop', 'near-duplicate', 'partition-violation', 'possible-same', 'stale', 'unpartitioned',
         ]);
         for (const r of KNOWLEDGE_FINDING_RULES) {
             // They read the knowledge input alone, so they declare no fact kind (and see no files).
@@ -41,7 +41,7 @@ describe('knowledge finding rules registry', () => {
 
     it('the facade emits one finding per kind the fixture holds', () => {
         const kinds = genericFindings(graph(), new Map()).map((f) => f.kind).sort(compareStr);
-        expect(kinds).toEqual(['clone-group', 'cycle', 'god-module', 'near-duplicate', 'partition-violation', 'stale']);
+        expect(kinds).toEqual(['clone-group', 'cycle', 'god-module', 'io-in-loop', 'near-duplicate', 'partition-violation', 'stale']);
     });
 
     const worldOf = (knowledge: KnowledgeFacts) => ({ files: new Map(), extra: { knowledge }, extraHashes: { knowledge: knowledgeInputHash(knowledge) } });

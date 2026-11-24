@@ -307,6 +307,11 @@ export class LocalSnapshotStore implements KnowledgeStore {
         await this.sync.preload(hashes);
     }
 
+    /** Row mode: drops the extract bodies held in memory when nothing waits to be written (a later read reloads them). Otherwise false: memory IS the store. */
+    releaseExtracted(): Promise<boolean> {
+        return this.enqueue(async () => this.sync?.releaseBodies() ?? false);
+    }
+
     /** Asks the next review to re-check the files with these content hashes (persisted until {@link clearRecheck}). */
     markRecheck(hashes: readonly string[]): Promise<void> {
         // The snapshot is dirty only when the set really changed (a repeated mark costs no write).
