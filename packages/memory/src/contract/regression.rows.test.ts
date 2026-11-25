@@ -362,11 +362,15 @@ describe('regression: row persistence', () => {
         expect(await store.getExtracted('h1')).toEqual(ex('one'));
         expect(rows.bodyReads).toEqual(['h1', 'h1']); // reloaded after the release
         rows.hold = deferred();
-        await store.putExtracted('h2', ex('two'));
-        await settle();
-        expect(await store.releaseExtracted()).toBe(false); // the apply reads its rows from memory
-        rows.hold.resolve();
-        await settle();
+        const write = store.putExtracted('h2', ex('two'));
+        try {
+            await settle();
+            expect(rows.applies).toHaveLength(1);
+            expect(await store.releaseExtracted()).toBe(false); // the apply reads its rows from memory
+        } finally {
+            rows.hold.resolve();
+            await write;
+        }
         expect(rows.db.extracted.get('h2')).toEqual(ex('two'));
     });
 
