@@ -1,11 +1,14 @@
 # @seanhogg/builderforce-memory-engine
 
-> BuilderForce Agent Memory — **engine layer**. WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM kernels, written in **TypeScript**, compiled for use in any JavaScript application. *(Formerly published as `@seanhogg/mambacode.js`.)*
+> BuilderForce Agent Memory — **engine layer**. WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM kernels, written in **TypeScript**, compiled for use in any JavaScript application. *(Successor to the git-only `mambacode.js` engine, which was never published to npm.)*
 
 [![npm](https://img.shields.io/npm/v/@seanhogg/builderforce-memory-engine)](https://www.npmjs.com/package/@seanhogg/builderforce-memory-engine)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
 `@seanhogg/builderforce-memory-engine` is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. It ships **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints. It is the zero-runtime-dep engine consumed by [`@seanhogg/builderforce-memory`](../memory) (the runtime layer).
+
+## Where this fits
+Part of BuilderForce's **Idea → Make → Run → Measure → Reach** method ([definitions](https://github.com/SeanHogg/Builderforce.ai/blob/main/docs/specs/README.md)). This package serves **every stage**: the SSM engine that powers Evermind memory and local inference.
 
 > **Technical report & peer review.** The kernels and discretisations here are specified mathematically in the Evermind technical report ([`../../publication/evermind/`](../../publication/evermind)). Its adversarial [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md) flags engine-level items worth knowing before depending on them at scale: the "parallel" selective scan walks tiles sequentially, `softplus` is the unstable `log(1+exp(v))` form, int8 quantisation uses a single per-tensor scale (weights only), and GPU buffers are allocated per call (no pool). Tracked as `EVM-1/EVM-8`. Several of these were addressed in the v2026.6.33–v2026.6.35 hardening (e.g. stable softplus); the engine also now ships a benchmarking harness (`src/bench/`). See the resolution addendum in [`PEER-REVIEW.md`](../../publication/evermind/PEER-REVIEW.md).
 
@@ -385,7 +388,7 @@ npm run lint    # ESLint
 | Edge | 113+ | ✅ Supported |
 | Firefox | Nightly | ✅ (flag: `dom.webgpu.enabled`) |
 | Safari | 18+ | ⚠️ Partial |
-| Node.js | — | ❌ Not supported |
+| Node.js | 18+ | ⚠️ Needs a WebGPU adapter (for example `@webgpu/node`); see the Node.js section of the [runtime README](../memory/README.md) |
 
 ---
 
