@@ -57,12 +57,13 @@ export async function createMemoryMcpServer(
             description: string,
             schema: unknown,
             handler: (args: Record<string, unknown>) => Promise<unknown>,
+            extras?: { annotations: { readOnlyHint: boolean } },
         ) => unknown;
         createSdkMcpServer: (o: { name: string; version?: string; tools: unknown[] }) => SdkMcpServerConfig;
     };
 
     const tools = buildMemoryTools(backend, opts).map((t) =>
-        sdk.tool(t.name, t.description, t.inputSchema, t.handler as (a: Record<string, unknown>) => Promise<unknown>),
+        sdk.tool(t.name, t.description, t.inputSchema, t.handler, { annotations: { readOnlyHint: t.effect === "read" } }),
     );
 
     return sdk.createSdkMcpServer({

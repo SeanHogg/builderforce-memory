@@ -78,6 +78,7 @@ export { createMemoryMcpServer } from "./transports/sdk.js";
 export type { SdkServerOptions, SdkMcpServerConfig } from "./transports/sdk.js";
 
 export { buildMcpServer } from "./transports/mcp-server.js";
+export { createMemoryMcpCatalog } from "./transports/catalog.js";
 export type { McpServerOptions } from "./transports/mcp-server.js";
 
 export { runStdio } from "./transports/stdio.js";

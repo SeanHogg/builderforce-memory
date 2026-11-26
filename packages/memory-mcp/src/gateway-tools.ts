@@ -44,6 +44,7 @@ async function gatewayGet<T>(gatewayUrl: string, path: string, apiKey: string): 
 export function appendGatewayCostTools(tools: MemoryTool[], gatewayUrl: string, apiKey: string): void {
     tools.push({
         name: "token_usage",
+        effect: "read",
         description: "Current token spend + budget for the workspace (today).",
         inputSchema: {},
         handler: async () => {
@@ -71,6 +72,7 @@ export function appendGatewayCostTools(tools: MemoryTool[], gatewayUrl: string, 
 
     tools.push({
         name: "model_efficiency",
+        effect: "read",
         description: "Which models performed best/cheapest for this workspace's recent work.",
         inputSchema: {},
         handler: async () => {

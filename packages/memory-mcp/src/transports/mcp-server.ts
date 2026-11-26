@@ -26,15 +26,19 @@ export function buildMcpServer(backend: MemoryBackend, opts: McpServerOptions = 
     // The generic registerTool() over a zod raw shape trips TS2589 (excessively
     // deep instantiation); the tool surface is identical across our transports,
     // so register through a loose signature. Runtime behaviour is unchanged —
-    // both frameworks consume (name, {description, inputSchema}, handler).
+    // both frameworks consume the same description, schema and handler.
     const register = server.registerTool.bind(server) as (
         name: string,
-        config: { description: string; inputSchema: unknown },
+        config: { description: string; inputSchema: unknown; annotations: { readOnlyHint: boolean } },
         handler: unknown,
     ) => void;
 
     for (const t of buildMemoryTools(backend, opts)) {
-        register(t.name, { description: t.description, inputSchema: t.inputSchema }, t.handler);
+        register(t.name, {
+            description: t.description,
+            inputSchema: t.inputSchema,
+            annotations: { readOnlyHint: t.effect === "read" },
+        }, t.handler);
     }
 
     return server;

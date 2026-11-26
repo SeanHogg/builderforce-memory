@@ -16,6 +16,7 @@ export interface ToolResult {
 export interface MemoryTool {
     name: string;
     description: string;
+    effect?: "read" | "write";
     /** Zod *raw shape* (e.g. `{ query: z.string() }`), not a ZodObject. */
     inputSchema: z.ZodRawShape;
     handler: (args: Record<string, unknown>) => Promise<ToolResult>;

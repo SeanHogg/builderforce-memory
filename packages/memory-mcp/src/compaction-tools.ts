@@ -60,6 +60,7 @@ export function appendCompactionTools(
     // a recall probe about are stubbed at all (see planLosslessCompaction).
     tools.push({
         name: "memory_compact",
+        effect: "write",
         description:
             "Shrink memories that have already been absorbed into the local Evermind model down to " +
             "a one-line pointer stub, reclaiming the context they were eating. Each fact is first " +
@@ -147,6 +148,7 @@ export function appendCompactionTools(
     // cannot archive.
     tools.push({
         name: "memory_restore",
+        effect: "write",
         description:
             "Restore the full text of memories marked '(content lost)' — compaction stubs whose " +
             "original was never kept — from an export. Accepts [{key, content}] (a memory export) " +

@@ -94,12 +94,14 @@ export function asEpisode(raw: unknown, newId: () => string): Episode | string {
 /** A tool whose thrown errors come back as tool errors named after it. */
 function tool(
     name: string,
+    effect: NonNullable<MemoryTool["effect"]>,
     description: string,
     inputSchema: z.ZodRawShape,
     run: (args: Record<string, unknown>) => Promise<ToolResult>,
 ): MemoryTool {
     return {
         name,
+        effect,
         description,
         inputSchema,
         handler: async (args) => {
@@ -125,6 +127,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const episodeTools = [
         tool(
             "experience_info",
+            "read",
             "Where experience is kept and how much there is: the memory and experience snapshot files, the screenshot folder, the private model it trains, and counts.",
             {},
             async () => {
@@ -143,6 +146,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "experience_overview",
+            "read",
             "What experience says about the brain, for drawing it: counts per region (hippocampus = demonstrations, basalGanglia = skills, amygdala = approval decisions, hypothalamus = routines, neocortex = procedures the private model has learned), learned vs pending, run outcomes, every adaptation's measured loss, activity per local day, and the newest events.",
             { days: z.number().int().min(1).max(365).optional() },
             async (args) => {
@@ -158,6 +162,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "episode_save",
+            "write",
             "Save a recorded demonstration (an episode: a program, and the UI steps a person took in it). Returns its id. Screenshots belong in <episodesDir>/<id>/.",
             { episode: z.record(z.unknown()).describe("The episode, in the engine's Episode shape.") },
             async (args) => {
@@ -167,21 +172,23 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                 return okJson({ id: episode.id });
             },
         ),
-        tool("episode_list", "List recorded demonstrations, newest first (summaries only).", {}, async () =>
+        tool("episode_list", "read", "List recorded demonstrations, newest first (summaries only).", {}, async () =>
             okJson(await store.listEpisodes()),
         ),
-        tool("episode_get", "Fetch one demonstration with all of its steps.", { id: z.string() }, async (args) => {
+        tool("episode_get", "read", "Fetch one demonstration with all of its steps.", { id: z.string() }, async (args) => {
             const e = await store.getEpisode(str(args["id"]));
             return e ? okJson(e) : fail(`No episode "${str(args["id"])}".`);
         }),
         tool(
             "episode_forget",
+            "write",
             "Delete a demonstration and its screenshots. Skills compiled from it keep working.",
             { id: z.string() },
             async (args) => okJson({ forgotten: await store.deleteEpisode(str(args["id"])) }),
         ),
         tool(
             "experience_forget_all",
+            "write",
             "Delete every demonstration, screenshot, skill and run. Facts (memories) and the model are not touched. Requires confirm: true.",
             { confirm: z.literal(true) },
             async () => {
@@ -203,26 +210,29 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const skillTools = [
         tool(
             "skill_preview",
+            "read",
             "Show the skill Train Once would compile from a demonstration with these review edits, without saving it.",
             { episodeId: z.string(), edits: editsShape },
             (a) => compile(a, false),
         ),
         tool(
             "skill_compile",
+            "write",
             "Compile a demonstration into a runnable skill (Train Once) and save it.",
             { episodeId: z.string(), edits: editsShape },
             (a) => compile(a, true),
         ),
-        tool("skill_list", "List skills, newest first.", {}, async () => okJson(await store.listSkills())),
-        tool("skill_get", "Fetch one skill.", { id: z.string() }, async (args) => {
+        tool("skill_list", "read", "List skills, newest first.", {}, async () => okJson(await store.listSkills())),
+        tool("skill_get", "read", "Fetch one skill.", { id: z.string() }, async (args) => {
             const s = await store.getSkill(str(args["id"]));
             return s ? okJson(s) : fail(`No skill "${str(args["id"])}".`);
         }),
-        tool("skill_forget", "Delete a skill (its run history stays).", { id: z.string() }, async (args) =>
+        tool("skill_forget", "write", "Delete a skill (its run history stays).", { id: z.string() }, async (args) =>
             okJson({ forgotten: await store.deleteSkill(str(args["id"])) }),
         ),
         tool(
             "skill_schedule",
+            "write",
             "Give a skill a routine (every N minutes, or daily at a local time, with values for its non-secret parameters), or pass null to remove it.",
             {
                 id: z.string(),
@@ -249,6 +259,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "skills_due",
+            "read",
             "Skills whose routine is due now, least recently run first.",
             {
                 tzOffsetMinutes: z
@@ -270,6 +281,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const runTools = [
         tool(
             "run_start",
+            "write",
             "Start a run of a skill. A routine run also marks the routine as run, so it is not due again until its next slot.",
             { skillId: z.string(), trigger: z.enum(["manual", "routine"]) },
             async (args) => {
@@ -295,6 +307,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "run_step",
+            "write",
             "Append one line to a run's audit trail.",
             {
                 runId: z.string(),
@@ -316,6 +329,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "run_finish",
+            "write",
             "Close a run with its final status.",
             { runId: z.string(), status: z.enum(["succeeded", "failed", "stopped", "denied"]), error: z.string().nullable().optional() },
             async (args) => {
@@ -330,11 +344,12 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
         tool(
             "run_list",
+            "read",
             "Recent runs, newest first.",
             { limit: z.number().int().min(1).max(MAX_RUNS_RETURNED).optional() },
             async (args) => okJson(await store.listRuns(Number(args["limit"] ?? DEFAULT_RUNS))),
         ),
-        tool("run_get", "Fetch one run with its audit trail.", { id: z.string() }, async (args) => {
+        tool("run_get", "read", "Fetch one run with its audit trail.", { id: z.string() }, async (args) => {
             const r = await store.getRun(str(args["id"]));
             return r ? okJson(r) : fail(`No run "${str(args["id"])}".`);
         }),
@@ -343,6 +358,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const learnTools = [
         tool(
             "experience_train",
+            "write",
             "Teach the private Evermind model the procedures it has not learned yet (each skill, and each demonstration not yet compiled into one). Pass dryRun to only count them. Pass curate to first leave out procedures whose runs mostly fail and near-copies of each other or of recently learned ones (each one left out is listed, and reconsidered next time). The previous model is kept beside the new one.",
             {
                 dryRun: z.boolean().optional(),

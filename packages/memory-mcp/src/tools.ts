@@ -118,6 +118,7 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
     const tools: MemoryTool[] = [
         {
             name: "memory_recall",
+            effect: "read",
             description:
                 "Semantically recall the most relevant stored memories for a query. " +
                 "Call this BEFORE answering whenever the task may depend on prior context, user " +
@@ -148,6 +149,7 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
         },
         {
             name: "memory_get",
+            effect: "read",
             description:
                 "Fetch a single memory by its exact key. Use when you already know the key " +
                 "(e.g. one surfaced by memory_recall) and want its full, untruncated value.",
@@ -169,6 +171,7 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
         },
         {
             name: "memory_recall_by_tag",
+            effect: "read",
             description:
                 "List memories carrying a given tag (e.g. 'user', 'project', 'decision'). " +
                 "Use to pull a known category of context rather than searching semantically.",
@@ -199,6 +202,7 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
     if (writable && backend.remember) {
         tools.push({
             name: "memory_remember",
+            effect: "write",
             description:
                 "Persist a fact for future sessions. Call when you learn something durable and reusable: " +
                 "a user preference, a project constraint, a decision and its rationale. Keep keys stable " +
@@ -237,6 +241,7 @@ export function buildMemoryTools(backend: MemoryBackend, opts: MemoryToolsOption
     if (writable && backend.forget) {
         tools.push({
             name: "memory_forget",
+            effect: "write",
             description: "Delete a memory by key. Use to remove a fact that is now wrong or obsolete.",
             inputSchema: {
                 key: z.string().describe("The exact memory key to delete."),

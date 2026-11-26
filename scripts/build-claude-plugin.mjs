@@ -34,7 +34,7 @@ if (!fs.existsSync(path.join(MCP_DIST, "install", "claude-hooks.js"))) {
 const { bfmemHookSource, companionSkillMd, pluginHooksConfig } = await import(
   pathToFileUrl(path.join(MCP_DIST, "install", "claude-hooks.js"))
 );
-const { MCP_PACKAGE, MCP_BIN, RUNTIME_PEERS } = await import(
+const { MCP_PACKAGE, buildServerSpec } = await import(
   pathToFileUrl(path.join(MCP_DIST, "install", "server-spec.js"))
 );
 
@@ -52,10 +52,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "packages", "memory-mcp",
  * the installer writes into a machine's config.
  */
 const mcpServers = {
-  "builderforce-memory": {
-    command: "npx",
-    args: ["-y", "-p", MCP_PACKAGE, ...RUNTIME_PEERS.flatMap((p) => ["-p", p]), MCP_BIN],
-  },
+  "builderforce-memory": buildServerSpec({ platform: "linux" }),
 };
 
 const manifest = {
