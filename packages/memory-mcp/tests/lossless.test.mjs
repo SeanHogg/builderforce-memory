@@ -338,6 +338,14 @@ test("the capture hook blocks on a durable instruction the person typed", () => 
   assert.equal(JSON.parse(out).decision, "block");
 });
 
+test("the capture hook recognises both Memory tool names", () => {
+  const instruction = userSays("From now on, never reuse a version number.");
+  for (const name of ["memory_remember", "mcp__builderforce_memory__memory__remember"]) {
+    const persisted = { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name }] } };
+    assert.equal(runCapture([instruction, persisted, assistantSays("Saved.")]), "");
+  }
+});
+
 test("the capture hook ignores a subagent hand-back and a task notification", () => {
   const handBack = userSays(
     "Another Claude session sent a message:\n<agent-message from=\"a1\">tests passed; never touched files</agent-message>\n"

@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import nodeFs from "node:fs";
 import { HOSTS } from "../install/hosts.js";
-import { installMemoryServer, type HostSelector } from "../install/install.js";
+import { installMemoryServerWithSharedConfig, type HostSelector } from "../install/install.js";
 import { installClaudeCombo } from "../install/claude-hooks.js";
 import { resolveMemoryFile } from "../install/server-spec.js";
 
@@ -63,7 +63,7 @@ const memoryFile =
 
 let results;
 try {
-    results = installMemoryServer({
+    results = await installMemoryServerWithSharedConfig({
         hosts,
         memoryFile,
         readonly: hasFlag("readonly"),

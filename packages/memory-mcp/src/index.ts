@@ -101,7 +101,7 @@ export {
     RUNTIME_PEERS,
 } from "./install/server-spec.js";
 export type { StdioServerSpec, ServerSpecOptions, MemoryFileProbe, ResolveMemoryFileOptions } from "./install/server-spec.js";
-export { installMemoryServer } from "./install/install.js";
+export { installMemoryServer, installMemoryServerWithSharedConfig } from "./install/install.js";
 export type { InstallOptions, InstallResult, InstallStatus, HostSelector, FsLike } from "./install/install.js";
 export { HOSTS, SERVER_KEY, findHost } from "./install/hosts.js";
 export type { HostAdapter, HostEnv, ConfigFormat } from "./install/hosts.js";

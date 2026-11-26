@@ -175,7 +175,8 @@ if (mode === "--capture") {
         const content = inner.content;
         if (role === "assistant") {
             if (Array.isArray(content)) for (const c of content) {
-                if (c && c.type === "tool_use" && typeof c.name === "string" && c.name.includes("memory_remember")) rememberedThisTurn = true;
+                if (c && c.type === "tool_use" && typeof c.name === "string"
+                    && /memory_{1,2}remember$/.test(c.name)) rememberedThisTurn = true;
             }
         }
         if (role === "user") {

@@ -10,10 +10,10 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { MemoryBackend } from "../backend.js";
-import { buildMcpServer, type McpServerOptions } from "./mcp-server.js";
+import { createMemoryTransportServer, type McpServerOptions } from "./mcp-server.js";
 
 /** Serves `backend` over stdio. Resolves when the transport closes. */
 export async function runStdio(backend: MemoryBackend, opts: McpServerOptions = {}): Promise<void> {
-    const server = buildMcpServer(backend, opts);
+    const server = await createMemoryTransportServer(backend, opts);
     await server.connect(new StdioServerTransport());
 }

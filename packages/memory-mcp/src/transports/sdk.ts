@@ -13,6 +13,8 @@
 
 import type { MemoryBackend } from "../backend.js";
 import { dynamicImport } from "../dynamic-import.js";
+import { sharedMcpModule } from "../shared-mcp.js";
+import type { ToolResult } from "../tool-core.js";
 import { buildMemoryTools, type MemoryToolsOptions } from "../tools.js";
 import { memoryMcpVersion } from "./version.js";
 
@@ -51,7 +53,11 @@ export async function createMemoryMcpServer(
     backend: MemoryBackend,
     opts: SdkServerOptions = {},
 ): Promise<SdkMcpServerConfig> {
-    const sdk = (await dynamicImport("@anthropic-ai/claude-agent-sdk")) as {
+    const [agentSdk, shared] = await Promise.all([
+        dynamicImport("@anthropic-ai/claude-agent-sdk"),
+        sharedMcpModule<{ protectMcpToolResult(name: string, result: ToolResult): ToolResult }>("/protocol"),
+    ]);
+    const sdk = agentSdk as {
         tool: (
             name: string,
             description: string,
@@ -62,9 +68,13 @@ export async function createMemoryMcpServer(
         createSdkMcpServer: (o: { name: string; version?: string; tools: unknown[] }) => SdkMcpServerConfig;
     };
 
-    const tools = buildMemoryTools(backend, opts).map((t) =>
-        sdk.tool(t.name, t.description, t.inputSchema, t.handler, { annotations: { readOnlyHint: t.effect === "read" } }),
-    );
+    const tools = buildMemoryTools(backend, opts).map((t) => {
+        // Claude's allow-list addresses the existing SDK tool names.
+        const handler = shared
+            ? async (args: Record<string, unknown>) => shared.protectMcpToolResult(t.name, await t.handler(args))
+            : t.handler;
+        return sdk.tool(t.name, t.description, t.inputSchema, handler, { annotations: { readOnlyHint: t.effect === "read" } });
+    });
 
     return sdk.createSdkMcpServer({
         name: opts.name ?? "builderforce_memory",

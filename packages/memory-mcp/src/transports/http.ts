@@ -28,7 +28,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { MemoryBackend } from "../backend.js";
-import { buildMcpServer, type McpServerOptions } from "./mcp-server.js";
+import { createMemoryTransportServer, type McpServerOptions } from "./mcp-server.js";
 import { RateLimiter, bearerToken, buildTenantIndex, hashToken, timingSafeEqualStr } from "./auth.js";
 
 export interface HttpHandlerOptions extends McpServerOptions {
@@ -128,7 +128,8 @@ export function createMemoryHttpHandler(
         // rewrite their model), so it is served only to a caller holding the owner's
         // shared secret — never to a token-selected tenant, and never in open mode,
         // where anyone who can reach the port would get it.
-        const server = buildMcpServer(resolved, ownerAuthed ? opts : { ...opts, experience: null });
+        const server = await createMemoryTransportServer(resolved, ownerAuthed ? opts : { ...opts, experience: null });
+        if (res.destroyed) return;
         // Stateless: no session id generator → a fresh transport per request.
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 

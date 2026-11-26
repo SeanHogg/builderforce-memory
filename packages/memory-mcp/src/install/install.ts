@@ -10,6 +10,7 @@
 import nodeFs from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
+import { sharedMcpModule } from "../shared-mcp.js";
 import { HOSTS, SERVER_KEY, findHost, type HostAdapter, type HostEnv } from "./hosts.js";
 import { buildServerSpec, type ServerSpecOptions, type StdioServerSpec } from "./server-spec.js";
 
@@ -45,6 +46,16 @@ export interface InstallResult {
     detail?: string;
 }
 
+interface SharedConfigCodec {
+    readMcpConfig(document: string, host: string): Map<string, unknown>;
+    writeMcpConfig(
+        document: string,
+        host: string,
+        name: string,
+        server: StdioServerSpec & { transport: "stdio" },
+    ): string;
+}
+
 function defaultHostEnv(): HostEnv {
     return { homedir: nodeOs.homedir(), platform: process.platform, env: process.env };
 }
@@ -74,6 +85,12 @@ function ensureParent(fs: FsLike, file: string): void {
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+function writeConfig(fs: FsLike, file: string, document: string): void {
+    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
+    ensureParent(fs, file);
+    fs.writeFileSync(file, document);
+}
+
 /** A host is "present" if its config file or its parent directory already exists. */
 function isPresent(fs: FsLike, file: string): boolean {
     return fs.existsSync(file) || fs.existsSync(nodePath.dirname(file));
@@ -96,11 +113,9 @@ function installJson(
     const existed = prev !== undefined;
     if (existed && JSON.stringify(prev) === JSON.stringify(next)) return "skipped";
 
-    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
     map[SERVER_KEY] = next;
     config[mapKey] = map;
-    ensureParent(fs, file);
-    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+    writeConfig(fs, file, `${JSON.stringify(config, null, 2)}\n`);
     return existed ? "updated" : "installed";
 }
 
@@ -122,11 +137,24 @@ function installToml(fs: FsLike, file: string, spec: StdioServerSpec): InstallSt
     }
     const block = `${lines.join("\n")}\n`;
 
-    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
-    ensureParent(fs, file);
     const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : existing.length > 0 ? "\n" : "";
-    fs.writeFileSync(file, `${existing}${sep}${block}`);
+    writeConfig(fs, file, `${existing}${sep}${block}`);
     return "installed";
+}
+
+function installWithCodec(
+    fs: FsLike,
+    host: HostAdapter,
+    file: string,
+    spec: StdioServerSpec,
+    codec: SharedConfigCodec,
+): InstallStatus {
+    const document = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    const next = codec.writeMcpConfig(document, host.id, SERVER_KEY, { transport: "stdio", ...spec });
+    if (next === document) return "skipped";
+    const existed = codec.readMcpConfig(document, host.id).has(SERVER_KEY);
+    writeConfig(fs, file, next);
+    return existed ? "updated" : "installed";
 }
 
 function resolveHosts(selector: HostSelector, fs: FsLike, hostEnv: HostEnv): HostAdapter[] {
@@ -150,7 +178,7 @@ function resolveHosts(selector: HostSelector, fs: FsLike, hostEnv: HostEnv): Hos
  * Never throws for a single host — per-host failures are captured as
  * `status:"error"` so one bad config can't abort the rest.
  */
-export function installMemoryServer(opts: InstallOptions = {}): InstallResult[] {
+function install(opts: InstallOptions, codec?: SharedConfigCodec): InstallResult[] {
     const fs: FsLike = opts.fs ?? nodeFs;
     const hostEnv = opts.hostEnv ?? defaultHostEnv();
     const selector: HostSelector = opts.hosts ?? "auto";
@@ -168,10 +196,22 @@ export function installMemoryServer(opts: InstallOptions = {}): InstallResult[] 
             return { host: host.id, label: host.label, path: null, status: "unsupported", detail: "not available on this OS" };
         }
         try {
-            const status = host.format === "toml" ? installToml(fs, file, spec) : installJson(fs, host, file, spec);
+            const status = codec
+                ? installWithCodec(fs, host, file, spec, codec)
+                : host.format === "toml" ? installToml(fs, file, spec) : installJson(fs, host, file, spec);
             return { host: host.id, label: host.label, path: file, status };
         } catch (err) {
             return { host: host.id, label: host.label, path: file, status: "error", detail: String((err as Error).message ?? err) };
         }
     });
+}
+
+/** Synchronous installer for existing consumers and standalone setups. */
+export function installMemoryServer(opts: InstallOptions = {}): InstallResult[] {
+    return install(opts);
+}
+
+/** Use the shared config codec when the Builderforce MCP package is installed. */
+export async function installMemoryServerWithSharedConfig(opts: InstallOptions = {}): Promise<InstallResult[]> {
+    return install(opts, await sharedMcpModule<SharedConfigCodec>("/config"));
 }

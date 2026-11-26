@@ -7,8 +7,11 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { MemoryBackend } from "../backend.js";
+import { sharedMcpModule } from "../shared-mcp.js";
 import { buildMemoryTools, type MemoryToolsOptions } from "../tools.js";
+import { createMemoryMcpCatalog } from "./catalog.js";
 import { memoryMcpVersion } from "./version.js";
 
 export interface McpServerOptions extends MemoryToolsOptions {
@@ -16,12 +19,48 @@ export interface McpServerOptions extends MemoryToolsOptions {
     version?: string;
 }
 
+interface TransportServer {
+    connect(transport: Transport): Promise<void>;
+    close(): Promise<void>;
+}
+
+interface SharedServerModule {
+    createMcpServer(
+        catalog: ReturnType<typeof createMemoryMcpCatalog>,
+        options: {
+            info: { name: string; version: string };
+            gate: { approveWrite(): boolean };
+        },
+    ): TransportServer;
+}
+
+interface SharedNamingModule {
+    advertiseName(source: string, tool: string): string;
+}
+
+function serverInfo(opts: McpServerOptions) {
+    return { name: opts.name ?? "builderforce-memory", version: opts.version ?? memoryMcpVersion };
+}
+
+/** Use the shared runtime when it is installed alongside Memory. */
+export async function createMemoryTransportServer(
+    backend: MemoryBackend,
+    opts: McpServerOptions,
+): Promise<TransportServer> {
+    const shared = await sharedMcpModule<SharedServerModule>("/server");
+    if (!shared) return buildMcpServer(backend, opts);
+    const naming = await sharedMcpModule<SharedNamingModule>();
+    if (!naming) throw new Error("Builderforce MCP naming module is unavailable");
+
+    return shared.createMcpServer(createMemoryMcpCatalog(backend, opts, naming.advertiseName), {
+        info: serverInfo(opts),
+        gate: { approveWrite: () => opts.writable !== false },
+    });
+}
+
 /** Constructs an McpServer with the memory tools registered. */
 export function buildMcpServer(backend: MemoryBackend, opts: McpServerOptions = {}): McpServer {
-    const server = new McpServer({
-        name: opts.name ?? "builderforce-memory",
-        version: opts.version ?? memoryMcpVersion,
-    });
+    const server = new McpServer(serverInfo(opts));
 
     // The generic registerTool() over a zod raw shape trips TS2589 (excessively
     // deep instantiation); the tool surface is identical across our transports,
