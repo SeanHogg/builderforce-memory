@@ -9,6 +9,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MemoryBackend } from "../backend.js";
 import { buildMemoryTools, type MemoryToolsOptions } from "../tools.js";
+import { memoryMcpVersion } from "./version.js";
 
 export interface McpServerOptions extends MemoryToolsOptions {
     name?: string;
@@ -19,7 +20,7 @@ export interface McpServerOptions extends MemoryToolsOptions {
 export function buildMcpServer(backend: MemoryBackend, opts: McpServerOptions = {}): McpServer {
     const server = new McpServer({
         name: opts.name ?? "builderforce-memory",
-        version: opts.version ?? "2026.5.31",
+        version: opts.version ?? memoryMcpVersion,
     });
 
     // The generic registerTool() over a zod raw shape trips TS2589 (excessively

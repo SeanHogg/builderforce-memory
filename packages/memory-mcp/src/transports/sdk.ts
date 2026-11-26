@@ -14,6 +14,7 @@
 import type { MemoryBackend } from "../backend.js";
 import { dynamicImport } from "../dynamic-import.js";
 import { buildMemoryTools, type MemoryToolsOptions } from "../tools.js";
+import { memoryMcpVersion } from "./version.js";
 
 export interface SdkServerOptions extends MemoryToolsOptions {
     /** MCP server name; becomes the middle segment of `mcp__<name>__<tool>`. Default 'builderforce_memory'. */
@@ -66,7 +67,7 @@ export async function createMemoryMcpServer(
 
     return sdk.createSdkMcpServer({
         name: opts.name ?? "builderforce_memory",
-        version: opts.version ?? "2026.5.31",
+        version: opts.version ?? memoryMcpVersion,
         tools,
     });
 }

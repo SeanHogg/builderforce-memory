@@ -67,6 +67,6 @@ http.createServer((req, res) => {
         if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: String(err) }));
     });
-}).listen(port, () => {
-    process.stderr.write(`[builderforce-memory-mcp-http] listening on :${port}\n`);
+}).listen(port, "127.0.0.1", () => {
+    process.stderr.write(`[builderforce-memory-mcp-http] listening on 127.0.0.1:${port}\n`);
 });
