@@ -4,12 +4,12 @@
  * a {@link MemoryTool} 1:1 onto Agent-SDK `tool()` or MCP `registerTool()`.
  */
 
+import type { CallToolResult } from "@seanhogg/builderforce-mcp/protocol";
 import type { z } from "zod";
 
 /** The MCP CallToolResult shape both server frameworks expect. */
-export interface ToolResult {
+export interface ToolResult extends CallToolResult {
     content: Array<{ type: "text"; text: string }>;
-    isError?: boolean;
 }
 
 /** A framework-neutral tool: maps 1:1 onto Agent-SDK `tool()` and MCP `registerTool()`. */
