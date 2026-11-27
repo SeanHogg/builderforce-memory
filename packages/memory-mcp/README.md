@@ -11,9 +11,7 @@ tool core over a pluggable `MemoryBackend`, three transports:
 
 ### Shared Builderforce MCP runtime
 
-When `@seanhogg/builderforce-mcp` is installed alongside Memory, the stdio and HTTP servers use its tool catalog and output policy. Those transports advertise names like `memory__recall` and accept existing calls to `memory_recall`. The Agent SDK transport applies the same output policy and retains its tool names for existing allow-lists. The installer CLI uses the shared config codec to preserve comments in JSONC host files.
-
-Standalone installs use Memory's standard SDK transports and installer. Existing callers of the synchronous `installMemoryServer` API can use `installMemoryServerWithSharedConfig` to select the shared codec when present.
+Memory installs `@seanhogg/builderforce-mcp` automatically. The stdio and HTTP servers advertise names like `memory__recall` and accept existing calls to `memory_recall`. Both use the shared output policy. The Agent SDK transport also applies that policy and retains its tool names for existing allow-lists. The installer CLI and programmatic installer use the shared config codec to preserve comments in JSONC host files.
 
 ## Where this fits
 Part of BuilderForce's **Idea → Make → Run → Measure → Reach** method ([definitions](https://github.com/SeanHogg/Builderforce.ai/blob/main/docs/specs/README.md)). This package serves **Make**: exposes Evermind memory to any MCP client so agents recall instead of re-reading.

@@ -14,6 +14,6 @@ import { createMemoryTransportServer, type McpServerOptions } from "./mcp-server
 
 /** Serves `backend` over stdio. Resolves when the transport closes. */
 export async function runStdio(backend: MemoryBackend, opts: McpServerOptions = {}): Promise<void> {
-    const server = await createMemoryTransportServer(backend, opts);
+    const server = createMemoryTransportServer(backend, opts);
     await server.connect(new StdioServerTransport());
 }

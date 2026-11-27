@@ -9,6 +9,7 @@
  */
 
 import path from "node:path";
+import type { McpConfigHost } from "@seanhogg/builderforce-mcp/config";
 
 export type ConfigFormat = "json-mcpServers" | "json-servers" | "toml";
 
@@ -19,7 +20,7 @@ export interface HostEnv {
 }
 
 export interface HostAdapter {
-    id: string;
+    id: McpConfigHost;
     label: string;
     format: ConfigFormat;
     /** Include `type:"stdio"` in the written entry (Claude Code + VS Code want it). */

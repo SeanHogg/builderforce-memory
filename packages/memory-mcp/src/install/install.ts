@@ -10,7 +10,7 @@
 import nodeFs from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
-import { sharedMcpModule } from "../shared-mcp.js";
+import { readMcpConfig, writeMcpConfig } from "@seanhogg/builderforce-mcp/config";
 import { HOSTS, SERVER_KEY, findHost, type HostAdapter, type HostEnv } from "./hosts.js";
 import { buildServerSpec, type ServerSpecOptions, type StdioServerSpec } from "./server-spec.js";
 
@@ -46,38 +46,8 @@ export interface InstallResult {
     detail?: string;
 }
 
-interface SharedConfigCodec {
-    readMcpConfig(document: string, host: string): Map<string, unknown>;
-    writeMcpConfig(
-        document: string,
-        host: string,
-        name: string,
-        server: StdioServerSpec & { transport: "stdio" },
-    ): string;
-}
-
 function defaultHostEnv(): HostEnv {
     return { homedir: nodeOs.homedir(), platform: process.platform, env: process.env };
-}
-
-function readJson(fs: FsLike, file: string): Record<string, unknown> {
-    if (!fs.existsSync(file)) return {};
-    try {
-        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-    } catch {
-        // Corrupt/partial config — surface as error rather than clobbering it.
-        throw new Error("existing config is not valid JSON");
-    }
-}
-
-function entryFor(spec: StdioServerSpec, includeType: boolean): Record<string, unknown> {
-    return {
-        ...(includeType ? { type: "stdio" } : {}),
-        command: spec.command,
-        args: spec.args,
-        ...(spec.env ? { env: spec.env } : {}),
-    };
 }
 
 function ensureParent(fs: FsLike, file: string): void {
@@ -96,63 +66,11 @@ function isPresent(fs: FsLike, file: string): boolean {
     return fs.existsSync(file) || fs.existsSync(nodePath.dirname(file));
 }
 
-function installJson(
-    fs: FsLike,
-    host: HostAdapter,
-    file: string,
-    spec: StdioServerSpec,
-): InstallStatus {
-    const mapKey = host.format === "json-servers" ? "servers" : "mcpServers";
-    const config = readJson(fs, file);
-    const map = (config[mapKey] && typeof config[mapKey] === "object" ? config[mapKey] : {}) as Record<
-        string,
-        unknown
-    >;
-    const next = entryFor(spec, host.includeType);
-    const prev = map[SERVER_KEY];
-    const existed = prev !== undefined;
-    if (existed && JSON.stringify(prev) === JSON.stringify(next)) return "skipped";
-
-    map[SERVER_KEY] = next;
-    config[mapKey] = map;
-    writeConfig(fs, file, `${JSON.stringify(config, null, 2)}\n`);
-    return existed ? "updated" : "installed";
-}
-
-/** TOML emit is append-only and idempotent: skip if the table already exists. */
-function installToml(fs: FsLike, file: string, spec: StdioServerSpec): InstallStatus {
-    const header = `[mcp_servers.${SERVER_KEY}]`;
-    const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-    if (existing.includes(header)) return "skipped";
-
-    const q = (s: string) => JSON.stringify(s); // TOML basic strings are JSON-compatible here
-    const lines = [
-        header,
-        `command = ${q(spec.command)}`,
-        `args = [${spec.args.map(q).join(", ")}]`,
-    ];
-    if (spec.env) {
-        lines.push(`[mcp_servers.${SERVER_KEY}.env]`);
-        for (const [k, v] of Object.entries(spec.env)) lines.push(`${k} = ${q(v)}`);
-    }
-    const block = `${lines.join("\n")}\n`;
-
-    const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : existing.length > 0 ? "\n" : "";
-    writeConfig(fs, file, `${existing}${sep}${block}`);
-    return "installed";
-}
-
-function installWithCodec(
-    fs: FsLike,
-    host: HostAdapter,
-    file: string,
-    spec: StdioServerSpec,
-    codec: SharedConfigCodec,
-): InstallStatus {
+function installHostConfig(fs: FsLike, host: HostAdapter, file: string, spec: StdioServerSpec): InstallStatus {
     const document = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-    const next = codec.writeMcpConfig(document, host.id, SERVER_KEY, { transport: "stdio", ...spec });
+    const next = writeMcpConfig(document, host.id, SERVER_KEY, { transport: "stdio", ...spec });
     if (next === document) return "skipped";
-    const existed = codec.readMcpConfig(document, host.id).has(SERVER_KEY);
+    const existed = readMcpConfig(document, host.id).has(SERVER_KEY);
     writeConfig(fs, file, next);
     return existed ? "updated" : "installed";
 }
@@ -178,7 +96,7 @@ function resolveHosts(selector: HostSelector, fs: FsLike, hostEnv: HostEnv): Hos
  * Never throws for a single host — per-host failures are captured as
  * `status:"error"` so one bad config can't abort the rest.
  */
-function install(opts: InstallOptions, codec?: SharedConfigCodec): InstallResult[] {
+export function installMemoryServer(opts: InstallOptions = {}): InstallResult[] {
     const fs: FsLike = opts.fs ?? nodeFs;
     const hostEnv = opts.hostEnv ?? defaultHostEnv();
     const selector: HostSelector = opts.hosts ?? "auto";
@@ -196,9 +114,7 @@ function install(opts: InstallOptions, codec?: SharedConfigCodec): InstallResult
             return { host: host.id, label: host.label, path: null, status: "unsupported", detail: "not available on this OS" };
         }
         try {
-            const status = codec
-                ? installWithCodec(fs, host, file, spec, codec)
-                : host.format === "toml" ? installToml(fs, file, spec) : installJson(fs, host, file, spec);
+            const status = installHostConfig(fs, host, file, spec);
             return { host: host.id, label: host.label, path: file, status };
         } catch (err) {
             return { host: host.id, label: host.label, path: file, status: "error", detail: String((err as Error).message ?? err) };
@@ -206,12 +122,7 @@ function install(opts: InstallOptions, codec?: SharedConfigCodec): InstallResult
     });
 }
 
-/** Synchronous installer for existing consumers and standalone setups. */
-export function installMemoryServer(opts: InstallOptions = {}): InstallResult[] {
-    return install(opts);
-}
-
-/** Use the shared config codec when the Builderforce MCP package is installed. */
+/** Async entry point retained for callers that already await installation. */
 export async function installMemoryServerWithSharedConfig(opts: InstallOptions = {}): Promise<InstallResult[]> {
-    return install(opts, await sharedMcpModule<SharedConfigCodec>("/config"));
+    return installMemoryServer(opts);
 }

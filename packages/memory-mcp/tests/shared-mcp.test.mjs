@@ -6,21 +6,17 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { readMcpConfig } from "@seanhogg/builderforce-mcp/config";
 import { createMemoryHttpHandler, installMemoryServerWithSharedConfig } from "../dist/index.js";
-import { sharedMcpModule } from "../dist/shared-mcp.js";
-
-const shared = await sharedMcpModule();
-if (process.env["REQUIRE_SHARED_MCP_TEST"] === "1") assert.ok(shared, "install the packed shared MCP package first");
 
 const token = "test-http-token";
 const clientInfo = { name: "memory-transport-test", version: "1" };
 
 async function exercise(client) {
     const { tools } = await client.listTools();
-    const recallName = shared ? "memory__recall" : "memory_recall";
-    assert.ok(tools.some((tool) => tool.name === recallName && tool.annotations.readOnlyHint));
+    assert.ok(tools.some((tool) => tool.name === "memory__recall" && tool.annotations.readOnlyHint));
     assert.equal(tools.some((tool) => tool.name.includes("remember")), false);
-    for (const name of new Set([recallName, "memory_recall"])) {
+    for (const name of ["memory__recall", "memory_recall"]) {
         const result = await client.callTool({ name, arguments: { query: "foo" } });
         assert.equal(result.content[0].text, "No matching memories.");
     }
@@ -81,7 +77,7 @@ test("default stdio transport uses the same Memory catalog", async () => {
     }
 });
 
-test("installer automatically uses the shared JSONC codec, preserving comments and backups", { skip: !shared }, async () => {
+test("installer automatically uses the shared JSONC codec, preserving comments and backups", async () => {
     const normalize = (path) => path.replace(/\\/g, "/");
     const file = "/home/u/.config/Code/User/mcp.json";
     const original = '{\n  // Keep this server.\n  "servers": { "existing": { "command": "node" } },\n}\n';
@@ -98,7 +94,6 @@ test("installer automatically uses the shared JSONC codec, preserving comments a
     assert.equal((await installMemoryServerWithSharedConfig(opts))[0].status, "installed");
     assert.equal(files.get(file + ".bak"), original);
     assert.match(files.get(file), /Keep this server/);
-    const { readMcpConfig } = await sharedMcpModule("/config");
     const entries = readMcpConfig(files.get(file), "vscode");
     assert.equal(entries.get("existing").command, "node");
     assert.equal(entries.get("builderforce-memory").command, "npx");

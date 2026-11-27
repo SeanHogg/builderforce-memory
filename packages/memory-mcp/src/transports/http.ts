@@ -128,7 +128,7 @@ export function createMemoryHttpHandler(
         // rewrite their model), so it is served only to a caller holding the owner's
         // shared secret — never to a token-selected tenant, and never in open mode,
         // where anyone who can reach the port would get it.
-        const server = await createMemoryTransportServer(resolved, ownerAuthed ? opts : { ...opts, experience: null });
+        const server = createMemoryTransportServer(resolved, ownerAuthed ? opts : { ...opts, experience: null });
         if (res.destroyed) return;
         // Stateless: no session id generator → a fresh transport per request.
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
