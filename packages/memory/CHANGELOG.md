@@ -1,5 +1,20 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.87
+
+### Changed — ONE stat model (`./knowledge`)
+
+- The stat manifest of agent-tools moved here and replaced memory's own ms-precision prefilter. New exports:
+  `StatRow`, `StatSet`, `StatDelta`, `HashCache`, `GitHints`, `FileStat`, `EMPTY_STAT_SET`, `msToNs`, `reusedHash`,
+  `sameRow`, `StatSetMemo`, `memoryHashCache`, `deferredHashCache`.
+- **Breaking, no known caller:** `isRacy` is now `isRacy(mtimeNs, refNs)` (ns, one-sided: future mtimes are racy).
+  Removed `statMatches`, `prefilterStats`, `createStatPrefilter`, `StatRecord`, `StatManifestEntry`, `PrefilterDecision`
+  (superseded by `reusedHash` and `StatRow`), and the ingest-manifest persistence `loadStatManifest`, `saveStatManifest`,
+  `statManifestKey` (no production caller: hosts back the `HashCache` port with `memoryHashCache` or their own store, so
+  the old `entries` blob is simply no longer read). Kept: `RACY_WINDOW_MS`.
+- **Fixed:** `msToNs` lost precision for a current epoch time (`ms * 1e6` exceeds 2^53, so `1_700_000_000_123` became
+  `1700000000123000064n`); it now scales the whole ms in BigInt and adds the fractional ns, so it is exact.
+
 ## 2026.10.85
 
 ### Changed — a stored graph's build holds memory in proportion to one item, not the repository (`./knowledge`)

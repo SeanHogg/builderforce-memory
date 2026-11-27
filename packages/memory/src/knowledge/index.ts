@@ -110,11 +110,11 @@ export type { ExtractorState } from './owedFiles.js';
 export { contentHash, CONTENT_HASH_RULE, BASELINE_CONTENT_HASH_RULE, contentHashRuleOf } from './contentHash.js';
 export { merkleTree, changedPaths, canonicalListing } from './merkle.js';
 export type { MerkleTree, MerkleEntry, MerkleKind, ListingSkipReason, MerkleOptions } from './merkle.js';
-// PRD 41 §B2 steps 1–2: the stat prefilter (size + mtimeNs + fileId, BigInt) with git's racy-file rule.
+// PRD 41 §B2: the ONE stat model (size + mtimeNs + fileId, BigInt) with git's racy-file rule, the HashCache port and its backings.
 export {
-    RACY_WINDOW_MS, statManifestKey, statMatches, isRacy, prefilterStats, createStatPrefilter, loadStatManifest, saveStatManifest,
+    RACY_WINDOW_MS, EMPTY_STAT_SET, StatSetMemo, deferredHashCache, isRacy, memoryHashCache, msToNs, reusedHash, sameRow,
 } from './statManifest.js';
-export type { StatRecord, StatManifestEntry, PrefilterDecision } from './statManifest.js';
+export type { FileStat, GitHints, HashCache, StatDelta, StatRow, StatSet } from './statManifest.js';
 export { normalizePath, isRootFilePath } from './refs.js';
 export { reviewDirectory, assertStoredBatch } from './review.js';
 export { orderForJudging } from './judgePriority.js';

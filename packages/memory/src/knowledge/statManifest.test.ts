@@ -1,122 +1,191 @@
 /**
- * src/knowledge/statManifest.test.ts — the stat prefilter (PRD 41 §B2 steps 1–2): a size+mtimeNs+fileId
- * manifest lets a warm plan reuse a stored hash without reading the file, and git's racy-file rule
- * re-hashes a file whose mtime is within 2 s of the manifest write or of now.
+ * src/knowledge/statManifest.test.ts — the ONE stat model (PRD 41 §B2): a size+mtimeNs+fileId row lets a warm walk reuse a
+ * stored hash without reading the file, git's racy-file rule re-hashes a file whose mtime is within 2 s of the reference
+ * time, a git blob hint survives a checkout that moved the stat, and the HashCache port has two backings here (memory,
+ * deferred) that agree on delta semantics.
  */
 
 import { jest } from '@jest/globals';
 import {
-    createStatPrefilter, isRacy, loadStatManifest, prefilterStats, RACY_WINDOW_MS, saveStatManifest, statMatches,
-    type StatManifestEntry, type StatRecord,
+    EMPTY_STAT_SET, RACY_WINDOW_MS, StatSetMemo, deferredHashCache, isRacy, memoryHashCache, msToNs, reusedHash, sameRow,
+    type FileStat, type GitHints, type HashCache, type StatDelta, type StatRow, type StatSet,
 } from './statManifest.js';
-import { InMemoryIngestManifest } from '../ingest/IngestionPipeline.js';
 
-const stat = (size: number, mtimeNs: bigint, fileId: bigint | null = null): StatRecord => ({ size, mtimeNs, fileId });
-const entry = (size: number, mtimeNs: bigint, hash: string, recordedAtMs: number, fileId: bigint | null = null): StatManifestEntry =>
-    ({ size, mtimeNs, fileId, hash, recordedAtMs });
+const NOW = 1_000_000; // ms
+const NOW_NS = msToNs(NOW);
+const WINDOW_NS = BigInt(RACY_WINDOW_MS) * BigInt(1_000_000);
+// An mtime far from the reference time so the racy rule does not fire unless a test moves it.
+const OLD_MTIME = msToNs(NOW - 60_000);
+const RULE = 'sha256-eol';
 
-const NOW = 1_000_000;
-// An mtime far from both `recordedAtMs` and NOW so the racy rule does not fire unless a test moves it.
-const OLD_MTIME = BigInt((NOW - 60_000) * 1_000_000);
+const row = (path: string, size: number, mtimeNs: bigint, hash: string, extra: Partial<StatRow> = {}): StatRow =>
+    ({ path, size, mtimeNs, hash, ...extra });
+const set = (rows: StatRow[], writtenAtNs?: bigint): StatSet =>
+    ({ rows: new Map(rows.map((r) => [r.path, r] as const)), ...(writtenAtNs !== undefined ? { writtenAtNs } : {}) });
+const stat = (size: number, mtimeNs: bigint, fileId?: bigint): FileStat => ({ size, mtimeNs, ...(fileId !== undefined ? { fileId } : {}) });
 
-describe('statMatches', () => {
-    it('requires size, full-precision mtimeNs and fileId', () => {
-        expect(statMatches(stat(10, OLD_MTIME, 5n), stat(10, OLD_MTIME, 5n))).toBe(true);
-        expect(statMatches(stat(10, OLD_MTIME, 5n), stat(11, OLD_MTIME, 5n))).toBe(false); // size moved
-        expect(statMatches(stat(10, OLD_MTIME, 5n), stat(10, OLD_MTIME + 1n, 5n))).toBe(false); // ns mtime moved
-        expect(statMatches(stat(10, OLD_MTIME, 5n), stat(10, OLD_MTIME, 6n))).toBe(false); // fileId moved
-        expect(statMatches(stat(10, OLD_MTIME, null), stat(10, OLD_MTIME, 6n))).toBe(false); // null matches only null
-        expect(statMatches(stat(10, OLD_MTIME, null), stat(10, OLD_MTIME, null))).toBe(true);
+describe('contract: the unified stat model types', () => {
+    it('a HashCache port takes a StatDelta and returns a StatSet, in every backing', async () => {
+        const backings: HashCache[] = [memoryHashCache(), deferredHashCache(() => memoryHashCache())];
+        const delta: StatDelta = { rule: RULE, upserts: [row('a.ts', 1, OLD_MTIME, 'h-a', { fileId: 7n, gitBlob: 'b1' })], deletes: [], writtenAtNs: NOW_NS };
+        for (const cache of backings) {
+            await cache.save('r', delta);
+            const loaded: StatSet = await cache.load('r', RULE);
+            expect(loaded.rows.get('a.ts')).toEqual(delta.upserts[0]);
+            expect(loaded.writtenAtNs).toBe(NOW_NS);
+            expect(cache.sizeOf?.('r', 'a.ts')).toBe(1);
+        }
+    });
+
+    it('RACY_WINDOW_MS is the git window (2 s) and msToNs scales ms to ns', () => {
+        expect(RACY_WINDOW_MS).toBe(2000);
+        expect(msToNs(1.5)).toBe(BigInt(1_500_000));
+        expect(msToNs(1_700_000_000_123)).toBe(BigInt('1700000000123000000'));
+    });
+
+    it('regression: msToNs is exact for a current epoch time (ms * 1e6 exceeds 2^53) and keeps a fractional ms', () => {
+        // 0.5 is exactly representable at this magnitude (double spacing is 2^-12 ms), so the expected ns is exact.
+        expect(msToNs(1_700_000_000_123.5)).toBe(BigInt('1700000000123500000'));
+        expect(msToNs(1_700_000_000_123)).toBe(BigInt('1700000000123000000'));
+        expect(msToNs(-1.5)).toBe(BigInt(-1_500_000));
+    });
+    it('regression: msToNs is unchanged below 2^53 / 1e6 ms', () => {
+        expect(msToNs(0)).toBe(BigInt(0));
+        expect(msToNs(1_000_000)).toBe(BigInt('1000000000000'));
+        expect(msToNs(1_234.567)).toBe(BigInt(Math.round(1_234.567 * 1_000_000)));
     });
 });
 
-describe('isRacy (git racy-file rule, §B2 step 2)', () => {
-    it('is racy within 2 s of the manifest write time', () => {
-        expect(isRacy(stat(1, BigInt((NOW - RACY_WINDOW_MS + 1) * 1_000_000)), NOW, NOW)).toBe(true);
-        expect(isRacy(stat(1, BigInt((NOW + RACY_WINDOW_MS - 1) * 1_000_000)), NOW, NOW)).toBe(true);
-        expect(isRacy(stat(1, BigInt((NOW - RACY_WINDOW_MS - 1) * 1_000_000)), NOW, NOW)).toBe(false);
+describe('isRacy (git racy-file rule, ns against a reference time)', () => {
+    it('is racy within 2 s before the reference time, at it, and after it (future mtimes)', () => {
+        expect(isRacy(NOW_NS - WINDOW_NS + BigInt(1), NOW_NS)).toBe(true);
+        expect(isRacy(NOW_NS - WINDOW_NS, NOW_NS)).toBe(true);
+        expect(isRacy(NOW_NS, NOW_NS)).toBe(true);
+        expect(isRacy(NOW_NS + WINDOW_NS, NOW_NS)).toBe(true);
+        expect(isRacy(NOW_NS - WINDOW_NS - BigInt(1), NOW_NS)).toBe(false);
     });
-    it('is racy within 2 s of now, whatever the manifest says', () => {
-        expect(isRacy(stat(1, BigInt(NOW * 1_000_000)), NOW - 60_000, NOW)).toBe(true);
-        expect(isRacy(stat(1, BigInt((NOW - 10_000) * 1_000_000)), NOW - 60_000, NOW)).toBe(false);
+    it('is never racy against an absent reference time (rows never written)', () => {
+        expect(isRacy(NOW_NS, undefined)).toBe(false);
     });
 });
 
-describe('prefilterStats', () => {
-    const prior = new Map<string, StatManifestEntry>([
-        ['a.ts', entry(10, OLD_MTIME, 'h-a', NOW)],
-        ['b.ts', entry(20, OLD_MTIME, 'h-b', NOW)],
-        ['c.ts', entry(30, OLD_MTIME, 'h-c', NOW)],
-    ]);
+describe('reusedHash (the prefilter)', () => {
+    const prior = set([row('a.ts', 10, OLD_MTIME, 'h-a', { fileId: 5n }), row('n.ts', 10, OLD_MTIME, 'h-n')], NOW_NS);
 
-    it('reuses the stored hash on a stat match and hashes everything else, both sorted', () => {
-        const decision = prefilterStats(
-            [
-                { path: 'c.ts', stat: stat(30, OLD_MTIME) },
-                { path: 'a.ts', stat: stat(10, OLD_MTIME) },
-                { path: 'b.ts', stat: stat(21, OLD_MTIME) }, // size moved → hash
-                { path: 'd.ts', stat: stat(40, OLD_MTIME) }, // new → hash
-            ],
-            prior, NOW,
-        );
-        expect(decision.reused).toEqual(['a.ts', 'c.ts']);
-        expect(decision.hash).toEqual(['b.ts', 'd.ts']);
+    it('reuses the stored hash on a full stat match', () => {
+        expect(reusedHash(stat(10, OLD_MTIME, 5n), prior.rows.get('a.ts'), prior, undefined)).toBe('h-a');
+        expect(reusedHash(stat(10, OLD_MTIME), prior.rows.get('n.ts'), prior, undefined)).toBe('h-n');
     });
-
+    it('needs size, full-precision mtimeNs and fileId to match', () => {
+        const a = prior.rows.get('a.ts');
+        expect(reusedHash(stat(11, OLD_MTIME, 5n), a, prior, undefined)).toBeUndefined(); // size moved
+        expect(reusedHash(stat(10, OLD_MTIME + BigInt(1), 5n), a, prior, undefined)).toBeUndefined(); // ns mtime moved
+        expect(reusedHash(stat(10, OLD_MTIME, 6n), a, prior, undefined)).toBeUndefined(); // fileId moved
+        expect(reusedHash(stat(10, OLD_MTIME), a, prior, undefined)).toBeUndefined(); // fileId vanished
+        expect(reusedHash(stat(10, OLD_MTIME, 5n), prior.rows.get('n.ts'), prior, undefined)).toBeUndefined(); // fileId appeared
+    });
+    it('has nothing to reuse for a new file', () => {
+        expect(reusedHash(stat(10, OLD_MTIME), undefined, prior, undefined)).toBeUndefined();
+    });
     it('re-hashes a racy file whatever its stat says', () => {
-        const racyMtime = BigInt(NOW * 1_000_000); // within 2 s of now
-        const decision = prefilterStats([{ path: 'a.ts', stat: stat(10, racyMtime) }], prior, NOW);
-        expect(decision.reused).toEqual([]);
-        expect(decision.hash).toEqual(['a.ts']);
+        const racy = row('r.ts', 10, NOW_NS, 'h-r');
+        expect(reusedHash(stat(10, NOW_NS), racy, set([racy], NOW_NS), undefined)).toBeUndefined();
     });
-
-    it('is deterministic: input order never changes the output', () => {
-        const listed = [
-            { path: 'a.ts', stat: stat(10, OLD_MTIME) },
-            { path: 'b.ts', stat: stat(20, OLD_MTIME) },
-            { path: 'c.ts', stat: stat(30, OLD_MTIME) },
-        ];
-        expect(prefilterStats([...listed].reverse(), prior, NOW)).toEqual(prefilterStats(listed, prior, NOW));
+    it('reuses a row whose set was never written (nothing is racy against no reference time)', () => {
+        const fresh = row('r.ts', 10, NOW_NS, 'h-r');
+        expect(reusedHash(stat(10, NOW_NS), fresh, set([fresh]), undefined)).toBe('h-r');
     });
-});
-
-describe('createStatPrefilter', () => {
-    it('returns the stored hash without reading, and hashes a moved file through hashPath', async () => {
-        const prior = new Map<string, StatManifestEntry>([['a.ts', entry(10, OLD_MTIME, 'h-a', NOW)]]);
-        const hashPath = jest.fn(async (_: string) => 'h-fresh');
-        const prefilter = createStatPrefilter(prior, hashPath, () => NOW);
-
-        await expect(prefilter({ path: 'a.ts', stat: stat(10, OLD_MTIME) })).resolves.toEqual({ path: 'a.ts', hash: 'h-a' });
-        expect(hashPath).not.toHaveBeenCalled();
-
-        await expect(prefilter({ path: 'a.ts', stat: stat(11, OLD_MTIME) })).resolves.toEqual({ path: 'a.ts', hash: 'h-fresh' });
-        expect(hashPath).toHaveBeenCalledTimes(1);
-        expect(hashPath).toHaveBeenCalledWith('a.ts');
+    it('reuses a row on a clean git blob hint even when the stat moved (a checkout)', () => {
+        const hinted = row('g.ts', 10, OLD_MTIME, 'h-g', { gitBlob: 'blob-1' });
+        const moved = stat(10, OLD_MTIME + BigInt(5_000_000_000));
+        expect(reusedHash(moved, hinted, set([hinted], NOW_NS), 'blob-1', NOW_NS)).toBe('h-g');
+        expect(reusedHash(moved, hinted, set([hinted], NOW_NS), 'blob-2', NOW_NS)).toBeUndefined(); // blob changed
+        expect(reusedHash(stat(11, moved.mtimeNs), hinted, set([hinted], NOW_NS), 'blob-1', NOW_NS)).toBeUndefined(); // size changed
+        expect(reusedHash(moved, hinted, set([hinted], NOW_NS), 'blob-1', undefined)).toBeUndefined(); // no hint timestamp
+        expect(reusedHash(stat(10, NOW_NS + BigInt(1)), hinted, set([hinted], NOW_NS), 'blob-1', NOW_NS)).toBeUndefined(); // modified after git looked
+    });
+    it('regression: a GitHints hint is used only while the file mtime is strictly before the ns time git looked', () => {
+        const hints: GitHints = { blobs: new Map([['g.ts', 'blob-1']]), takenAtNs: NOW_NS };
+        const hinted = row('g.ts', 10, OLD_MTIME, 'h-g', { fileId: 3n, gitBlob: 'blob-1' });
+        const hint = hints.blobs.get('g.ts');
+        // mtime and fileId both moved (a checkout), size unchanged: reused one ns before git looked, not at it.
+        expect(reusedHash(stat(10, hints.takenAtNs - BigInt(1), 9n), hinted, set([hinted], NOW_NS), hint, hints.takenAtNs)).toBe('h-g');
+        expect(reusedHash(stat(10, hints.takenAtNs, 9n), hinted, set([hinted], NOW_NS), hint, hints.takenAtNs)).toBeUndefined();
     });
 });
 
-describe('stat manifest persistence', () => {
-    it('round-trips BigInt stat tuples through the ingest manifest and reloads them', async () => {
-        const manifest = new InMemoryIngestManifest();
-        const fileId = 12345678901234567890n; // exceeds a double: must survive as a BigInt
-        const mtimeNs = 1700000000123456789n;
-        const files = [
-            { path: 'src/x.ts', hash: 'h-x', stat: stat(100, mtimeNs, fileId) },
-            { path: 'src/y.ts', hash: 'h-y', stat: stat(200, OLD_MTIME, null) },
-        ];
-        await saveStatManifest(manifest, 'root', files, NOW);
-        const loaded = await loadStatManifest(manifest, 'root');
-        expect(loaded.size).toBe(2);
-        expect(loaded.get('src/x.ts')).toEqual({ size: 100, mtimeNs, fileId, hash: 'h-x', recordedAtMs: NOW });
-        expect(loaded.get('src/y.ts')).toEqual({ size: 200, mtimeNs: OLD_MTIME, fileId: null, hash: 'h-y', recordedAtMs: NOW });
-        // A warm prefilter over the reloaded manifest reuses the stored hash.
-        expect(prefilterStats([{ path: 'src/x.ts', stat: stat(100, mtimeNs, fileId) }], loaded, NOW).reused).toEqual(['src/x.ts']);
+describe('sameRow (an unchanged file writes nothing)', () => {
+    it('compares size, mtimeNs, fileId, hash and gitBlob', () => {
+        const base = row('a.ts', 10, OLD_MTIME, 'h', { fileId: 1n, gitBlob: 'b' });
+        expect(sameRow(base, { ...base })).toBe(true);
+        expect(sameRow(undefined, base)).toBe(false);
+        expect(sameRow(base, { ...base, size: 11 })).toBe(false);
+        expect(sameRow(base, { ...base, mtimeNs: OLD_MTIME + BigInt(1) })).toBe(false);
+        expect(sameRow(base, { ...base, fileId: 2n })).toBe(false);
+        expect(sameRow(base, { ...base, hash: 'h2' })).toBe(false);
+        expect(sameRow(base, { ...base, gitBlob: 'b2' })).toBe(false);
     });
+});
 
-    it('returns empty on a missing manifest (the first run hashes everything) and on a corrupt one', async () => {
-        const manifest = new InMemoryIngestManifest();
-        expect((await loadStatManifest(manifest, 'root')).size).toBe(0);
-        await manifest.set('stats:root', [{ id: 'entries', hash: '{not json' }]);
-        expect((await loadStatManifest(manifest, 'root')).size).toBe(0);
+describe('StatSetMemo', () => {
+    it('regression: apply merges upserts and deletes onto the last rows and keeps the reference time unless the delta moves it', () => {
+        const memo = new StatSetMemo();
+        memo.set('r', set([row('a.ts', 1, OLD_MTIME, 'h-a'), row('b.ts', 2, OLD_MTIME, 'h-b')], NOW_NS));
+        memo.apply('r', { rule: RULE, upserts: [row('c.ts', 3, OLD_MTIME, 'h-c')], deletes: ['a.ts'] });
+        expect([...memo.get('r')!.rows.keys()].sort()).toEqual(['b.ts', 'c.ts']);
+        expect(memo.get('r')!.writtenAtNs).toBe(NOW_NS);
+        memo.apply('r', { rule: RULE, upserts: [], deletes: [], writtenAtNs: NOW_NS + BigInt(1) });
+        expect(memo.get('r')!.writtenAtNs).toBe(NOW_NS + BigInt(1));
+        expect(memo.sizeOf('r', 'c.ts')).toBe(3);
+        expect(memo.sizeOf('r', 'a.ts')).toBeUndefined();
+    });
+    it('regression: a replace delta drops every earlier row, and drop forgets the root', () => {
+        const memo = new StatSetMemo();
+        memo.apply('r', { rule: RULE, upserts: [row('a.ts', 1, OLD_MTIME, 'h-a')], deletes: [] });
+        memo.apply('r', { rule: RULE, upserts: [row('b.ts', 2, OLD_MTIME, 'h-b')], deletes: [], replace: true });
+        expect([...memo.get('r')!.rows.keys()]).toEqual(['b.ts']);
+        memo.drop('r');
+        expect(memo.get('r')).toBeUndefined();
+    });
+});
+
+describe('memoryHashCache', () => {
+    it('regression: loads empty for an unknown root and for a root recorded under another rule (stale)', async () => {
+        const cache = memoryHashCache();
+        expect(await cache.load('r', RULE)).toBe(EMPTY_STAT_SET);
+        await cache.save('r', { rule: RULE, upserts: [row('a.ts', 1, OLD_MTIME, 'h-a')], deletes: [] });
+        expect((await cache.load('r', RULE)).rows.size).toBe(1);
+        const stale = await cache.load('r', 'another-rule');
+        expect(stale.rows.size).toBe(0);
+        expect(stale.stale).toBe(true);
+    });
+    it('regression: drop forgets the root (rows and rule)', async () => {
+        const cache = memoryHashCache();
+        await cache.save('r', { rule: RULE, upserts: [row('a.ts', 1, OLD_MTIME, 'h-a')], deletes: [] });
+        await cache.drop?.('r');
+        expect(await cache.load('r', RULE)).toBe(EMPTY_STAT_SET);
+        expect(cache.sizeOf?.('r', 'a.ts')).toBeUndefined();
+    });
+});
+
+describe('deferredHashCache', () => {
+    it('regression: resolves the port on first use, once, and never at build time', async () => {
+        const resolve = jest.fn(() => memoryHashCache());
+        const cache = deferredHashCache(resolve);
+        expect(resolve).not.toHaveBeenCalled();
+        await cache.save('r', { rule: RULE, upserts: [row('a.ts', 1, OLD_MTIME, 'h-a')], deletes: [] });
+        await cache.load('r', RULE);
+        expect(resolve).toHaveBeenCalledTimes(1);
+    });
+    it('regression: a store that throws while opening rejects the load, and sizeOf answers undefined', async () => {
+        const cache = deferredHashCache(() => { throw new Error('locked'); });
+        await expect(cache.load('r', RULE)).rejects.toThrow('locked');
+        expect(cache.sizeOf?.('r', 'a.ts')).toBeUndefined();
+    });
+    it('regression: drop and sizeOf are no-ops on a port that has neither', async () => {
+        const bare: HashCache = { load: async () => EMPTY_STAT_SET, save: async () => undefined };
+        const cache = deferredHashCache(() => bare);
+        await expect(cache.drop?.('r')).resolves.toBeUndefined();
+        expect(cache.sizeOf?.('r', 'a.ts')).toBeUndefined();
     });
 });

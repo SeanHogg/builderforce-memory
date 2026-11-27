@@ -49,7 +49,8 @@ import type {
     effectiveGuards, factStoreDump, loadFactGraph, memoryFactStore, rootRouters, saveFactGraph, sweepFactStore,
 } from '../knowledge/index.js';
 import { canonicalDump, ExtractFailed, failuresOf, failureTotal, LocalSnapshotStore, localSnapshotStore, type ExtractorState } from '../knowledge/index.js';
-import type { elidedResultStub, elideRunResults, RunElisionBudget, TranscriptMessage, windowed } from '../working/index.js';
+import type { FileStat, GitHints, HashCache, StatDelta, StatRow, StatSet, isRacy, msToNs, reusedHash } from '../knowledge/index.js';
+import type { elidedResultStub,elideRunResults, RunElisionBudget, TranscriptMessage, windowed } from '../working/index.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -480,6 +481,34 @@ export type ResolvedMount_shape = Expect<Equal<ResolvedMount, {
     target: string; path: string; facts: FileFacts; router?: string; mounts?: readonly ResolvedMount[];
 }>>;
 export type EffectiveEntryPoint_extra_keys = Expect<Equal<Exclude<keyof EffectiveEntryPoint, keyof EntryPointFact>, 'file' | 'via' | 'guardsInferred'>>;
+
+/* ── the ONE stat model (PRD 41 §B2): the HashCache port and the rows hosts back it with ─────────────────────── */
+export type StatRow_keys = Expect<Equal<keyof StatRow, 'path' | 'size' | 'mtimeNs' | 'fileId' | 'hash' | 'gitBlob'>>;
+export type StatRow_required = Expect<Equal<Pick<StatRow, 'path' | 'size' | 'mtimeNs' | 'hash'>, { path: string; size: number; mtimeNs: bigint; hash: string }>>;
+export type StatRow_fileId_is_optional = Expect<Equal<IsOptional<StatRow, 'fileId'>, true>>;
+export type StatRow_fileId = Expect<Equal<StatRow['fileId'], bigint | undefined>>;
+export type StatRow_gitBlob_is_optional = Expect<Equal<IsOptional<StatRow, 'gitBlob'>, true>>;
+export type StatRow_gitBlob = Expect<Equal<StatRow['gitBlob'], string | undefined>>;
+export type StatSet_shape = Expect<Equal<StatSet, { rows: ReadonlyMap<string, StatRow>; writtenAtNs?: bigint; stale?: true }>>;
+export type StatDelta_shape = Expect<Equal<StatDelta, {
+    rule: string; upserts: readonly StatRow[]; deletes: readonly string[]; writtenAtNs?: bigint; replace?: true;
+}>>;
+export type StatDelta_writtenAtNs_is_optional = Expect<Equal<IsOptional<StatDelta, 'writtenAtNs'>, true>>;
+export type StatDelta_replace_is_optional = Expect<Equal<IsOptional<StatDelta, 'replace'>, true>>;
+export type GitHints_shape = Expect<Equal<GitHints, { blobs: ReadonlyMap<string, string>; takenAtNs: bigint }>>;
+export type FileStat_shape = Expect<Equal<FileStat, { size: number; mtimeNs: bigint; fileId?: bigint }>>;
+export type HashCache_shape = Expect<Equal<HashCache, {
+    load(rootId: string, rule: string): Promise<StatSet>;
+    save(rootId: string, delta: StatDelta): Promise<void>;
+    drop?(rootId: string): Promise<void>;
+    sizeOf?(rootId: string, path: string): number | undefined;
+}>>;
+export type HashCache_optional_methods = Expect<Equal<[IsOptional<HashCache, 'drop'>, IsOptional<HashCache, 'sizeOf'>, IsOptional<HashCache, 'load'>], [true, true, false]>>;
+export type reusedHash_signature = Expect<Equal<
+    typeof reusedHash, (st: FileStat, row: StatRow | undefined, set: StatSet, hint: string | undefined, hintsTakenAtNs?: bigint) => string | undefined
+>>;
+export type isRacy_signature = Expect<Equal<typeof isRacy, (mtimeNs: bigint, refNs: bigint | undefined) => boolean>>;
+export type msToNs_signature = Expect<Equal<typeof msToNs, (ms: number) => bigint>>;
 
 /* ── working transcript: the in-run cut (chat #128305) ──────────────────────────────────────────────────────── */
 // `windowed` keeps its signature (brain-embedded's fallback window and read-cache check call it); the cut is inside it.
