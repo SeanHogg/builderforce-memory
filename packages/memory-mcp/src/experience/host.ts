@@ -50,11 +50,11 @@ export interface ExperienceHost {
     modelVersion(): Promise<string | null>;
 }
 
-type HostFs = SharedFileFs & {
+export type HostFs = SharedFileFs & {
     mkdirSync(path: string, opts: { recursive: boolean }): void;
     rmSync(path: string, opts: { recursive: boolean; force: boolean }): void;
 };
-type HostPath = { dirname(p: string): string; join(...p: string[]): string };
+export type HostPath = { dirname(p: string): string; join(...p: string[]): string };
 
 export interface ExperienceHostOptions {
     env?: Record<string, string | undefined>;
@@ -70,44 +70,71 @@ export async function createExperienceHost(opts: ExperienceHostOptions): Promise
     const env = opts.env ?? process.env;
     if (env[EXPERIENCE_ENV] !== "1") return null;
     try {
-        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<
-            ExperienceEngine & {
-                InMemoryExperienceStore: new (
-                    initial?: ExperienceSnapshot,
-                    onChange?: (s: ExperienceSnapshot) => void,
-                ) => InMemoryExperienceStore;
-                parseSnapshot: (raw: unknown) => ExperienceSnapshot;
-            }
-        >;
-        if (!engine?.InMemoryExperienceStore || !engine.parseSnapshot || !engine.trainOnce || !engine.adaptPackage) return null;
-
-        const fs = (await dynamicImport("node:fs")) as HostFs;
-        const path = (await dynamicImport("node:path")) as HostPath;
-        const dir = path.dirname(opts.memoryFile);
-        const file = path.join(dir, "experience.json");
-        const episodesDir = path.join(dir, "episodes");
-        fs.mkdirSync(episodesDir, { recursive: true });
-
-        const shared = new SharedJsonFile(file, fs);
-        const inner = new engine.InMemoryExperienceStore(undefined, (s) => shared.write(JSON.stringify(s, null, 2)));
-        const store = new FileExperienceStore(inner, shared, engine.parseSnapshot, {
-            remove: (id) => fs.rmSync(path.join(episodesDir, id), { recursive: true, force: true }),
-        });
-        const modelFile = env[MODEL_FILE_ENV] || undefined;
-        const tokenizerFile = env[TOKENIZER_FILE_ENV] || undefined;
-        const loadModel = async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile) : null);
-        const modelVersion = async () => (modelFile ? readEvermindVersion(modelFile) : null);
-        return {
-            store,
-            engine: engine as ExperienceEngine,
+        return await openExperienceHost({
             memoryFile: opts.memoryFile,
-            file,
-            episodesDir,
-            modelFile,
-            loadModel,
-            modelVersion,
-        };
+            modelFile: env[MODEL_FILE_ENV] || undefined,
+            tokenizerFile: env[TOKENIZER_FILE_ENV] || undefined,
+        });
     } catch {
         return null;
     }
+}
+
+export interface OpenExperienceHostOptions {
+    /** The memory snapshot in effect — experience lives beside it. */
+    memoryFile: string;
+    /** The private model experience trains, when one is configured. */
+    modelFile?: string;
+    tokenizerFile?: string;
+    /** Node's `fs` — defaults to the real one; injectable for hosts that supply their own. */
+    fs?: HostFs;
+    /** Node's `path` — defaults to the real one. */
+    path?: HostPath;
+}
+
+/**
+ * The experience host with no env gate: the ONE construction both the env-gated MCP
+ * path ({@link createExperienceHost}) and in-process callers use. Rejects (never
+ * returns null) when the optional engine peer is missing or too old, so a caller
+ * learns why.
+ */
+export async function openExperienceHost(opts: OpenExperienceHostOptions): Promise<ExperienceHost> {
+    const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<
+        ExperienceEngine & {
+            InMemoryExperienceStore: new (
+                initial?: ExperienceSnapshot,
+                onChange?: (s: ExperienceSnapshot) => void,
+            ) => InMemoryExperienceStore;
+            parseSnapshot: (raw: unknown) => ExperienceSnapshot;
+        }
+    >;
+    if (!engine?.InMemoryExperienceStore || !engine.parseSnapshot || !engine.trainOnce || !engine.adaptPackage) {
+        throw new Error("Experience needs @seanhogg/builderforce-memory-engine (a version with Train Once and adaptation).");
+    }
+
+    const fs = opts.fs ?? ((await dynamicImport("node:fs")) as HostFs);
+    const path = opts.path ?? ((await dynamicImport("node:path")) as HostPath);
+    const dir = path.dirname(opts.memoryFile);
+    const file = path.join(dir, "experience.json");
+    const episodesDir = path.join(dir, "episodes");
+    fs.mkdirSync(episodesDir, { recursive: true });
+
+    const shared = new SharedJsonFile(file, fs);
+    const inner = new engine.InMemoryExperienceStore(undefined, (s) => shared.write(JSON.stringify(s, null, 2)));
+    const store = new FileExperienceStore(inner, shared, engine.parseSnapshot, {
+        remove: (id) => fs.rmSync(path.join(episodesDir, id), { recursive: true, force: true }),
+    });
+    const { modelFile, tokenizerFile } = opts;
+    const loadModel = async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile) : null);
+    const modelVersion = async () => (modelFile ? readEvermindVersion(modelFile) : null);
+    return {
+        store,
+        engine: engine as ExperienceEngine,
+        memoryFile: opts.memoryFile,
+        file,
+        episodesDir,
+        modelFile,
+        loadModel,
+        modelVersion,
+    };
 }

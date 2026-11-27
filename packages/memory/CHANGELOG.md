@@ -1,5 +1,15 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.88
+
+### Added — `@seanhogg/builderforce-memory-mcp/experience`
+
+- A new subpath export lets a host run Teach-once skills, routines and the run audit trail in-process. It needs no MCP server and no `BUILDERFORCE_MEMORY_EXPERIENCE` env. It exports:
+  - `openExperienceHost`, which rejects when the engine peer is missing. The root `createExperienceHost` still returns null.
+  - `saveEpisode`, `compileSkill`, `scheduleSkill`, `skillsDue`, `startRun`, `stepRun` and `finishRun`.
+  - `asEpisode`, `FileExperienceStore` and `trainExperience`.
+- The MCP experience tools now call the same operations. Their output is unchanged.
+
 ## 2026.10.87
 
 ### Changed — ONE stat model (`./knowledge`)

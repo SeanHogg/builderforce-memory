@@ -9,10 +9,20 @@
  */
 
 import { z } from "zod";
-import type { Episode, ReviewEdits, Run, RunStatus, SkillRoutine, StepOutcome } from "@seanhogg/builderforce-memory-engine";
+import type { ReviewEdits, RunStatus, SkillRoutine, StepOutcome } from "@seanhogg/builderforce-memory-engine";
 import { fail, okJson, type MemoryTool, type ToolResult } from "../tool-core.js";
-import { isSafeExperienceId } from "./file-store.js";
 import type { ExperienceHost } from "./host.js";
+import {
+    compileSkill,
+    finishRun,
+    localOffsetMinutes,
+    saveEpisode,
+    scheduleSkill,
+    skillsDue,
+    startRun,
+    stepRun,
+    type OpResult,
+} from "./operations.js";
 import { CURATION_UNSUPPORTED, experienceIndex, pendingDocuments, trainExperience } from "./train.js";
 
 const DEFAULT_RUNS = 50;
@@ -34,62 +44,7 @@ const scheduleShape = z.union([
     z.object({ every: z.literal("day"), hour: z.number().int().min(0).max(23), minute: z.number().int().min(0).max(59) }),
 ]);
 
-const ACTION_KINDS = new Set(["click", "setValue", "keys"]);
-
-const isTarget = (t: unknown): boolean =>
-    !!t && typeof t === "object" && typeof (t as { name?: unknown }).name === "string";
-
-/**
- * Why one recorded action is unusable, or null. Every field the corpus and replay read
- * is checked here, so one malformed step is refused at save time instead of making
- * every later `experience_train` throw.
- */
-function actionProblem(a: Record<string, unknown>): string | null {
-    switch (a["kind"]) {
-        case "click":
-            return isTarget(a["target"]) ? null : "a click needs a target element";
-        case "setValue":
-            if (!isTarget(a["target"])) return "a setValue needs a target element";
-            return typeof a["value"] === "string" ? null : "a setValue needs a string value (empty for a secret)";
-        case "keys":
-            if (typeof a["keys"] !== "string" || !a["keys"]) return "a keys action needs its keys";
-            return a["target"] == null || isTarget(a["target"]) ? null : "a keys target must be an element";
-        default:
-            return "the action kind must be click, setValue or keys";
-    }
-}
-
-/** Accept a recorder's episode, or say what is wrong with it. */
-export function asEpisode(raw: unknown, newId: () => string): Episode | string {
-    const e = raw as Partial<Episode> | null;
-    if (!e || typeof e !== "object") return "episode must be an object.";
-    if (typeof e.name !== "string" || !e.name.trim()) return "episode.name is required.";
-    if (typeof e.program !== "string" || !e.program) return "episode.program is required.";
-    if (!Array.isArray(e.steps)) return "episode.steps must be an array.";
-    for (const [i, s] of e.steps.entries()) {
-        if (!s || typeof s.id !== "string" || !s.action || !ACTION_KINDS.has(s.action.kind)) {
-            return `episode.steps[${i}] needs an id and an action of kind click, setValue or keys.`;
-        }
-        const problem = actionProblem(s.action as unknown as Record<string, unknown>);
-        if (problem) return `episode.steps[${i}]: ${problem}.`;
-    }
-    // A secret field records THAT it was filled, never the value: whatever a recorder
-    // sent, a secret value is not stored (and so never returned by episode_get).
-    const steps = e.steps.map((s) =>
-        s.action.kind === "setValue" && s.action.secret ? { ...s, action: { ...s.action, value: "" } } : s,
-    );
-    const id = typeof e.id === "string" && e.id ? e.id : newId();
-    if (!isSafeExperienceId(id)) return "episode.id may use letters, digits, '-' and '_' only.";
-    return {
-        id,
-        name: e.name.trim(),
-        program: e.program,
-        args: Array.isArray(e.args) ? e.args.map(String) : [],
-        startedAt: typeof e.startedAt === "number" ? e.startedAt : Date.now(),
-        endedAt: typeof e.endedAt === "number" ? e.endedAt : null,
-        steps,
-    };
-}
+const fromOp = <T>(r: OpResult<T>): ToolResult => (r.ok ? okJson(r.value) : fail(r.error));
 
 /** A tool whose thrown errors come back as tool errors named after it. */
 function tool(
@@ -115,11 +70,6 @@ function tool(
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
-
-/** This machine's time zone as minutes east of UTC — what the engine's routines expect. */
-function localOffsetMinutes(): number {
-    return -new Date().getTimezoneOffset();
-}
 
 export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
     const { store, engine } = host;
@@ -165,12 +115,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
             "write",
             "Save a recorded demonstration (an episode: a program, and the UI steps a person took in it). Returns its id. Screenshots belong in <episodesDir>/<id>/.",
             { episode: z.record(z.unknown()).describe("The episode, in the engine's Episode shape.") },
-            async (args) => {
-                const episode = asEpisode(args["episode"], engine.newExperienceId);
-                if (typeof episode === "string") return fail(episode);
-                await store.putEpisode(episode);
-                return okJson({ id: episode.id });
-            },
+            async (args) => fromOp(await saveEpisode(host, args["episode"])),
         ),
         tool("episode_list", "read", "List recorded demonstrations, newest first (summaries only).", {}, async () =>
             okJson(await store.listEpisodes()),
@@ -198,14 +143,8 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         ),
     ];
 
-    /** Train Once over a stored episode — ONE path for preview (no save) and compile (save). */
-    async function compile(args: Record<string, unknown>, save: boolean): Promise<ToolResult> {
-        const episode = await store.getEpisode(str(args["episodeId"]));
-        if (!episode) return fail(`No episode "${str(args["episodeId"])}".`);
-        const skill = engine.trainOnce(episode, (args["edits"] as ReviewEdits | undefined) ?? {});
-        if (save) await store.putSkill(skill);
-        return okJson(skill);
-    }
+    const compile = async (args: Record<string, unknown>, save: boolean): Promise<ToolResult> =>
+        fromOp(await compileSkill(host, str(args["episodeId"]), args["edits"] as ReviewEdits | undefined, save));
 
     const skillTools = [
         tool(
@@ -244,18 +183,10 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                     })
                     .nullable(),
             },
-            async (args) => {
-                const skill = await store.getSkill(str(args["id"]));
-                if (!skill) return fail(`No skill "${str(args["id"])}".`);
-                const r = args["routine"] as Omit<SkillRoutine, "lastRunAt"> | null;
-                // Routine values are stored in plain JSON, so a secret parameter's value is
-                // never kept here — secrets come from the host's vault at run time.
-                const secret = new Set(skill.params.filter((p) => p.secret).map((p) => p.name));
-                const values = r ? Object.fromEntries(Object.entries(r.values).filter(([k]) => !secret.has(k))) : {};
-                skill.routine = r ? { ...r, values, lastRunAt: skill.routine?.lastRunAt ?? null } : null;
-                await store.putSkill(skill);
-                return okJson(skill);
-            },
+            async (args) =>
+                fromOp(
+                    await scheduleSkill(host, str(args["id"]), args["routine"] as Omit<SkillRoutine, "lastRunAt"> | null),
+                ),
         ),
         tool(
             "skills_due",
@@ -272,8 +203,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
             },
             async (args) => {
                 const tz = args["tzOffsetMinutes"];
-                const offset = typeof tz === "number" ? tz : localOffsetMinutes();
-                return okJson(engine.dueSkills(await store.listSkills(), Date.now(), offset));
+                return okJson(await skillsDue(host, typeof tz === "number" ? tz : undefined));
             },
         ),
     ];
@@ -284,26 +214,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
             "write",
             "Start a run of a skill. A routine run also marks the routine as run, so it is not due again until its next slot.",
             { skillId: z.string(), trigger: z.enum(["manual", "routine"]) },
-            async (args) => {
-                const skill = await store.getSkill(str(args["skillId"]));
-                if (!skill) return fail(`No skill "${str(args["skillId"])}".`);
-                const now = Date.now();
-                const run: Run = {
-                    id: engine.newExperienceId(),
-                    skillId: skill.id,
-                    skillName: skill.name,
-                    trigger: str(args["trigger"]),
-                    status: "running",
-                    startedAt: now,
-                    steps: [],
-                };
-                await store.putRun(run);
-                if (run.trigger === "routine" && skill.routine) {
-                    skill.routine.lastRunAt = now;
-                    await store.putSkill(skill);
-                }
-                return okJson(run);
-            },
+            async (args) => fromOp(await startRun(host, str(args["skillId"]), str(args["trigger"]))),
         ),
         tool(
             "run_step",
@@ -316,31 +227,31 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
                 outcome: z.enum(["ok", "fallback", "failed", "approved", "denied"]),
                 detail: z.string().nullable().optional(),
             },
-            async (args) => {
-                const logged = await store.appendRunStep(str(args["runId"]), {
-                    idx: Number(args["idx"]),
-                    stepId: str(args["stepId"]),
-                    outcome: args["outcome"] as StepOutcome,
-                    detail: typeof args["detail"] === "string" ? args["detail"] : null,
-                    at: Date.now(),
-                });
-                return logged ? okJson({ logged }) : fail(`No run "${str(args["runId"])}".`);
-            },
+            async (args) =>
+                fromOp(
+                    await stepRun(host, {
+                        runId: str(args["runId"]),
+                        idx: Number(args["idx"]),
+                        stepId: str(args["stepId"]),
+                        outcome: args["outcome"] as StepOutcome,
+                        detail: typeof args["detail"] === "string" ? args["detail"] : null,
+                    }),
+                ),
         ),
         tool(
             "run_finish",
             "write",
             "Close a run with its final status.",
             { runId: z.string(), status: z.enum(["succeeded", "failed", "stopped", "denied"]), error: z.string().nullable().optional() },
-            async (args) => {
-                const run = await store.getRun(str(args["runId"]));
-                if (!run) return fail(`No run "${str(args["runId"])}".`);
-                run.status = args["status"] as RunStatus;
-                run.endedAt = Date.now();
-                run.error = typeof args["error"] === "string" ? args["error"] : null;
-                await store.putRun(run);
-                return okJson(run);
-            },
+            async (args) =>
+                fromOp(
+                    await finishRun(
+                        host,
+                        str(args["runId"]),
+                        args["status"] as RunStatus,
+                        typeof args["error"] === "string" ? args["error"] : null,
+                    ),
+                ),
         ),
         tool(
             "run_list",
