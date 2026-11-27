@@ -182,6 +182,16 @@ export interface LocalBackendOptions {
      */
     runtime?: unknown;
     /**
+     * The `@seanhogg/builderforce-memory` module, when the host already holds it (a
+     * bundler host passes its static import). Skips the indirect import a bundler
+     * cannot see.
+     */
+    memory?: typeof import("@seanhogg/builderforce-memory");
+    /** An IndexedDB factory to use as-is, so `fake-indexeddb` is neither imported nor needed. */
+    idbFactory?: unknown;
+    /** The `@seanhogg/builderforce-memory-engine` module for the semantic-recall embedder, injected the same way. */
+    engine?: import("../embedding/evermind-embedder.js").EvermindEmbedderOptions["engine"];
+    /**
      * Absolute path to a JSON file that mirrors the store to disk. Without it the
      * store is purely in-memory (fake-indexeddb) and evaporates when the process
      * exits — fine for a long-lived server, fatal for a per-session subprocess
@@ -407,14 +417,18 @@ class DiskPersistedBackend implements MemoryBackend {
  * wants a custom backend (or the HTTP thin-client) never has to install them.
  */
 export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = {}): Promise<MemoryBackend> {
-    const memoryMod = (await dynamicImport("@seanhogg/builderforce-memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike };
+    const memoryMod =
+        (opts.memory as { MemoryStore: new (o: unknown) => MemoryStoreLike } | undefined) ??
+        ((await dynamicImport("@seanhogg/builderforce-memory")) as { MemoryStore: new (o: unknown) => MemoryStoreLike });
     const { MemoryStore } = memoryMod;
 
     // IndexedDB shim for Node. In the browser the global is used automatically.
-    let idbFactory: unknown;
+    let idbFactory: unknown = opts.idbFactory;
     try {
-        const fake = (await dynamicImport("fake-indexeddb")) as { IDBFactory: new () => unknown };
-        idbFactory = new fake.IDBFactory();
+        if (idbFactory === undefined) {
+            const fake = (await dynamicImport("fake-indexeddb")) as { IDBFactory: new () => unknown };
+            idbFactory = new fake.IDBFactory();
+        }
     } catch {
         // Browser or a host that provides global indexedDB — MemoryStore handles it.
     }
@@ -432,6 +446,7 @@ export async function createLocalMemoryStoreBackend(opts: LocalBackendOptions = 
         runtime =
             (await embed.createRecallEmbedder({
                 memoryFile: opts.persistFile ?? opts.dbName ?? "",
+                engine: opts.engine,
             })) ?? undefined;
     }
 

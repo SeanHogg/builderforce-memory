@@ -90,6 +90,12 @@ export interface OpenExperienceHostOptions {
     fs?: HostFs;
     /** Node's `path` — defaults to the real one. */
     path?: HostPath;
+    /**
+     * The engine module, when the host already holds it (a bundler host passes its
+     * static `import * as engine`). Skips the indirect import a bundler cannot see.
+     * It is validated exactly like a dynamically loaded one.
+     */
+    engine?: ExperienceEngine;
 }
 
 /**
@@ -99,7 +105,7 @@ export interface OpenExperienceHostOptions {
  * learns why.
  */
 export async function openExperienceHost(opts: OpenExperienceHostOptions): Promise<ExperienceHost> {
-    const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<
+    type EngineModule = Partial<
         ExperienceEngine & {
             InMemoryExperienceStore: new (
                 initial?: ExperienceSnapshot,
@@ -108,6 +114,9 @@ export async function openExperienceHost(opts: OpenExperienceHostOptions): Promi
             parseSnapshot: (raw: unknown) => ExperienceSnapshot;
         }
     >;
+    const engine: EngineModule =
+        (opts.engine as EngineModule | undefined) ??
+        ((await dynamicImport("@seanhogg/builderforce-memory-engine")) as EngineModule);
     if (!engine?.InMemoryExperienceStore || !engine.parseSnapshot || !engine.trainOnce || !engine.adaptPackage) {
         throw new Error("Experience needs @seanhogg/builderforce-memory-engine (a version with Train Once and adaptation).");
     }
@@ -125,8 +134,8 @@ export async function openExperienceHost(opts: OpenExperienceHostOptions): Promi
         remove: (id) => fs.rmSync(path.join(episodesDir, id), { recursive: true, force: true }),
     });
     const { modelFile, tokenizerFile } = opts;
-    const loadModel = async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile) : null);
-    const modelVersion = async () => (modelFile ? readEvermindVersion(modelFile) : null);
+    const loadModel = async () => (modelFile ? loadEvermindPackage(modelFile, tokenizerFile, opts.engine as never) : null);
+    const modelVersion = async () => (modelFile ? readEvermindVersion(modelFile, opts.engine as never) : null);
     return {
         store,
         engine: engine as ExperienceEngine,

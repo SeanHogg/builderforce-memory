@@ -1,5 +1,14 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.89
+
+### Added — `@seanhogg/builderforce-memory-mcp`
+
+- A bundler host can now pass the modules it imported statically, because the indirect imports esbuild cannot see no longer resolve in a VSIX. New optional inputs:
+  - `engine` on `openExperienceHost`, `createEvermindEmbedder` and `createRecallEmbedder`. It is also threaded into `host.loadModel()` and `host.modelVersion()`.
+  - `memory`, `idbFactory` and `engine` on `createLocalMemoryStoreBackend`.
+- With none supplied, behaviour is unchanged.
+
 ## 2026.10.88
 
 ### Added — `@seanhogg/builderforce-memory-mcp/experience`

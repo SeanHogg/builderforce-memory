@@ -22,7 +22,7 @@
  */
 
 import { dynamicImport } from "../dynamic-import.js";
-import { loadEvermindPackage } from "../model/evermind-package.js";
+import { loadEvermindPackage, type PackageEngine } from "../model/evermind-package.js";
 
 /** The seam `MemoryStore.recallRanked(query, k, runtime)` consumes. */
 export interface TextEmbedderLike {
@@ -67,6 +67,11 @@ export interface EvermindEmbedderOptions {
     maxEntries?: number;
     /** Debounce before a dirty cache is written back, ms. Default 500. */
     flushDelayMs?: number;
+    /**
+     * The engine module, when the host already holds it (a bundler host passes its
+     * static import). Skips the indirect import a bundler cannot see.
+     */
+    engine?: Partial<PackageEngine> & { EvermindTextEmbedder?: new (model: unknown, codec: unknown) => TextEmbedderLike };
 }
 
 type FsLike = {
@@ -100,11 +105,13 @@ export async function createEvermindEmbedder(
     opts: EvermindEmbedderOptions,
 ): Promise<PersistentTextEmbedder | null> {
     try {
-        const loaded = await loadEvermindPackage(opts.modelFile, opts.tokenizerFile);
+        const loaded = await loadEvermindPackage(opts.modelFile, opts.tokenizerFile, opts.engine);
         if (!loaded) return null;
-        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as {
-            EvermindTextEmbedder?: new (model: unknown, codec: unknown) => TextEmbedderLike;
-        };
+        const engine =
+            opts.engine ??
+            ((await dynamicImport("@seanhogg/builderforce-memory-engine")) as {
+                EvermindTextEmbedder?: new (model: unknown, codec: unknown) => TextEmbedderLike;
+            });
         if (!engine?.EvermindTextEmbedder) return null;
         const inner = new engine.EvermindTextEmbedder(loaded.pkg.loadLM(), loaded.codec);
         return new CachedTextEmbedder(inner, loaded.fs, opts);

@@ -24,7 +24,7 @@ export interface EvermindPackageLike {
 }
 
 /** Minimal structural view of the optional engine package. */
-interface PackageEngine {
+export interface PackageEngine {
     EvermindModelPackage: {
         fromBlob(blob: ArrayBuffer): EvermindPackageLike;
         manifestEnd(header: ArrayBuffer): number;
@@ -61,11 +61,11 @@ type PrefixFs = {
  * as it is now (a model restored from `.prev` keeps the size and, on Windows, the
  * modification time of the one it replaces). Null when there is no readable package.
  */
-export async function readEvermindVersion(modelFile: string): Promise<string | null> {
+export async function readEvermindVersion(modelFile: string, injected?: Partial<PackageEngine>): Promise<string | null> {
     let fd: number | undefined;
     const fs = (await dynamicImport("node:fs")) as PrefixFs;
     try {
-        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<PackageEngine>;
+        const engine = injected ?? ((await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<PackageEngine>);
         if (!engine?.EvermindModelPackage || !engine.PACKAGE_HEADER_BYTES) return null;
         fd = fs.openSync(modelFile, "r");
         const read = (n: number) => {
@@ -103,9 +103,13 @@ function loadCodec(engine: PackageEngine, fs: ModelFs, file: string): TextCodec 
  * at package time, so it cannot be the wrong vocabulary — which a separate file
  * silently can be), then `tokenizerFile`, then a sibling `<modelFile>.tokenizer.json`.
  */
-export async function loadEvermindPackage(modelFile: string, tokenizerFile?: string): Promise<LoadedEvermind | null> {
+export async function loadEvermindPackage(
+    modelFile: string,
+    tokenizerFile?: string,
+    injected?: Partial<PackageEngine>,
+): Promise<LoadedEvermind | null> {
     try {
-        const engine = (await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<PackageEngine>;
+        const engine = injected ?? ((await dynamicImport("@seanhogg/builderforce-memory-engine")) as Partial<PackageEngine>);
         if (!engine?.EvermindModelPackage || !engine.BPETokenizer) return null;
 
         const fs = (await dynamicImport("node:fs")) as ModelFs;

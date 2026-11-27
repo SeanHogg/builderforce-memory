@@ -7,7 +7,7 @@
  * differently from one another.
  */
 
-import { createEvermindEmbedder, type PersistentTextEmbedder } from "./evermind-embedder.js";
+import { createEvermindEmbedder, type EvermindEmbedderOptions, type PersistentTextEmbedder } from "./evermind-embedder.js";
 
 export { createEvermindEmbedder, CachedTextEmbedder } from "./evermind-embedder.js";
 export type { EvermindEmbedderOptions, PersistentTextEmbedder, TextEmbedderLike } from "./evermind-embedder.js";
@@ -33,6 +33,8 @@ export interface RecallEmbedderEnv {
     env?: Record<string, string | undefined>;
     /** The snapshot path in effect — used to site the default vector cache. */
     memoryFile: string;
+    /** The engine module, when the host already holds it — see {@link EvermindEmbedderOptions.engine}. */
+    engine?: EvermindEmbedderOptions["engine"];
 }
 
 /**
@@ -49,6 +51,7 @@ export async function createRecallEmbedder(opts: RecallEmbedderEnv): Promise<Per
     return createEvermindEmbedder({
         modelFile,
         tokenizerFile: env[TOKENIZER_FILE_ENV],
+        engine: opts.engine,
         cacheFile: env[VECTOR_CACHE_ENV] || defaultVectorCacheFile(opts.memoryFile),
     });
 }

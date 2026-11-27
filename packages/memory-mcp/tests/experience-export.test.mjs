@@ -65,6 +65,35 @@ test("the factory needs no env and returns a working host beside the memory file
   assert.equal(typeof trainExperience, "function");
 });
 
+test("an injected engine is used instead of the dynamic import", async () => {
+  const real = await import("@seanhogg/builderforce-memory-engine");
+  const calls = [];
+  const engine = {
+    trainOnce: real.trainOnce,
+    dueSkills: real.dueSkills,
+    newExperienceId: real.newExperienceId,
+    experienceOverview: real.experienceOverview,
+    adaptPackage: real.adaptPackage,
+    parseSnapshot: real.parseSnapshot,
+    InMemoryExperienceStore: class extends real.InMemoryExperienceStore {
+      constructor(...args) {
+        calls.push("InMemoryExperienceStore");
+        super(...args);
+      }
+    },
+  };
+  const dir = tmpDir();
+  const host = await openExperienceHost({ memoryFile: path.join(dir, "memory.json"), engine });
+  assert.equal(host.engine, engine);
+  assert.deepEqual(calls, ["InMemoryExperienceStore"]);
+  assert.ok(host.store instanceof FileExperienceStore);
+});
+
+test("an injected engine missing capabilities is rejected like a loaded one", async () => {
+  const dir = tmpDir();
+  await assert.rejects(openExperienceHost({ memoryFile: path.join(dir, "memory.json"), engine: {} }), /Train Once and adaptation/);
+});
+
 test("a modelFile that does not exist still opens, and loadModel resolves null", async () => {
   const dir = tmpDir();
   const modelFile = path.join(dir, "missing.evermind");
