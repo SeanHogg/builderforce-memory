@@ -233,9 +233,10 @@ export const batchedHostStore = {
 export type LocalSnapshotStore_is_a_KnowledgeStore = Expect<Equal<LocalSnapshotStore extends KnowledgeStore ? true : false, true>>;
 export type LocalSnapshotStore_public_methods = Expect<Equal<
     keyof LocalSnapshotStore,
-    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'preloadExtracted' | 'putExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck' | 'hasRecheck'
+    'batched' | 'scopes' | 'facts' | 'relations' | 'write' | 'markStale' | 'getExtracted' | 'extractedEntries' | 'preloadExtracted' | 'releaseExtracted' | 'putExtracted' | 'markRecheck' | 'recheckHashes' | 'clearRecheck' | 'hasRecheck'
 >>;
 export type LocalSnapshotStore_extractedEntries = Expect<Equal<LocalSnapshotStore['extractedEntries'], () => Promise<Record<string, Extracted[]>>>>;
+export type LocalSnapshotStore_releaseExtracted = Expect<Equal<LocalSnapshotStore['releaseExtracted'], () => Promise<boolean>>>;
 export type LocalSnapshotStore_constructor = Expect<Equal<
     ConstructorParameters<typeof LocalSnapshotStore>, [persistence: SnapshotPersistence, opts?: LocalSnapshotStoreOptions]
 >>;
