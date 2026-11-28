@@ -3,6 +3,7 @@
  */
 
 export type SessionErrorCode =
+    | 'ASSET_UNAVAILABLE_OFFLINE'
     | 'GPU_UNAVAILABLE'          // navigator.gpu not present or adapter request failed
     | 'TOKENIZER_LOAD_FAILED'    // vocab.json or merges.txt could not be fetched/parsed
     | 'CHECKPOINT_FETCH_FAILED'  // checkpoint URL returned non-OK response after retries

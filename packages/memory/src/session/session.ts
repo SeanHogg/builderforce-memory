@@ -20,6 +20,7 @@ import {
 } from '@seanhogg/builderforce-memory-engine';
 
 import { SessionError } from './errors.js';
+import { resolveSessionAsset, type SessionAssetPolicy } from './assets.js';
 import type { Tokenizer } from './tokenizer.js';
 
 // ── Opinionated defaults ───────────────────────────────────────────────────────
@@ -52,6 +53,8 @@ import { tokenStream } from './streaming.js';
 // ── Public type definitions ────────────────────────────────────────────────────
 
 export interface MambaSessionOptions {
+    /** Installed tokenizer and checkpoint assets and the host's live permission to download missing ones. */
+    assetPolicy?: SessionAssetPolicy;
     /** URL to a .bin checkpoint file. Optional — model starts with random weights if omitted. */
     checkpointUrl?  : string;
     /**
@@ -250,6 +253,7 @@ export class MambaSession {
     private _destroyed  = false;
     private _gpuMode    : GpuMode = 'webgpu';
     private _idbFactory : IDBFactory | undefined;
+    private readonly _assetPolicy: SessionAssetPolicy | undefined;
 
     /**
      * Whether the session is running on a real GPU ('webgpu') or a software
@@ -266,6 +270,7 @@ export class MambaSession {
         name        : string,
         gpuMode     : GpuMode = 'webgpu',
         idbFactory? : IDBFactory,
+        assetPolicy?: SessionAssetPolicy,
     ) {
         this._device      = device;
         this._tokenizer   = tokenizer;
@@ -274,6 +279,7 @@ export class MambaSession {
         this._name        = name;
         this._gpuMode     = gpuMode;
         this._idbFactory  = idbFactory;
+        this._assetPolicy = assetPolicy;
     }
 
     // ── Static factory ─────────────────────────────────────────────────────────
@@ -378,9 +384,14 @@ export class MambaSession {
                 } else {
                     const vocabUrl  = options.vocabUrl  ?? DEFAULT_VOCAB_URL;
                     const mergesUrl = options.mergesUrl ?? DEFAULT_MERGES_URL;
-                    await tokenizer.load(vocabUrl, mergesUrl);
+                    const vocab = await resolveSessionAsset('tokenizer-vocab', vocabUrl, options.assetPolicy);
+                    const vocabObject = await vocab.json() as Record<string, number>;
+                    const merges = await resolveSessionAsset('tokenizer-merges', mergesUrl, options.assetPolicy);
+                    const mergeLines = (await merges.text()).split('\n').filter((line) => line && !line.startsWith('#'));
+                    await tokenizer.load(vocabObject, mergeLines);
                 }
             } catch (err) {
+                if (err instanceof SessionError && err.code === 'ASSET_UNAVAILABLE_OFFLINE') throw err;
                 throw new SessionError(
                     'TOKENIZER_LOAD_FAILED',
                     `Tokenizer failed to load: ${(err as Error).message}`,
@@ -420,13 +431,11 @@ export class MambaSession {
 
             for (let attempt = 0; attempt <= fetchRetries; attempt++) {
                 try {
-                    const res = await fetch(options.checkpointUrl);
-                    if (!res.ok) {
-                        throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                    }
+                    const res = await resolveSessionAsset('checkpoint', options.checkpointUrl, options.assetPolicy);
                     buffer = await res.arrayBuffer();
                     break;
                 } catch (err) {
+                    if (err instanceof SessionError && err.code === 'ASSET_UNAVAILABLE_OFFLINE') throw err;
                     lastErr = err;
                     if (attempt < fetchRetries) {
                         await sleep(RETRY_BASE_DELAY_MS * Math.pow(RETRY_BACKOFF_FACTOR, attempt));
@@ -454,7 +463,7 @@ export class MambaSession {
             emit('weights', 1.0, 'Checkpoint loaded');
         }
 
-        return new MambaSession(device, tokenizer, model, trainer, name, gpuMode, options.idbFactory);
+        return new MambaSession(device, tokenizer, model, trainer, name, gpuMode, options.idbFactory, options.assetPolicy);
     }
 
     // ── Text generation ────────────────────────────────────────────────────────
@@ -681,13 +690,7 @@ export class MambaSession {
                         'load() with storage other than "indexedDB" or "fileSystem" requires a url option.',
                     );
                 }
-                const res = await fetch(url);
-                if (!res.ok) {
-                    throw new SessionError(
-                        'CHECKPOINT_FETCH_FAILED',
-                        `Failed to fetch checkpoint from "${url}": HTTP ${res.status}`,
-                    );
-                }
+                const res = await resolveSessionAsset('checkpoint', url, this._assetPolicy);
                 buffer = await res.arrayBuffer();
             }
         }

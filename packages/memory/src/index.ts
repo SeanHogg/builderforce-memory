@@ -20,6 +20,7 @@
 // ── Session layer ─────────────────────────────────────────────────────────────
 export { MambaSession }              from './session/index.js';
 export { SessionError }              from './session/index.js';
+export type { SessionAssetKind, SessionAssetPolicy } from './session/assets.js';
 export { MODEL_PRESETS, resolveLayerSchedule, resolveModelConfig } from './session/index.js';
 
 export type { SessionErrorCode }     from './session/index.js';
