@@ -152,6 +152,33 @@ describe('expand', () => {
     });
 });
 
+it('improves recall@10 on linked specs whose titles do not share query terms', async () => {
+    const specs = [
+        { id: 'billing-overview', text: 'Invoice reconciliation', keys: ['invoice reconciliation'] },
+        { id: 'ledger-schema', text: 'Double-entry journal data model' },
+        { id: 'retry-policy', text: 'Delivery retry policy', keys: ['delivery retry policy'] },
+        { id: 'attempt-state', text: 'Attempt state machine' },
+    ];
+    const index = createKnowledgeIndex();
+    await index.upsert([...specs, ...makeDocs(30)]);
+    const cases = [
+        { query: 'invoice reconciliation', seed: 'billing-overview', linked: 'ledger-schema' },
+        { query: 'delivery retry policy', seed: 'retry-policy', linked: 'attempt-state' },
+    ];
+    let baseline = 0, expanded = 0;
+    for (const { query, seed, linked } of cases) {
+        const relevant = new Set([seed, linked]);
+        const graph: GraphNeighbours = {
+            neighbours: (id) => id === seed ? [{ id: linked, kind: 'links', weight: 1 }] : [],
+        };
+        const hits = await index.search(query, { k: 10 });
+        baseline += hits.filter((hit) => relevant.has(hit.id)).length / relevant.size;
+        expanded += index.expand(hits, graph).slice(0, 10).filter((hit) => relevant.has(hit.id)).length / relevant.size;
+    }
+    expect(baseline / cases.length).toBe(0.5);
+    expect(expanded / cases.length).toBe(1);
+});
+
 describe('similarPairs', () => {
     it('finds near-duplicates in a deterministic order', async () => {
         const docs = [...makeDocs(300, 41)];
