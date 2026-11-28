@@ -72,6 +72,22 @@ test('an embed() that yields no vector is reported as lexical, not as embedding'
     expect(runtime.embed).toHaveBeenCalledTimes(1);
 });
 
+test('changing the declared embedding fingerprint invalidates cached facts', async () => {
+    const store = freshStore();
+    await store.remember('first', 'dogs');
+    await store.remember('second', 'cats');
+    const runtime = {
+        fingerprint: 'first-space',
+        async embed(text: string) {
+            const matching = this.fingerprint === 'first-space' ? 'dogs' : 'cats';
+            return new Float32Array(text === 'animals' || text === matching ? [1, 0] : [0, 1]);
+        },
+    };
+    expect((await store.recallRanked('animals', 1, runtime)).hits[0]?.entry.key).toBe('first');
+    runtime.fingerprint = 'second-space';
+    expect((await store.recallRanked('animals', 1, runtime)).hits[0]?.entry.key).toBe('second');
+});
+
 test('a mismatched vector cannot contribute dense evidence', async () => {
     const store = freshStore();
     await store.remember('keyword', 'deploy checklist');

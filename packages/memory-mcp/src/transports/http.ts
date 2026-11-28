@@ -10,8 +10,8 @@
  *     tenant's facts.
  *   • `resolveBackend` — a function `(token) => backend` for dynamic tenant
  *     resolution (e.g. a gateway lookup).
- *   • `authToken` — a single shared secret guarding the one positional backend
- *     (single-tenant / reference hosting).
+ *   • `authToken` — a shared secret or its current credential source, which
+ *     guards the single-tenant backend.
  *   • none — open, only valid behind a trusted gateway that already authed.
  *
  * Token comparison is constant-time (hash + timingSafeEqual / hash-keyed lookup),
@@ -37,7 +37,7 @@ export interface HttpHandlerOptions extends McpServerOptions {
      * positional backend. Every request without a matching token is rejected 401.
      * Omit only behind a trusted gateway that has already authenticated the caller.
      */
-    authToken?: string;
+    authToken?: string | (() => string | undefined | Promise<string | undefined>);
     /**
      * Multi-tenant map: bearer token → that tenant's backend. When set, the token
      * selects the backend (namespace isolation) and the positional `backend` is
@@ -104,8 +104,9 @@ export function createMemoryHttpHandler(
             if (!resolved) { send(res, 401, { error: "unauthorized" }); return; }
             rateKey = `t:${hashToken(token)}`;
         } else if (opts.authToken) {
-            // Single shared secret, constant-time compare.
-            if (!token || !timingSafeEqualStr(token, opts.authToken)) {
+            const source = opts.authToken;
+            const current = token && (typeof source === "string" ? source : await Promise.resolve().then(source).catch(() => undefined));
+            if (!token || !current || !timingSafeEqualStr(token, current)) {
                 send(res, 401, { error: "unauthorized" });
                 return;
             }

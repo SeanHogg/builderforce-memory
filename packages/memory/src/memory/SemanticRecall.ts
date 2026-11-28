@@ -26,6 +26,11 @@ export interface SemanticRecallOptions {
     minRelevance: number;
 }
 
+function embedderFingerprint(runtime: SSMRuntimeRef): string | undefined {
+    const fingerprint: unknown = runtime?.fingerprint;
+    return typeof fingerprint === 'string' ? fingerprint : undefined;
+}
+
 interface DenseView {
     byKey: Map<string, MemoryEntry>;
     items: Array<{ id: string; vector: Float32Array }>;
@@ -35,11 +40,13 @@ interface DenseView {
 export class SemanticRecall {
     private readonly _embedCache = new Map<string, Float32Array>();
     private _embedRuntime: unknown = null;
+    private _embedFingerprint: string | undefined;
     private readonly _denseVectors = new Map<string, Float32Array>();
     private _denseIndex: HnswIndex | null = null;
     /** Signature of the fact set the current index was built from. */
     private _denseSig = '';
     private _denseRuntime: unknown = null;
+    private _denseFingerprint: string | undefined;
 
     constructor(private readonly _opts: SemanticRecallOptions) {}
 
@@ -63,11 +70,12 @@ export class SemanticRecall {
     async similar(all: MemoryEntry[], query: string, topK: number, runtime?: SSMRuntimeRef): Promise<ScoredMemory[]> {
         if (all.length === 0) return [];
         if (runtime != null && typeof runtime.embed === 'function') {
-            const queryVec = await this._embed(runtime, query);
+            const fingerprint = embedderFingerprint(runtime);
+            const queryVec = await this._embed(runtime, query, fingerprint);
             if (queryVec) {
                 // EVM-1b: sync the persistent vector store + index (embeds only the
                 // delta), then query it — no per-call re-embed of every fact.
-                const dense = await this._syncDense(runtime, all, queryVec.length);
+                const dense = await this._syncDense(runtime, all, queryVec.length, fingerprint);
                 if (dense) {
                     const hits = dense.index
                         ? dense.index.search(queryVec, topK)
@@ -100,10 +108,11 @@ export class SemanticRecall {
     ): Promise<RankedRecall> {
         if (all.length === 0) return { hits: [], method: 'lexical' };
         const canEmbed = runtime != null && typeof runtime.embed === 'function';
-        const queryVec = canEmbed ? (await this._embed(runtime, query)) ?? undefined : undefined;
+        const fingerprint = embedderFingerprint(runtime);
+        const queryVec = canEmbed ? await this._embed(runtime, query, fingerprint) ?? undefined : undefined;
         const candidates: RetrievalCandidate[] = [];
         for (const entry of all) {
-            const embedded = queryVec ? await this._embed(runtime, entry.content) : null;
+            const embedded = queryVec ? await this._embed(runtime, entry.content, fingerprint) : null;
             const vector = embedded && embedded.length === queryVec?.length ? embedded : undefined;
             // Importance + write time ride along so the caller can turn on the
             // ranking signals (HybridRetrieveOptions.importanceWeight /
@@ -138,10 +147,12 @@ export class SemanticRecall {
      * `null` (never throws) when embedding is unavailable, so callers fall back
      * to lexical similarity.
      */
-    private async _embed(runtime: SSMRuntimeRef, text: string): Promise<Float32Array | null> {
-        if (runtime !== this._embedRuntime) {
+    private async _embed(runtime: SSMRuntimeRef, text: string, fingerprint: string | undefined): Promise<Float32Array | null> {
+        if (embedderFingerprint(runtime) !== fingerprint) return null;
+        if (runtime !== this._embedRuntime || fingerprint !== this._embedFingerprint) {
             this._embedCache.clear();
             this._embedRuntime = runtime;
+            this._embedFingerprint = fingerprint;
         }
         const cached = this._embedCache.get(text);
         if (cached) {
@@ -158,6 +169,7 @@ export class SemanticRecall {
             // documented lexical fallback, reported to callers as `method`.
             return null;
         }
+        if (embedderFingerprint(runtime) !== fingerprint || runtime !== this._embedRuntime || fingerprint !== this._embedFingerprint) return null;
         if (!(vec instanceof Float32Array) || vec.length === 0 || !vec.every(Number.isFinite)) return null;
         if (this._embedCache.size >= this._opts.embedCacheMax) {
             const lru = this._embedCache.keys().next().value;
@@ -173,10 +185,14 @@ export class SemanticRecall {
      * the index only when the fact set changed. `null` when any embedding is
      * unavailable (caller falls back to lexical).
      */
-    private async _syncDense(runtime: SSMRuntimeRef, all: MemoryEntry[], dimensions: number): Promise<DenseView | null> {
-        if (runtime !== this._denseRuntime) {
+    private async _syncDense(
+        runtime: SSMRuntimeRef, all: MemoryEntry[], dimensions: number, fingerprint: string | undefined,
+    ): Promise<DenseView | null> {
+        if (embedderFingerprint(runtime) !== fingerprint) return null;
+        if (runtime !== this._denseRuntime || fingerprint !== this._denseFingerprint) {
             this.resetDense();
             this._denseRuntime = runtime;
+            this._denseFingerprint = fingerprint;
         }
         const vkeyOf = (e: MemoryEntry): string => `${e.key}@${e.seq ?? 0}`;
         const currentVkeys = new Set<string>();
@@ -189,8 +205,8 @@ export class SemanticRecall {
             const vk = vkeyOf(entry);
             let vec = this._denseVectors.get(vk);
             if (!vec) {
-                const v = await this._embed(runtime, entry.content);
-                if (!v || v.length !== dimensions) return null;
+                const v = await this._embed(runtime, entry.content, fingerprint);
+                if (!v || v.length !== dimensions || runtime !== this._denseRuntime || fingerprint !== this._denseFingerprint) return null;
                 vec = v;
                 this._denseVectors.set(vk, vec);
             }

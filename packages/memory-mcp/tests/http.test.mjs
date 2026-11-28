@@ -95,6 +95,27 @@ test("single shared secret: constant-time match required", async () => {
   assert.equal(res.statusCode, 401);
 });
 
+test("rotating the credential source revokes the previous secret, and an unavailable source requires authentication", async () => {
+  let current = "old-fixture";
+  const handler = createMemoryHttpHandler(fakeBackend("owner"), {
+    authToken: async () => current,
+  });
+  const check = async (token) => {
+    const { req, res } = mockReqRes({ authorization: `Bearer ${token}` });
+    // Accepted requests reach MCP, which needs a real stream. Auth failures return first.
+    res.destroyed = true;
+    await handler(req, res);
+    return res.statusCode;
+  };
+
+  assert.equal(await check("old-fixture"), 0);
+  current = "new-fixture";
+  assert.equal(await check("old-fixture"), 401);
+  assert.equal(await check("new-fixture"), 0);
+  current = undefined;
+  assert.equal(await check("new-fixture"), 401);
+});
+
 test("rate limit returns 429 once the window is exhausted (open mode, per IP)", async () => {
   let t = 0;
   const handler = createMemoryHttpHandler(fakeBackend("open"), {

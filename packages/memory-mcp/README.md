@@ -227,6 +227,10 @@ mcpServers: {
 Or mount `createMemoryHttpHandler(backend, { authToken })` on your own Node/Express
 server against any backend (including a future remote one).
 
+Set `BUILDERFORCE_MEMORY_TOKEN_FILE` to read the owner token from a secret file.
+Replace the file to rotate the credential. An empty or unavailable file denies
+requests until the credential is restored.
+
 ## Custom / remote backend
 
 Implement `MemoryBackend` and hand it to any transport:

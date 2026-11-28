@@ -7,6 +7,7 @@
  * Env:
  *   PORT                          Listen port (default 8787).
  *   BUILDERFORCE_MEMORY_TOKEN     Bearer token required on every request (recommended).
+ *   BUILDERFORCE_MEMORY_TOKEN_FILE  Read the current bearer token from this file on every request.
  *   BUILDERFORCE_MEMORY_DB        IndexedDB database name.
  *   BUILDERFORCE_MEMORY_READONLY  '1' to disable remember/forget tools.
  *   BUILDERFORCE_MEMORY_FILE      JSON snapshot path (also sites the vector cache).
@@ -19,6 +20,7 @@
  *   BUILDERFORCE_MEMORY_EXPERIENCE '1' to expose the experience tools.
  */
 
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { createLocalMemoryStoreBackend } from "../backends/memory-store.js";
 import { createRecallEmbedder } from "../embedding/index.js";
@@ -41,8 +43,12 @@ const backend = await createLocalMemoryStoreBackend({
     runtime: (await createRecallEmbedder({ memoryFile })) ?? undefined,
 });
 
+const tokenFile = process.env["BUILDERFORCE_MEMORY_TOKEN_FILE"]?.trim();
+const authToken = tokenFile
+    ? async () => (await readFile(tokenFile, "utf8")).trim() || undefined
+    : process.env["BUILDERFORCE_MEMORY_TOKEN"];
 const handler = createMemoryHttpHandler(backend, {
-    authToken: process.env["BUILDERFORCE_MEMORY_TOKEN"],
+    authToken,
     writable: process.env["BUILDERFORCE_MEMORY_READONLY"] !== "1",
     // Optional gateway-backed cost tools (token_usage, model_efficiency). Only
     // exposed when an API key is present; URL defaults to the public gateway.
@@ -54,9 +60,9 @@ const handler = createMemoryHttpHandler(backend, {
     // memory_restore takes the export inline.
 });
 
-if (process.env["BUILDERFORCE_MEMORY_EXPERIENCE"] === "1" && !process.env["BUILDERFORCE_MEMORY_TOKEN"]) {
+if (process.env["BUILDERFORCE_MEMORY_EXPERIENCE"] === "1" && !authToken) {
     process.stderr.write(
-        "[builderforce-memory-mcp-http] experience tools stay off: they are served only to callers holding BUILDERFORCE_MEMORY_TOKEN\n",
+        "[builderforce-memory-mcp-http] experience tools require BUILDERFORCE_MEMORY_TOKEN or BUILDERFORCE_MEMORY_TOKEN_FILE\n",
     );
 }
 
