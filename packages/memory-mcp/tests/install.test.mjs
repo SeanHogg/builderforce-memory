@@ -86,6 +86,15 @@ test("changing the memory file updates the existing entry", () => {
     assert.ok(fs.get("/home/u/.cursor/mcp.json").includes("/b.json"));
 });
 
+test("reinstalling without an override clears an old pinned snapshot path", () => {
+    const fs = memFs();
+    const opts = { hosts: ["cursor"], fs, hostEnv: linuxEnv };
+    const legacy = "/home/u/.claude/builderforce-memory/memory.json";
+    installMemoryServer({ ...opts, memoryFile: legacy });
+    assert.equal(installMemoryServer(opts)[0].status, "updated");
+    assert.ok(!fs.get("/home/u/.cursor/mcp.json").includes(legacy));
+});
+
 test("auto detects only hosts whose config dir/file already exists", () => {
     const fs = memFs({ "/home/u/.cursor/mcp.json": "{}" });
     const results = installMemoryServer({ hosts: "auto", memoryFile: "/m.json", fs, hostEnv: linuxEnv });

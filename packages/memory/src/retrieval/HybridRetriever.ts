@@ -18,8 +18,9 @@
 
 import { bm25Search, type Bm25Options } from './bm25.js';
 import { reciprocalRankFusion } from './fusion.js';
+import { fuseHybridArms } from './weightedFusion.js';
 import { mmrSelect } from './mmr.js';
-import { denseSearch } from './hnsw.js';
+import { denseSearch, type SearchHit } from './hnsw.js';
 import { calculateTemporalDecayMultiplier } from './decay.js';
 import { cosineSimilarity } from '../similarity/index.js';
 import { compareHits } from './order.js';
@@ -44,6 +45,8 @@ export interface HybridQuery {
 export interface HybridRetrieveOptions {
     /** Number of results to return. Default 5. */
     topK?: number;
+    /** Score fusion for durable facts, or rank fusion for document retrieval. Default 'rrf'. */
+    fusion?: 'weighted' | 'rrf';
     /** RRF damping constant. Default 60. */
     rrfK?: number;
     /** Relative weight of the dense ranking in fusion. Default 1. */
@@ -118,7 +121,7 @@ export function hybridRetrieve(
     const byId = new Map(candidates.map(c => [c.id, c]));
 
     // ── Dense ranking (cosine, ANN-accelerated above the threshold) ────────────
-    let denseIds: string[] = [];
+    let dense: SearchHit[] = [];
     if (query.vector) {
         const vectored = candidates
             .filter((c): c is RetrievalCandidate & { vector: Float32Array } => !!c.vector && c.vector.length > 0)
@@ -126,20 +129,28 @@ export function hybridRetrieve(
         // Rank the full vectored set (k = all) so fusion sees the complete dense
         // ordering; denseSearch uses an exact scan under the threshold and HNSW
         // above it, so behaviour is identical for small stores.
-        denseIds = denseSearch(query.vector, vectored, vectored.length, opts.annThreshold ?? 256).map(h => h.id);
+        dense = denseSearch(query.vector, vectored, vectored.length, opts.annThreshold ?? 256);
     }
 
     // ── Sparse ranking (BM25) ─────────────────────────────────────────────────
-    const sparseIds = bm25Search(query.text, candidates, opts.bm25).map(h => h.id);
+    const sparse = bm25Search(query.text, candidates, opts.bm25);
 
-    // ── Fuse ──────────────────────────────────────────────────────────────────
-    const fused = reciprocalRankFusion(
-        [
-            { ids: denseIds, weight: opts.denseWeight ?? 1 },
-            { ids: sparseIds, weight: opts.sparseWeight ?? 1 },
-        ].filter(l => l.ids.length > 0),
-        opts.rrfK ?? 60,
-    );
+    const fused = opts.fusion === 'weighted'
+        ? fuseHybridArms({
+            vector: dense,
+            text: sparse,
+            vectorScoreOf: (hit) => Math.max(0, hit.score),
+            textScoreOf: (hit) => hit.score / (1 + hit.score),
+            merge: (hit, score) => ({ id: hit.id, score }),
+            weights: {
+                ...(opts.denseWeight === undefined ? {} : { vectorWeight: opts.denseWeight }),
+                ...(opts.sparseWeight === undefined ? {} : { textWeight: opts.sparseWeight }),
+            },
+        })
+        : reciprocalRankFusion([
+            { ids: dense.map((hit) => hit.id), weight: opts.denseWeight ?? 1 },
+            { ids: sparse.map((hit) => hit.id), weight: opts.sparseWeight ?? 1 },
+        ], opts.rrfK ?? 60);
     if (fused.length === 0) return [];
 
     // ── Signals (importance × recency decay over the fused scores) ────────────

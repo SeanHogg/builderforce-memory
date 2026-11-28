@@ -23,30 +23,15 @@
 import nodePath from "node:path";
 import { CONTENT_LOST_LABEL, STUB_PREFIX } from "../compaction.js";
 import type { FsLike } from "./install.js";
-import { CANONICAL_MEMORY_SEGMENTS, LEGACY_MEMORY_SEGMENTS, MEMORY_FILE_ENV } from "./server-spec.js";
+import { CANONICAL_MEMORY_SEGMENTS, LEGACY_MEMORY_SEGMENTS, MEMORY_FILE_ENV, migrateMemorySnapshot } from "./server-spec.js";
 
 /** `path.join(os.homedir(), "<seg>", …)` as hook-script source. */
 const homeJoin = (segments: readonly string[]) =>
     `path.join(os.homedir(), ${segments.map((s) => JSON.stringify(s)).join(", ")})`;
 
-/**
- * The run-time twin of `resolveMemoryFile`, as hook-script source: the env
- * override, else whichever candidate holds a memory.json (the most recently
- * written when both do), else the canonical default. Built from the SAME segment
- * constants, so the two cannot name different files.
- */
+/** Reuse the installer/server migration in the dependency-free plugin script. */
 function runtimeMemoryFileExpr(): string {
-    return `(() => {
-    const explicit = process.env[${JSON.stringify(MEMORY_FILE_ENV)}];
-    if (explicit) return explicit;
-    const candidates = [${homeJoin(CANONICAL_MEMORY_SEGMENTS)}, ${homeJoin(LEGACY_MEMORY_SEGMENTS)}];
-    let best = null, bestMtime = -Infinity;
-    for (const c of candidates) {
-        try { const st = fs.statSync(c); if (st.isFile() && st.mtimeMs > bestMtime) { best = c; bestMtime = st.mtimeMs; } }
-        catch { /* absent */ }
-    }
-    return best || candidates[0];
-})()`;
+    return `process.env[${JSON.stringify(MEMORY_FILE_ENV)}] || (${migrateMemorySnapshot.toString()})(fs, path, ${homeJoin(CANONICAL_MEMORY_SEGMENTS)}, ${homeJoin(LEGACY_MEMORY_SEGMENTS)})`;
 }
 
 /**
@@ -403,7 +388,7 @@ export function pluginHooksConfig(scriptRelPath = "hooks/bfmem-hook.mjs"): HookC
 export function installClaudeCombo(opts: {
     fs: FsLike;
     claudeDir: string;
-    memoryFile: string;
+    memoryFile: string | null;
 }): { hookScript: string; addedHooks: string[]; settingsFile: string } {
     const { fs, memoryFile } = opts;
     const paths = claudeComboPaths(opts.claudeDir);

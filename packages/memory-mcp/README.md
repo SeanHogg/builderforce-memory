@@ -130,7 +130,7 @@ Either way, recall quality improves automatically as that model is adapted/disti
 ## Experience — what Evermind has done (opt-in)
 
 Facts are one kind of learned item; **experience** is another. An *episode* is a
-recorded demonstration (a program and the UI steps a person took in it), a *skill* is
+recorded demonstration (a program and the UI steps a person took in it), a *procedure* is
 what Train Once compiles from one (typed values become parameters, secrets never stored,
 irreversible clicks gated for approval), and a *run* is one execution with its audit
 trail. The domain lives in `@seanhogg/builderforce-memory-engine`; this server keeps it
@@ -142,9 +142,9 @@ default, so ordinary coding-agent installs never carry them in their tool list.
 | Tools | |
 |---|---|
 | `experience_info` | Snapshot file, screenshot folder, model path, counts. |
-| `experience_forget_all` | Delete every episode, screenshot, skill and run (`confirm: true`). Memories and the model are untouched. |
+| `experience_forget_all` | Delete every episode, screenshot, procedure and run (`confirm: true`). Memories and the model are untouched. |
 | `episode_save` / `_list` / `_get` / `_forget` | Demonstrations. Screenshots go in `episodes/<id>/` and are deleted with the episode. |
-| `skill_preview` / `_compile` / `_list` / `_get` / `_forget` / `_schedule`, `skills_due` | Train Once and routines. |
+| `skill_preview` / `_compile` / `_list` / `_get` / `_forget` / `_schedule`, `skills_due` | Train Once procedures and schedules. The shared server advertises these under `memory__procedure_*` and `memory__procedures_due`. Existing names remain valid for saved calls. |
 | `run_start` / `_step` / `_finish` / `_list` / `_get` | Runs and their audit trail (newest 500 kept). |
 | `experience_train` | Adapt the private model (`BUILDERFORCE_MEMORY_MODEL`) on every procedure it has not learned, through the engine's one adaptation recipe. The previous model is kept as `<model>.prev`. Opt-in `curate: true` first leaves out procedures whose runs mostly fail and near-copies (of each other, or of the 200 most recently learned), listing each one dropped; it is reconsidered next time. |
 
@@ -165,11 +165,13 @@ npx -y -p @seanhogg/builderforce-memory-mcp builderforce-memory-install --host=c
 Writes the stdio server entry into each host's own config, idempotently and with
 `.bak` backups. Supported hosts: **Claude Code, Claude Desktop, Cursor, Windsurf,
 VS Code, Cline, Gemini CLI, Codex CLI**. Every agent points at one shared store
-(`resolveMemoryFile()`: `~/.builderforce-memory/memory.json`, or the legacy
-`~/.claude/builderforce-memory/memory.json` when that is where the live store is; override
-with `--memory-file` / `BUILDERFORCE_MEMORY_FILE`; the hook script resolves the same way),
-so a fact remembered in one agent is recalled in another. `--readonly` drops the
-write tools; `--local=<dist/bin/stdio.js>` runs a checkout for development.
+at `~/.builderforce-memory/memory.json`. First use imports a legacy snapshot and
+its archive from `~/.claude/builderforce-memory/` when the canonical snapshot is
+absent. It also imports legacy experience and episode screenshots when the\ncanonical experience snapshot is absent. When both fact snapshots exist,\nthe canonical snapshot is used and the legacy copy
+remains available for recovery. Re-run the installer to update old host entries
+and Claude hooks that pinned the legacy path. Use `--memory-file` or
+`BUILDERFORCE_MEMORY_FILE` for an explicit store. `--readonly` drops the write
+tools. `--local=<dist/bin/stdio.js>` runs a checkout for development.
 
 The same launch spec is exported for programmatic use:
 `buildServerSpec()` / `installMemoryServer()` (see `src/install/`).

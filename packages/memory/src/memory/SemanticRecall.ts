@@ -1,6 +1,6 @@
 /**
  * memory/SemanticRecall.ts – The query side of {@link MemoryStore}: semantic
- * (SSM-embedding cosine, Jaccard fallback) and hybrid (RRF + MMR) recall over
+ * (SSM-embedding cosine, Jaccard fallback) and hybrid recall over
  * an already-loaded fact list, plus the derived caches that make it cheap:
  *
  *   - an LRU content→embedding cache (EVM-8);
@@ -67,7 +67,7 @@ export class SemanticRecall {
             if (queryVec) {
                 // EVM-1b: sync the persistent vector store + index (embeds only the
                 // delta), then query it — no per-call re-embed of every fact.
-                const dense = await this._syncDense(runtime, all);
+                const dense = await this._syncDense(runtime, all, queryVec.length);
                 if (dense) {
                     const hits = dense.index
                         ? dense.index.search(queryVec, topK)
@@ -103,14 +103,22 @@ export class SemanticRecall {
         const queryVec = canEmbed ? (await this._embed(runtime, query)) ?? undefined : undefined;
         const candidates: RetrievalCandidate[] = [];
         for (const entry of all) {
-            const vector = queryVec ? (await this._embed(runtime, entry.content)) ?? undefined : undefined;
+            const embedded = queryVec ? await this._embed(runtime, entry.content) : null;
+            const vector = embedded && embedded.length === queryVec?.length ? embedded : undefined;
             // Importance + write time ride along so the caller can turn on the
             // ranking signals (HybridRetrieveOptions.importanceWeight /
             // recencyHalfLifeDays); they are ignored when those are off.
             candidates.push({ id: entry.key, text: entry.content, vector, importance: entry.importance, timestamp: entry.timestamp });
         }
         const dense = !!queryVec && candidates.some((c) => !!c.vector);
-        const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, { topK, annThreshold: this._opts.annThreshold, ...opts });
+        const fusion = opts?.fusion ?? (opts?.rrfK === undefined ? 'weighted' : 'rrf');
+        const hits = hybridRetrieve({ text: query, vector: queryVec }, candidates, {
+            topK,
+            annThreshold: this._opts.annThreshold,
+            rerank: fusion === 'rrf',
+            ...opts,
+            fusion,
+        });
         const byKey = new Map(all.map((e) => [e.key, e]));
         return {
             hits: this._floor(hits
@@ -150,7 +158,7 @@ export class SemanticRecall {
             // documented lexical fallback, reported to callers as `method`.
             return null;
         }
-        if (!(vec instanceof Float32Array) || vec.length === 0) return null;
+        if (!(vec instanceof Float32Array) || vec.length === 0 || !vec.every(Number.isFinite)) return null;
         if (this._embedCache.size >= this._opts.embedCacheMax) {
             const lru = this._embedCache.keys().next().value;
             if (lru !== undefined) this._embedCache.delete(lru);
@@ -165,7 +173,7 @@ export class SemanticRecall {
      * the index only when the fact set changed. `null` when any embedding is
      * unavailable (caller falls back to lexical).
      */
-    private async _syncDense(runtime: SSMRuntimeRef, all: MemoryEntry[]): Promise<DenseView | null> {
+    private async _syncDense(runtime: SSMRuntimeRef, all: MemoryEntry[], dimensions: number): Promise<DenseView | null> {
         if (runtime !== this._denseRuntime) {
             this.resetDense();
             this._denseRuntime = runtime;
@@ -182,10 +190,11 @@ export class SemanticRecall {
             let vec = this._denseVectors.get(vk);
             if (!vec) {
                 const v = await this._embed(runtime, entry.content);
-                if (!v) return null;
+                if (!v || v.length !== dimensions) return null;
                 vec = v;
                 this._denseVectors.set(vk, vec);
             }
+            if (vec.length !== dimensions) return null;
             items.push({ id: entry.key, vector: vec });
             byKey.set(entry.key, entry);
         }

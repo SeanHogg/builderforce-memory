@@ -15,6 +15,8 @@ export interface ToolResult extends CallToolResult {
 /** A framework-neutral tool: maps 1:1 onto Agent-SDK `tool()` and MCP `registerTool()`. */
 export interface MemoryTool {
     name: string;
+    /** Model-facing name for the shared catalog when it differs from the stable tool ID. */
+    advertisedName?: string;
     description: string;
     effect?: "read" | "write";
     /** Zod *raw shape* (e.g. `{ query: z.string() }`), not a ZodObject. */

@@ -264,21 +264,53 @@ test("every overwrite keeps the previous 3 versions as .bak.1..3", () => {
 
 // ── ONE memory-file resolver (installer, servers, hook) ──────────────────────
 
-test("resolveMemoryFile: env, else the location holding memory.json (newest if both), else canonical", () => {
-  const home = "/home/u";
+test("resolveMemoryFile imports a legacy snapshot and archive once", (t) => {
+  const home = tempDir();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const [canonical, legacy] = memoryFileCandidates(home);
   assert.equal(canonical, defaultMemoryFile(home));
-  const probe = (m) => ({ fileMtime: (p) => (p in m ? m[p] : null) });
-  const logs = [];
-  const log = (l) => logs.push(l);
+  assert.equal(resolveMemoryFile({}, home), canonical);
+  assert.equal(fs.existsSync(canonical), false);
 
-  assert.equal(resolveMemoryFile({ [MEMORY_FILE_ENV]: "/x.json" }, home, { probe: probe({ [legacy]: 1 }) }), "/x.json");
-  assert.equal(resolveMemoryFile({}, home, { probe: probe({}) }), canonical);
-  assert.equal(resolveMemoryFile({}, home, { probe: probe({ [legacy]: 5 }), log }), legacy);
-  assert.match(logs.pop(), /using the store at/);
-  assert.equal(resolveMemoryFile({}, home, { probe: probe({ [canonical]: 1, [legacy]: 9 }), log }), legacy);
-  assert.match(logs.pop(), /exists in 2 locations; using .*Left untouched/);
-  assert.equal(resolveMemoryFile({}, home, { probe: probe({ [canonical]: 9, [legacy]: 1 }), log }), canonical);
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.writeFileSync(legacy, '[{"key":"legacy"}]');
+  fs.writeFileSync(defaultArchiveFile(legacy), '{"facts":{"legacy":{"content":"full original"}}}');
+  assert.equal(resolveMemoryFile({ [MEMORY_FILE_ENV]: "/x.json" }, home), "/x.json");
+  assert.equal(fs.existsSync(canonical), false);
+  assert.equal(resolveMemoryFile({}, home), canonical);
+  assert.deepEqual(readJson(canonical), readJson(legacy));
+  assert.deepEqual(readJson(defaultArchiveFile(canonical)), readJson(defaultArchiveFile(legacy)));
+
+  fs.writeFileSync(canonical, '[{"key":"canonical"}]');
+  fs.writeFileSync(legacy, '[{"key":"newer-legacy"}]');
+  const future = Date.now() / 1000 + 10;
+  fs.utimesSync(legacy, future, future);
+  const logs = [];
+  assert.equal(resolveMemoryFile({}, home, { log: (line) => logs.push(line) }), canonical);
+  assert.match(logs.join("\n"), /newer legacy snapshot/);
+  assert.deepEqual(readJson(canonical), [{ key: "canonical" }]);
+  assert.deepEqual(readJson(legacy), [{ key: "newer-legacy" }]);
+});
+
+test("resolveMemoryFile brings legacy experience and screenshots forward even without facts", (t) => {
+  const home = tempDir();
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const [canonical, legacy] = memoryFileCandidates(home);
+  const legacyDir = path.dirname(legacy);
+  const canonicalDir = path.dirname(canonical);
+  const screenshot = path.join("episodes", "demo", "step.jpg");
+  fs.mkdirSync(path.dirname(path.join(legacyDir, screenshot)), { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "experience.json"), '{"episodes":[{"id":"demo"}]}');
+  fs.writeFileSync(path.join(legacyDir, screenshot), Buffer.from([1, 2, 3]));
+
+  assert.equal(resolveMemoryFile({}, home), canonical);
+  assert.deepEqual(readJson(path.join(canonicalDir, "experience.json")), { episodes: [{ id: "demo" }] });
+  assert.deepEqual(fs.readFileSync(path.join(canonicalDir, screenshot)), Buffer.from([1, 2, 3]));
+  assert.equal(fs.existsSync(canonical), false);
+
+  fs.writeFileSync(path.join(canonicalDir, "experience.json"), '{"episodes":[]}');
+  resolveMemoryFile({}, home);
+  assert.deepEqual(readJson(path.join(canonicalDir, "experience.json")), { episodes: [] });
 });
 
 /** Run a generated hook script in `mode`, with HOME pointed at `home`. */
@@ -312,6 +344,8 @@ test("the runtime hook resolves the legacy store and labels + demotes lost conte
   );
 
   const out = runHook(bfmemHookSource(null), "--session", { source: "startup" }, home);
+  assert.deepEqual(readJson(defaultMemoryFile(home)), readJson(legacyFile));
+  assert.deepEqual(readJson(defaultArchiveFile(defaultMemoryFile(home))), readJson(defaultArchiveFile(legacyFile)));
   const lines = out.split("\n").filter((l) => l.startsWith("• "));
   assert.equal(lines.length, 3, out);
   assert.ok(lines.find((l) => l.startsWith("• lost.one")).endsWith(CONTENT_LOST_LABEL));

@@ -22,7 +22,7 @@ import nodeFs from "node:fs";
 import { HOSTS } from "../install/hosts.js";
 import { installMemoryServerWithSharedConfig, type HostSelector } from "../install/install.js";
 import { installClaudeCombo } from "../install/claude-hooks.js";
-import { resolveMemoryFile } from "../install/server-spec.js";
+import { MEMORY_FILE_ENV, resolveMemoryFile } from "../install/server-spec.js";
 
 function argValue(name: string): string | undefined {
     const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -55,17 +55,16 @@ const hosts: HostSelector =
           ? "all"
           : hostArg.split(",").map((s) => s.trim()).filter(Boolean);
 
-// The SAME resolver the servers and the hook use — so an install on a machine whose
-// live store sits at a legacy location bakes THAT path, not an empty new one.
-const memoryFile =
-    argValue("memory-file") ??
-    resolveMemoryFile(process.env, undefined, { log: (line) => process.stderr.write(`${line}\n`) });
-
+const override = argValue("memory-file") ?? process.env[MEMORY_FILE_ENV];
+let memoryFile: string;
 let results;
 try {
+    memoryFile = override || resolveMemoryFile(process.env, undefined, {
+        log: (line) => process.stderr.write(line + "\n"),
+    });
     results = await installMemoryServerWithSharedConfig({
         hosts,
-        memoryFile,
+        ...(override ? { memoryFile: override } : {}),
         readonly: hasFlag("readonly"),
         localBin: argValue("local"),
     });
@@ -101,7 +100,7 @@ if (claudePresent && !hasFlag("no-hooks")) {
         const combo = installClaudeCombo({
             fs: nodeFs,
             claudeDir: path.join(os.homedir(), ".claude"),
-            memoryFile,
+            memoryFile: override || null,
         });
         const what = combo.addedHooks.length ? `added ${combo.addedHooks.join(", ")}` : "already current";
         process.stdout.write(`✓ Claude Code memory combo: hooks ${what}; recall + autonomous capture wired\n`);

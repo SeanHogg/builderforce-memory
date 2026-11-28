@@ -25,3 +25,17 @@ test("the shared Memory catalog describes effects and accepts old call names", a
     assert.deepEqual(recalled, ["decision"]);
     assert.equal(createMemoryMcpCatalog(backend, { writable: false }).list().some((tool) => tool.effect === "write"), false);
 });
+
+test("the shared catalog advertises procedures and keeps both legacy call names", async () => {
+    const procedures = [{ id: "procedure-1", name: "Review invoice" }];
+    const catalog = createMemoryMcpCatalog({}, {
+        experience: { store: { listSkills: async () => procedures }, engine: {} },
+    }, (source, name) => source + "__" + name);
+    const tools = catalog.list();
+    const listing = tools.find((tool) => tool.name === "memory__procedure_list");
+    assert.ok(listing);
+    assert.equal(tools.some((tool) => tool.name === "memory__skill_list"), false);
+    assert.equal(catalog.resolve(tools, "memory__skill_list"), listing);
+    assert.equal(catalog.resolve(tools, "skill_list"), listing);
+    assert.deepEqual(JSON.parse((await catalog.callPrepared(listing, {})).content[0].text), procedures);
+});

@@ -8,11 +8,15 @@ type NameCodec = (source: string, tool: string) => string;
 
 function bindMemoryTool(tool: ReturnType<typeof buildMemoryTools>[number], advertiseName?: NameCodec) {
     const legacyName = tool.name;
-    const name = advertiseName?.("memory", legacyName.replace(/^memory_/, "")) ?? legacyName;
+    const legacyAdvertisedName = advertiseName?.("memory", legacyName.replace(/^memory_/, "")) ?? legacyName;
+    const name = tool.advertisedName
+        ? advertiseName?.("memory", tool.advertisedName) ?? tool.advertisedName
+        : legacyAdvertisedName;
     const schema = z.object(tool.inputSchema);
     return {
         name,
         legacyName,
+        legacyAdvertisedName,
         description: tool.description,
         effect: tool.effect ?? "write",
         surfaces: ["memory"],
@@ -37,7 +41,7 @@ export function createMemoryMcpCatalog(
     return {
         list: () => entries,
         resolve: (tools: readonly MemoryToolEntry[], name: string) =>
-            tools.find((tool) => tool.name === name || tool.legacyName === name) ?? null,
+            tools.find((tool) => tool.name === name || tool.legacyName === name || tool.legacyAdvertisedName === name) ?? null,
         callPrepared: (tool: MemoryToolEntry, args: Record<string, unknown>) => tool.invoke(args),
     };
 }

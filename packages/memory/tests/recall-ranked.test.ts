@@ -7,7 +7,7 @@
  *  1. `method` is EARNED. It says `'embedding'` only when the query really did
  *     embed and a dense ranking really did take part in the fusion — an ordering
  *     that quietly fell back to word overlap must not claim to be semantic.
- *  2. The blend is the SHARED primitive (`hybridRetrieve` → `reciprocalRankFusion`
+ *  2. The blend is the SHARED primitive (`hybridRetrieve` → `fuseHybridArms`
  *     from src/retrieval), not a second hand-rolled mix of cosine and overlap.
  *
  * The semantic case is driven by a REAL, pure-CPU `EvermindLM` — no GPU, no
@@ -72,6 +72,20 @@ test('an embed() that yields no vector is reported as lexical, not as embedding'
     expect(runtime.embed).toHaveBeenCalledTimes(1);
 });
 
+test('a mismatched vector cannot contribute dense evidence', async () => {
+    const store = freshStore();
+    await store.remember('keyword', 'deploy checklist');
+    await store.remember('unrelated', 'unrelated topic');
+    const runtime = {
+        embed: async (text: string) => text === 'deploy'
+            ? new Float32Array([1, 0])
+            : new Float32Array([1]),
+    };
+    const ranked = await store.recallRanked('deploy', 2, runtime);
+    expect(ranked.method).toBe('lexical');
+    expect(ranked.hits.map((hit) => hit.entry.key)).toEqual(['keyword']);
+});
+
 test('recallHybrid is recallRanked with the evidence dropped (one implementation)', async () => {
     const store = freshStore();
     await store.remember('k1', 'the quick brown fox');
@@ -84,7 +98,7 @@ test('recallHybrid is recallRanked with the evidence dropped (one implementation
 
 // ── the blend is the shared fusion primitive ──────────────────────────────────
 
-test('the ordering IS hybridRetrieve/RRF over the same candidates, not a second blend', async () => {
+test('uses the shared weighted fusion over the same candidates', async () => {
     const store = freshStore();
     // Dense and sparse deliberately DISAGREE, so any other blend would reorder.
     await store.remember('dense-favourite', 'orthogonal turtle');
@@ -109,7 +123,7 @@ test('the ordering IS hybridRetrieve/RRF over the same candidates, not a second 
     const expected = hybridRetrieve(
         { text: 'quick fox query', vector: await embed('quick fox query') },
         candidates,
-        { topK: 3 },
+        { topK: 3, fusion: 'weighted', rerank: false },
     );
 
     expect(ranked.hits.map((h) => h.entry.key)).toEqual(expected.map((h) => h.id));

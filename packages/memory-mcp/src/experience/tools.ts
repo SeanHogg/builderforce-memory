@@ -25,6 +25,16 @@ import {
 } from "./operations.js";
 import { CURATION_UNSUPPORTED, experienceIndex, pendingDocuments, trainExperience } from "./train.js";
 
+const PROCEDURE_TOOL_NAMES: Readonly<Record<string, string>> = {
+    skill_preview: "procedure_preview",
+    skill_compile: "procedure_compile",
+    skill_list: "procedure_list",
+    skill_get: "procedure_get",
+    skill_forget: "procedure_forget",
+    skill_schedule: "procedure_schedule",
+    skills_due: "procedures_due",
+};
+
 const DEFAULT_RUNS = 50;
 const MAX_RUNS_RETURNED = 500;
 
@@ -56,6 +66,7 @@ function tool(
 ): MemoryTool {
     return {
         name,
+        ...(PROCEDURE_TOOL_NAMES[name] ? { advertisedName: PROCEDURE_TOOL_NAMES[name] } : {}),
         effect,
         description,
         inputSchema,
@@ -97,7 +108,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "experience_overview",
             "read",
-            "What experience says about the brain, for drawing it: counts per region (hippocampus = demonstrations, basalGanglia = skills, amygdala = approval decisions, hypothalamus = routines, neocortex = procedures the private model has learned), learned vs pending, run outcomes, every adaptation's measured loss, activity per local day, and the newest events.",
+            "What experience says about the brain, for drawing it: counts per region (hippocampus = demonstrations, basalGanglia = procedures, amygdala = approval decisions, hypothalamus = routines, neocortex = procedures the private model has learned), learned vs pending, run outcomes, every adaptation's measured loss, activity per local day, and the newest events.",
             { days: z.number().int().min(1).max(365).optional() },
             async (args) => {
                 const version = await host.modelVersion();
@@ -134,7 +145,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "experience_forget_all",
             "write",
-            "Delete every demonstration, screenshot, skill and run. Facts (memories) and the model are not touched. Requires confirm: true.",
+            "Delete every demonstration, screenshot, procedure and run. Facts (memories) and the model are not touched. Requires confirm: true.",
             { confirm: z.literal(true) },
             async () => {
                 await store.clear();
@@ -150,29 +161,29 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "skill_preview",
             "read",
-            "Show the skill Train Once would compile from a demonstration with these review edits, without saving it.",
+            "Show the procedure Train Once would compile from a demonstration with these review edits, without saving it.",
             { episodeId: z.string(), edits: editsShape },
             (a) => compile(a, false),
         ),
         tool(
             "skill_compile",
             "write",
-            "Compile a demonstration into a runnable skill (Train Once) and save it.",
+            "Compile a demonstration into a runnable procedure (Train Once) and save it.",
             { episodeId: z.string(), edits: editsShape },
             (a) => compile(a, true),
         ),
-        tool("skill_list", "read", "List skills, newest first.", {}, async () => okJson(await store.listSkills())),
-        tool("skill_get", "read", "Fetch one skill.", { id: z.string() }, async (args) => {
+        tool("skill_list", "read", "List procedures, newest first.", {}, async () => okJson(await store.listSkills())),
+        tool("skill_get", "read", "Fetch one procedure.", { id: z.string() }, async (args) => {
             const s = await store.getSkill(str(args["id"]));
             return s ? okJson(s) : fail(`No skill "${str(args["id"])}".`);
         }),
-        tool("skill_forget", "write", "Delete a skill (its run history stays).", { id: z.string() }, async (args) =>
+        tool("skill_forget", "write", "Delete a procedure (its run history stays).", { id: z.string() }, async (args) =>
             okJson({ forgotten: await store.deleteSkill(str(args["id"])) }),
         ),
         tool(
             "skill_schedule",
             "write",
-            "Give a skill a routine (every N minutes, or daily at a local time, with values for its non-secret parameters), or pass null to remove it.",
+            "Give a procedure a routine (every N minutes, or daily at a local time, with values for its non-secret parameters), or pass null to remove it.",
             {
                 id: z.string(),
                 routine: z
@@ -191,7 +202,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "skills_due",
             "read",
-            "Skills whose routine is due now, least recently run first.",
+            "Procedures whose routine is due now, least recently run first.",
             {
                 tzOffsetMinutes: z
                     .number()
@@ -212,7 +223,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "run_start",
             "write",
-            "Start a run of a skill. A routine run also marks the routine as run, so it is not due again until its next slot.",
+            "Start a run of a procedure. A routine run also marks the routine as run, so it is not due again until its next slot.",
             { skillId: z.string(), trigger: z.enum(["manual", "routine"]) },
             async (args) => fromOp(await startRun(host, str(args["skillId"]), str(args["trigger"]))),
         ),
@@ -270,7 +281,7 @@ export function buildExperienceTools(host: ExperienceHost): MemoryTool[] {
         tool(
             "experience_train",
             "write",
-            "Teach the private Evermind model the procedures it has not learned yet (each skill, and each demonstration not yet compiled into one). Pass dryRun to only count them. Pass curate to first leave out procedures whose runs mostly fail and near-copies of each other or of recently learned ones (each one left out is listed, and reconsidered next time). The previous model is kept beside the new one.",
+            "Teach the private Evermind model the procedures it has not learned yet (each procedure and each demonstration still awaiting compilation). Pass dryRun to only count them. Pass curate to first leave out procedures whose runs mostly fail and near-copies of each other or of recently learned ones (each one left out is listed, and reconsidered next time). The previous model is kept beside the new one.",
             {
                 dryRun: z.boolean().optional(),
                 curate: z.boolean().optional().describe("Opt-in: filter by run quality and drop near-duplicates before training. Default false."),

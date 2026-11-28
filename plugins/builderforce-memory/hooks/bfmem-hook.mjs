@@ -12,17 +12,80 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const FILE = (() => {
-    const explicit = process.env["BUILDERFORCE_MEMORY_FILE"];
-    if (explicit) return explicit;
-    const candidates = [path.join(os.homedir(), ".builderforce-memory", "memory.json"), path.join(os.homedir(), ".claude", "builderforce-memory", "memory.json")];
-    let best = null, bestMtime = -Infinity;
-    for (const c of candidates) {
-        try { const st = fs.statSync(c); if (st.isFile() && st.mtimeMs > bestMtime) { best = c; bestMtime = st.mtimeMs; } }
-        catch { /* absent */ }
+const FILE = process.env["BUILDERFORCE_MEMORY_FILE"] || (function migrateMemorySnapshot(fs, path, canonical, legacy, log) {
+    const fileExists = (file) => {
+        const stat = fs.statSync(file, { throwIfNoEntry: false });
+        if (stat && !stat.isFile())
+            throw new Error("Memory snapshot path is not a file: " + file);
+        return stat !== undefined;
+    };
+    const parent = path.dirname(canonical);
+    const legacyParent = path.dirname(legacy);
+    const canonicalExperience = path.join(parent, "experience.json");
+    const legacyExperience = path.join(legacyParent, "experience.json");
+    const canonicalExists = fileExists(canonical);
+    const importSnapshot = !canonicalExists && fileExists(legacy);
+    const importExperience = !fileExists(canonicalExperience) && fileExists(legacyExperience);
+    if (canonicalExists && log && fileExists(legacy) && fs.statSync(legacy).mtimeMs > fs.statSync(canonical).mtimeMs) {
+        log("[builderforce-memory] Using " + canonical + ". A newer legacy snapshot is available at " + legacy + ".");
     }
-    return best || candidates[0];
-})();
+    if (!importSnapshot && !importExperience)
+        return canonical;
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const staged = fs.mkdtempSync(path.join(parent, ".memory-import-"));
+    const stagedSnapshot = path.join(staged, "snapshot");
+    const stagedArchive = path.join(staged, "archive");
+    const stagedExperience = path.join(staged, "experience");
+    const archiveOf = (snapshot) => snapshot.replace(/\.json$/i, "") + ".archive.json";
+    const publish = (from, to) => {
+        try {
+            fs.linkSync(from, to);
+            return true;
+        }
+        catch (error) {
+            if (error.code === "EEXIST" && fileExists(to))
+                return false;
+            throw error;
+        }
+    };
+    try {
+        // Stage complete files in the destination filesystem. Link publishes each
+        // file atomically with no replacement if another process imported first.
+        if (importSnapshot) {
+            fs.copyFileSync(legacy, stagedSnapshot);
+            const legacyArchive = archiveOf(legacy);
+            if (fileExists(legacyArchive) && !fileExists(canonical)) {
+                fs.copyFileSync(legacyArchive, stagedArchive);
+                publish(stagedArchive, archiveOf(canonical));
+            }
+            if (publish(stagedSnapshot, canonical)) {
+                log?.("[builderforce-memory] Imported " + legacy + " into " + canonical + ".");
+            }
+        }
+        if (importExperience) {
+            fs.copyFileSync(legacyExperience, stagedExperience);
+            const episodes = path.join(legacyParent, "episodes");
+            if (fs.lstatSync(episodes, { throwIfNoEntry: false })?.isDirectory()) {
+                fs.cpSync(episodes, path.join(parent, "episodes"), {
+                    recursive: true,
+                    force: false,
+                    filter: (source) => !fs.lstatSync(source).isSymbolicLink(),
+                });
+            }
+            if (publish(stagedExperience, canonicalExperience)) {
+                log?.("[builderforce-memory] Imported " + legacyExperience + " into " + canonicalExperience + ".");
+            }
+        }
+        return canonical;
+    }
+    finally {
+        for (const file of [stagedArchive, stagedSnapshot, stagedExperience]) {
+            if (fs.existsSync(file))
+                fs.unlinkSync(file);
+        }
+        fs.rmdirSync(staged);
+    }
+})(fs, path, path.join(os.homedir(), ".builderforce-memory", "memory.json"), path.join(os.homedir(), ".claude", "builderforce-memory", "memory.json"));
 const mode = process.argv[2] || "--session";
 
 function readStdin() {

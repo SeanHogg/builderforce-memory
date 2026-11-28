@@ -7,11 +7,8 @@
  *   BUILDERFORCE_MEMORY_READONLY  '1' to disable remember/forget tools.
  *   BUILDERFORCE_MEMORY_FILE      Absolute path to a JSON snapshot. Defaults to the
  *                                 shared per-machine store — resolveMemoryFile():
- *                                 ~/.builderforce-memory/memory.json, or the legacy
- *                                 ~/.claude/builderforce-memory/memory.json when that
- *                                 is where the live memory.json is — so memory
- *                                 survives the respawn every MCP client does between
- *                                 sessions. Compacted originals are archived beside it
+ *                                 ~/.builderforce-memory/memory.json. Existing legacy
+ *                                 snapshots are imported once. Compacted originals are archived beside it
  *                                 (memory.archive.json); each overwrite keeps .bak.1-3.
  *   BUILDERFORCE_MEMORY_MODEL     Absolute path to a `.evermind` package (an
  *                                 `evermind-lm`). When set, recall is ranked by SSM
@@ -46,8 +43,7 @@ import { lazyRecallProbe } from "../model/recall-probe.js";
 import { runStdio } from "../transports/stdio.js";
 
 const log = (line: string) => void process.stderr.write(`${line}\n`);
-// ONE resolver for installer, servers and hook: env, else whichever location holds
-// the live memory.json (logged when there is a choice), else the canonical default.
+// The installer, servers and generated hook share the canonical store resolver.
 const memoryFile = resolveMemoryFile(process.env, undefined, { log });
 
 const backend = await createLocalMemoryStoreBackend({

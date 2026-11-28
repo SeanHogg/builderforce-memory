@@ -32,7 +32,7 @@ export const CANONICAL_MEMORY_SEGMENTS = [".builderforce-memory", "memory.json"]
 
 /**
  * Where earlier installers put the store (`~/.claude/builderforce-memory/memory.json`).
- * Still honoured: a machine whose live memory sits here keeps using it.
+ * Imported on first use when there is no canonical snapshot.
  */
 export const LEGACY_MEMORY_SEGMENTS = [".claude", "builderforce-memory", "memory.json"] as const;
 
@@ -42,40 +42,97 @@ export function defaultMemoryFile(homedir: string = nodeOs.homedir()): string {
 }
 
 /** Every location a store may live in, canonical first. */
-export function memoryFileCandidates(homedir: string = nodeOs.homedir()): string[] {
+export function memoryFileCandidates(homedir: string = nodeOs.homedir()): [canonical: string, legacy: string] {
     return [defaultMemoryFile(homedir), nodePath.join(homedir, ...LEGACY_MEMORY_SEGMENTS)];
 }
 
-/** File probe the resolver uses — injectable for tests. */
-export interface MemoryFileProbe {
-    /** Unix-ms modification time of `path` when it is a file, else null. */
-    fileMtime(path: string): number | null;
-}
-
-const nodeProbe: MemoryFileProbe = {
-    fileMtime(path) {
-        try {
-            const st = nodeFs.statSync(path);
-            return st.isFile() ? st.mtimeMs : null;
-        } catch {
-            return null;
-        }
-    },
-};
-
 export interface ResolveMemoryFileOptions {
-    probe?: MemoryFileProbe;
-    /** Told which store won when more than one location is in play. Default: silent. */
     log?: (line: string) => void;
 }
 
 /**
- * The snapshot path in effect:
- *   1. `BUILDERFORCE_MEMORY_FILE`, when set;
- *   2. else whichever candidate location actually holds a `memory.json` — the
- *      most recently written one if both do (logged; neither is ever deleted);
- *   3. else the canonical default.
+ * Also embedded in the standalone Claude hook. Keep all runtime dependencies
+ * in the arguments so the generated script runs without installed packages.
  */
+export function migrateMemorySnapshot(
+    fs: typeof nodeFs,
+    path: typeof nodePath,
+    canonical: string,
+    legacy: string,
+    log?: (line: string) => void,
+): string {
+    const fileExists = (file: string): boolean => {
+        const stat = fs.statSync(file, { throwIfNoEntry: false });
+        if (stat && !stat.isFile()) throw new Error("Memory snapshot path is not a file: " + file);
+        return stat !== undefined;
+    };
+
+    const parent = path.dirname(canonical);
+    const legacyParent = path.dirname(legacy);
+    const canonicalExperience = path.join(parent, "experience.json");
+    const legacyExperience = path.join(legacyParent, "experience.json");
+    const canonicalExists = fileExists(canonical);
+    const importSnapshot = !canonicalExists && fileExists(legacy);
+    const importExperience = !fileExists(canonicalExperience) && fileExists(legacyExperience);
+    if (canonicalExists && log && fileExists(legacy) && fs.statSync(legacy).mtimeMs > fs.statSync(canonical).mtimeMs) {
+        log("[builderforce-memory] Using " + canonical + ". A newer legacy snapshot is available at " + legacy + ".");
+    }
+    if (!importSnapshot && !importExperience) return canonical;
+
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const staged = fs.mkdtempSync(path.join(parent, ".memory-import-"));
+    const stagedSnapshot = path.join(staged, "snapshot");
+    const stagedArchive = path.join(staged, "archive");
+    const stagedExperience = path.join(staged, "experience");
+    const archiveOf = (snapshot: string) => snapshot.replace(/\.json$/i, "") + ".archive.json";
+    const publish = (from: string, to: string): boolean => {
+        try {
+            fs.linkSync(from, to);
+            return true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST" && fileExists(to)) return false;
+            throw error;
+        }
+    };
+
+    try {
+        // Stage complete files in the destination filesystem. Link publishes each
+        // file atomically with no replacement if another process imported first.
+        if (importSnapshot) {
+            fs.copyFileSync(legacy, stagedSnapshot);
+            const legacyArchive = archiveOf(legacy);
+            if (fileExists(legacyArchive) && !fileExists(canonical)) {
+                fs.copyFileSync(legacyArchive, stagedArchive);
+                publish(stagedArchive, archiveOf(canonical));
+            }
+            if (publish(stagedSnapshot, canonical)) {
+                log?.("[builderforce-memory] Imported " + legacy + " into " + canonical + ".");
+            }
+        }
+        if (importExperience) {
+            fs.copyFileSync(legacyExperience, stagedExperience);
+            const episodes = path.join(legacyParent, "episodes");
+            if (fs.lstatSync(episodes, { throwIfNoEntry: false })?.isDirectory()) {
+                fs.cpSync(episodes, path.join(parent, "episodes"), {
+                    recursive: true,
+                    force: false,
+                    filter: (source) => !fs.lstatSync(source).isSymbolicLink(),
+                });
+            }
+            if (publish(stagedExperience, canonicalExperience)) {
+                log?.("[builderforce-memory] Imported " + legacyExperience + " into " + canonicalExperience + ".");
+            }
+        }
+        return canonical;
+    } finally {
+        for (const file of [stagedArchive, stagedSnapshot, stagedExperience]) {
+            if (fs.existsSync(file)) fs.unlinkSync(file);
+        }
+        fs.rmdirSync(staged);
+    }
+}
+
+/** Resolve an explicit override or the canonical default, importing legacy data once. */
 export function resolveMemoryFile(
     env: Record<string, string | undefined> = process.env,
     homedir?: string,
@@ -83,25 +140,8 @@ export function resolveMemoryFile(
 ): string {
     const explicit = env[MEMORY_FILE_ENV];
     if (explicit) return explicit;
-    const probe = opts.probe ?? nodeProbe;
-    const candidates = memoryFileCandidates(homedir);
-    const present = candidates
-        .map((path) => ({ path, mtime: probe.fileMtime(path) }))
-        .filter((c): c is { path: string; mtime: number } => c.mtime !== null);
-    if (present.length === 0) return candidates[0]!;
-    if (present.length === 1) {
-        if (present[0]!.path !== candidates[0]) {
-            opts.log?.(`[builderforce-memory] using the store at ${present[0]!.path} (no memory.json at ${candidates[0]}).`);
-        }
-        return present[0]!.path;
-    }
-    const winner = present.reduce((a, b) => (b.mtime > a.mtime ? b : a));
-    const others = present.filter((c) => c !== winner).map((c) => c.path);
-    opts.log?.(
-        `[builderforce-memory] memory.json exists in ${present.length} locations; using ${winner.path} ` +
-            `(most recently written). Left untouched: ${others.join(", ")}.`,
-    );
-    return winner.path;
+    const [canonical, legacy] = memoryFileCandidates(homedir);
+    return migrateMemorySnapshot(nodeFs, nodePath, canonical, legacy, opts.log);
 }
 
 export interface ServerSpecOptions {
