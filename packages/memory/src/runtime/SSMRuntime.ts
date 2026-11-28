@@ -60,6 +60,8 @@ export interface SSMRuntimeOptions {
      * and distillation is unavailable.
      */
     bridge?              : TransformerBridge;
+    /** Live host permission for external inference. An asset policy defaults this to denied. */
+    allowsRemoteInference?: () => boolean;
 
     /**
      * Routing strategy when a bridge is present.
@@ -97,6 +99,7 @@ export class SSMRuntime {
         session : MambaSession,
         bridge  : TransformerBridge | undefined,
         router  : InferenceRouter,
+        private readonly allowsRemoteInference: () => boolean = () => true,
     ) {
         this._session = session;
         this._bridge  = bridge;
@@ -113,19 +116,21 @@ export class SSMRuntime {
      */
     static async create(opts: SSMRuntimeOptions): Promise<SSMRuntime> {
         const session = await MambaSession.create(opts.session, opts.callbacks);
+        const allowsRemoteInference = opts.allowsRemoteInference ?? (() => !opts.session.assetPolicy);
 
         const router = new InferenceRouter({
             strategy            : opts.routingStrategy,
             longInputThreshold  : opts.longInputThreshold,
             perplexityThreshold : opts.perplexityThreshold,
             hasBridge           : !!opts.bridge,
+            allowsBridge        : allowsRemoteInference,
             // Pass perplexity probe as callback — avoids circular import
             perplexityProbe     : opts.bridge
                 ? (text) => session.evaluate(text)
                 : undefined,
         });
 
-        return new SSMRuntime(session, opts.bridge, router);
+        return new SSMRuntime(session, opts.bridge, router, allowsRemoteInference);
     }
 
     // ── Inference ─────────────────────────────────────────────────────────────
@@ -138,9 +143,9 @@ export class SSMRuntime {
         this._checkAlive();
 
         const decision = await this._router.route(input);
-
-        if (decision.target === 'transformer' && this._bridge) {
-            return this._bridge.generate(input, this._bridgeOptsWithSystem(opts));
+        const bridge = this.bridge;
+        if (decision.target === 'transformer' && bridge) {
+            return bridge.generate(input, this._bridgeOptsWithSystem(opts));
         }
 
         // SSM path — extract only CompleteOptions fields
@@ -170,12 +175,13 @@ export class SSMRuntime {
 
         const decision = await this._router.route(input);
 
-        if (decision.target === 'transformer' && this._bridge) {
+        const bridge = this.bridge;
+        if (decision.target === 'transformer' && bridge) {
             const bridgeOpts = this._bridgeOptsWithSystem(opts);
-            if (this._bridge.supportsStreaming && this._bridge.stream) {
-                yield* this._bridge.stream(input, bridgeOpts);
+            if (bridge.supportsStreaming && bridge.stream) {
+                yield* bridge.stream(input, bridgeOpts);
             } else {
-                yield await this._bridge.generate(input, bridgeOpts);
+                yield await bridge.generate(input, bridgeOpts);
             }
             return;
         }
@@ -279,7 +285,7 @@ export class SSMRuntime {
     }
 
     /** The transformer bridge attached to this runtime, if any. */
-    get bridge(): TransformerBridge | undefined { return this._bridge; }
+    get bridge(): TransformerBridge | undefined { return this.allowsRemoteInference() ? this._bridge : undefined; }
 
     /** Whether this runtime has been destroyed. */
     get destroyed(): boolean { return this._destroyed; }

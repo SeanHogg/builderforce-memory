@@ -119,11 +119,15 @@ export type { ResponseCacheOptions }   from './bridges/ResponseCache.js';
 // ── Semantic cache (embedding-keyed, L1 local + L2 shared) ─────────────────────
 export { SemanticCache } from './cache/SemanticCache.js';
 export { FetchSemanticCacheBackend } from './cache/FetchSemanticCacheBackend.js';
+export { indexedDbSemanticCache } from './cache/semanticCachePersistence.js';
 export type {
     Embedder,
     SemanticCacheBackend,
     SemanticCacheHit,
     SemanticCacheOptions,
+    SemanticCacheEntry,
+    SemanticCachePersistence,
+    SemanticCacheScope,
     FetchSemanticCacheBackendOptions,
 } from './cache/index.js';
 

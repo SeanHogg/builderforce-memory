@@ -72,6 +72,8 @@ export interface InferenceRouterOptions {
      * Default: false
      */
     hasBridge?           : boolean;
+    /** Live host permission for using the attached bridge. */
+    allowsBridge?        : () => boolean;
 
     /**
      * Callback for computing SSM perplexity, provided by SSMRuntime.
@@ -104,6 +106,7 @@ export class InferenceRouter {
     private readonly _longInputThreshold : number;
     private readonly _perplexityThreshold: number;
     private readonly _hasBridge          : boolean;
+    private readonly _allowsBridge       : () => boolean;
     private readonly _perplexityProbe    : ((text: string) => Promise<number>) | undefined;
     private readonly _auditLog           : RoutingAuditEntry[] = [];
 
@@ -112,6 +115,7 @@ export class InferenceRouter {
         this._longInputThreshold  = opts.longInputThreshold  ?? 1200;
         this._perplexityThreshold = opts.perplexityThreshold ?? 80;
         this._hasBridge           = opts.hasBridge           ?? false;
+        this._allowsBridge        = opts.allowsBridge ?? (() => true);
         this._perplexityProbe     = opts.perplexityProbe;
     }
 
@@ -148,7 +152,7 @@ export class InferenceRouter {
 
     private async _decide(input: string, ctx: RouterContext): Promise<RoutingDecision> {
         // No bridge → always SSM
-        if (!this._hasBridge) {
+        if (!this._hasBridge || !this._allowsBridge()) {
             return { target: 'ssm', reason: 'no_bridge', confidence: 1.0 };
         }
 

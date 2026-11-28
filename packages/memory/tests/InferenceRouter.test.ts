@@ -40,6 +40,16 @@ test('strategy=transformer always returns transformer', async () => {
     expect(await target(r, 'hi')).toBe('transformer');
 });
 
+test('a fixed remote route follows the host permission on every request', async () => {
+    let allowed = false;
+    const r = router({ strategy: 'transformer', allowsBridge: () => allowed });
+    expect(await target(r, 'hi')).toBe('ssm');
+    allowed = true;
+    expect(await target(r, 'hi')).toBe('transformer');
+    allowed = false;
+    expect(await target(r, 'hi')).toBe('ssm');
+});
+
 // ── Complexity patterns ───────────────────────────────────────────────────────
 
 test('detects "step by step"', async () => {

@@ -7,3 +7,5 @@ export type {
 } from './SemanticCache.js';
 export { FetchSemanticCacheBackend } from './FetchSemanticCacheBackend.js';
 export type { FetchSemanticCacheBackendOptions } from './FetchSemanticCacheBackend.js';
+export { indexedDbSemanticCache } from './semanticCachePersistence.js';
+export type { SemanticCacheEntry, SemanticCachePersistence, SemanticCacheScope } from './semanticCachePersistence.js';

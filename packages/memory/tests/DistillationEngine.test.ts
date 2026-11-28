@@ -49,6 +49,16 @@ test('distill calls bridge.generate with the input', async () => {
     expect(bridge.generate).toHaveBeenCalledWith('What is Mamba?', undefined);
 });
 
+test('denied remote teacher never opens a request or starts training', async () => {
+    const teacher = makeBridge();
+    const student = makeRuntime();
+    const engine = new DistillationEngine(student, teacher);
+    const result = await engine.distill('prompt', { allowsTeacher: () => false, fallbackText: 'local text' });
+    expect(result).toMatchObject({ skipped: true, skipReason: 'teacher_denied' });
+    expect(teacher.generate).not.toHaveBeenCalled();
+    expect(student.adapt).not.toHaveBeenCalled();
+});
+
 test('distill calls runtime.adapt with input + teacher output', async () => {
     const bridge  = makeBridge();
     const runtime = makeRuntime();

@@ -50,10 +50,8 @@ test('a semantically different prompt calls the inner bridge again', async () =>
 test('the system prompt is part of the cache key (different system → no cross-hit)', async () => {
     let n = 0;
     const inner = makeInner(async () => `answer ${++n}`);
-    // Embed system+prompt; distinct system strings yield the fallback vector but
-    // differ, so two different systems with the same prompt should not collide.
-    const customEmbed = async (t: string): Promise<Float32Array> =>
-        t.startsWith('SYS-A') ? new Float32Array([1, 0]) : new Float32Array([0, 1]);
+    // Equal embeddings must still miss when the system context differs.
+    const customEmbed = async (): Promise<Float32Array> => new Float32Array([1, 0]);
     const bridge = new SemanticCachingBridge(inner, { embed: customEmbed });
 
     await bridge.generate('hello', { systemPrompt: 'SYS-A' });
@@ -62,7 +60,7 @@ test('the system prompt is part of the cache key (different system → no cross-
     expect(inner.generate).toHaveBeenCalledTimes(2);
 });
 
-test('the model is stored as cache meta and the answer is reused on a paraphrase', async () => {
+test('the model partitions paraphrase reuse', async () => {
     let n = 0;
     const inner = makeInner(async () => `answer ${++n}`);
     const bridge = new SemanticCachingBridge(inner, { embed });
@@ -72,6 +70,18 @@ test('the model is stored as cache meta and the answer is reused on a paraphrase
     expect(a).toBe('answer 1');
     expect(b).toBe('answer 1');
     expect(inner.generate).toHaveBeenCalledTimes(1);
+    expect(await bridge.generate('auth login broken', { model: 'another-model' })).toBe('answer 2');
+});
+
+test('tool calls and explicitly uncached actions do not replay an answer from memory', async () => {
+    let n = 0;
+    const inner = makeInner(async () => `answer ${++n}`);
+    const bridge = new SemanticCachingBridge(inner, { embed });
+    const prompt = 'fix the auth bug';
+    expect(await bridge.generate(prompt)).toBe('answer 1');
+    expect(await bridge.generate(prompt, { cacheable: false })).toBe('answer 2');
+    expect(await bridge.generate(prompt, { extra: { tools: [{ name: 'edit' }] } })).toBe('answer 3');
+    expect(await bridge.generate(prompt)).toBe('answer 1');
 });
 
 test('supportsStreaming mirrors the inner bridge and stream() delegates', async () => {

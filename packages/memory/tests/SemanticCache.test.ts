@@ -12,6 +12,8 @@
 
 import { jest } from '@jest/globals';
 import { SemanticCache, type SemanticCacheBackend } from '../src/cache/SemanticCache.js';
+import { IDBFactory } from 'fake-indexeddb';
+import { indexedDbSemanticCache } from '../src/cache/semanticCachePersistence.js';
 
 const VEC: Record<string, Float32Array> = {
     A:     new Float32Array([1, 0]),
@@ -20,6 +22,26 @@ const VEC: Record<string, Float32Array> = {
     C:     new Float32Array([0.3, 0.95]),
 };
 const embed = async (t: string): Promise<Float32Array> => VEC[t] ?? new Float32Array([0.01, 0.01]);
+
+test('reopens durable vectors offline and isolates model, knowledge, tokenizer and input versions', async () => {
+    const factory = new IDBFactory();
+    const scope = { namespace: 'a/team/one', modelVersion: 'm1', knowledgeVersion: 'k1', embeddingVersion: 'e1', tokenizerVersion: 't1', inputVersion: 'read-only' };
+    const l2 = makeL2();
+    const first = indexedDbSemanticCache(factory);
+    await new SemanticCache({ embed, persistence: { storage: first, scope }, l2 }).store('A', 'local answer');
+    await first.close();
+    const second = indexedDbSemanticCache(factory);
+    const reopened = new SemanticCache({ embed, persistence: { storage: second, scope }, l2 });
+    expect(await reopened.lookup('Anear')).toMatchObject({ response: 'local answer', tier: 'l1' });
+    for (const field of Object.keys(scope)) {
+        expect(await new SemanticCache({ embed, persistence: { storage: second, scope: { ...scope, [field]: 'other' } }, l2 }).lookup('A')).toBeUndefined();
+    }
+    expect(l2.lookup).not.toHaveBeenCalled();
+    expect(l2.store).not.toHaveBeenCalled();
+    reopened.clear();
+    expect(await reopened.lookup('A')).toBeUndefined();
+    await second.close();
+});
 
 // ── L1: paraphrase hit / miss ─────────────────────────────────────────────────
 

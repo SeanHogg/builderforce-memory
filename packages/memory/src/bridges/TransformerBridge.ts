@@ -12,6 +12,8 @@ import type { BridgeCallInfo } from '../telemetry/types.js';
 export type { BridgeCallInfo };
 
 export interface BridgeGenerateOptions {
+    /** Set false for action requests or output that depends on live external state. */
+    cacheable?: boolean;
     /** Max tokens to generate. Default per-adapter (typically 512). */
     maxTokens?    : number;
     /** Sampling temperature. Default per-adapter (typically 0.7). */

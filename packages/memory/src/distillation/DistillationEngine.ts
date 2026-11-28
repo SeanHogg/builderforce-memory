@@ -37,6 +37,8 @@ export interface QualityGate {
 }
 
 export interface DistillOptions<O = AdaptOptions> {
+    /** Live host permission for this run's teacher request. */
+    allowsTeacher?: () => boolean;
     /** Options forwarded to the student's `adapt()`. */
     adapt?       : O;
 
@@ -80,7 +82,7 @@ export interface RehearsalOptions {
 }
 
 /** Why an input was not learned from a teacher exemplar. */
-export type DistillSkipReason = 'low_quality' | 'already_learned' | 'teacher_failed';
+export type DistillSkipReason = 'low_quality' | 'already_learned' | 'teacher_failed' | 'teacher_denied';
 
 export interface DistillResult<R = AdaptResult> {
     /** The input prompt that was distilled. */
@@ -198,6 +200,7 @@ export class DistillationEngine<R = AdaptResult, O = AdaptOptions> {
      * what a good response to that prompt looks like, without labelled data.
      */
     async distill(input: string, opts: DistillOptions<O> = {}): Promise<DistillResult<R>> {
+        if (opts.allowsTeacher?.() === false) return this._skip(input, '', 'teacher_denied');
         let teacherOutput = '';
         let teacherError: unknown;
         try {

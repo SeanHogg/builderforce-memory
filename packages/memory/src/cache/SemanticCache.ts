@@ -19,6 +19,7 @@
  */
 
 import { cosineSimilarity } from '../similarity/index.js';
+import { semanticCacheScopeKey, type SemanticCacheEntry, type SemanticCachePersistence, type SemanticCacheScope } from './semanticCachePersistence.js';
 
 /** Produces an embedding vector for a piece of text (the on-device SSM, typically). */
 export type Embedder = (text: string) => Promise<Float32Array>;
@@ -45,6 +46,8 @@ export interface SemanticCacheHit {
 export interface SemanticCacheOptions {
     /** Embeds queries. Required — this is what makes the cache semantic. */
     embed: Embedder;
+    /** A host using an external embedder denies it while offline. */
+    allowsEmbedding?: () => boolean;
     /**
      * Cosine similarity at/above which a stored entry counts as a hit.
      * Higher = stricter (fewer false hits, lower hit rate). Default: 0.92.
@@ -56,14 +59,16 @@ export interface SemanticCacheOptions {
     ttlMs?: number;
     /** Optional shared L2 backend (e.g. the gateway). */
     l2?: SemanticCacheBackend;
+    /** Called at each L2 read or write; a disconnected host returns false. */
+    allowsRemote?: () => boolean;
+    /** Durable L1 vectors are partitioned by the complete host-provided scope. */
+    persistence?: { storage: SemanticCachePersistence; scope: SemanticCacheScope };
     /**
      * When true (default), an answer served by L2 is also written into L1 so the
      * next local lookup is a fast hit — read-through cache warming.
      */
     warmL1FromL2?: boolean;
 }
-
-interface L1Entry { embedding: Float32Array; response: string; timestamp: number; }
 
 const DEFAULT_THRESHOLD   = 0.92;
 const DEFAULT_MAX_ENTRIES = 500;
@@ -75,7 +80,11 @@ export class SemanticCache {
     private readonly _ttlMs      : number | undefined;
     private readonly _l2         : SemanticCacheBackend | undefined;
     private readonly _warmL1     : boolean;
-    private readonly _l1         : L1Entry[] = [];
+    private readonly _l1         : SemanticCacheEntry[] = [];
+    private readonly _persistence: { storage: SemanticCachePersistence; key: string } | undefined;
+    private readonly _allowsRemote: () => boolean;
+    private readonly _allowsEmbedding: () => boolean;
+    private _clearing: Promise<void> = Promise.resolve();
 
     private _l1Hits = 0;
     private _l2Hits = 0;
@@ -84,10 +93,15 @@ export class SemanticCache {
     constructor(opts: SemanticCacheOptions) {
         this._embed      = opts.embed;
         this._threshold  = opts.threshold  ?? DEFAULT_THRESHOLD;
-        this._maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES;
+        this._maxEntries = Math.max(0, Math.floor(opts.maxEntries ?? DEFAULT_MAX_ENTRIES));
         this._ttlMs      = opts.ttlMs;
         this._l2         = opts.l2;
         this._warmL1     = opts.warmL1FromL2 ?? true;
+        this._allowsRemote = opts.allowsRemote ?? (() => !opts.persistence);
+        this._allowsEmbedding = opts.allowsEmbedding ?? (() => true);
+        if (opts.persistence) {
+            this._persistence = { storage: opts.persistence.storage, key: semanticCacheScopeKey(opts.persistence.scope) };
+        }
     }
 
     /**
@@ -99,29 +113,35 @@ export class SemanticCache {
         query: string,
         generate: () => Promise<string>,
         meta?: Record<string, unknown>,
+        context = '',
     ): Promise<{ response: string; cached: boolean; tier?: 'l1' | 'l2'; score?: number }> {
+        if (!this._allowsEmbedding()) return { response: await generate(), cached: false };
         const qv  = await this._embed(query);
-        const hit = await this._lookupVec(qv);
+        const hit = await this._lookupVec(qv, context);
         if (hit) return { response: hit.response, cached: true, tier: hit.tier, score: hit.score };
 
         const response = await generate();
-        await this._storeVec(qv, response, meta);
+        await this._storeVec(qv, response, meta, context);
         return { response, cached: false };
     }
 
     /** Looks up a semantically-similar cached answer without generating on a miss. */
     async lookup(query: string): Promise<SemanticCacheHit | undefined> {
-        return this._lookupVec(await this._embed(query));
+        if (!this._allowsEmbedding()) return undefined;
+        return this._lookupVec(await this._embed(query), '');
     }
 
     /** Stores a query → response association in both tiers. */
     async store(query: string, response: string, meta?: Record<string, unknown>): Promise<void> {
-        await this._storeVec(await this._embed(query), response, meta);
+        if (!this._allowsEmbedding()) return;
+        await this._storeVec(await this._embed(query), response, meta, '');
     }
 
     /** Drops all L1 entries. Does not touch the shared L2 backend. */
     clear(): void {
         this._l1.length = 0;
+        const persistence = this._persistence;
+        if (persistence) this._clearing = this._clearing.then(() => persistence.storage.clear(persistence.key)).catch(() => {});
     }
 
     /** Current L1 entry count. */
@@ -136,18 +156,21 @@ export class SemanticCache {
 
     // ── Internals (operate on a precomputed embedding) ────────────────────────
 
-    private async _lookupVec(qv: Float32Array): Promise<SemanticCacheHit | undefined> {
-        const local = this._searchL1(qv);
+    private async _lookupVec(qv: Float32Array, context: string): Promise<SemanticCacheHit | undefined> {
+        await this._clearing;
+        const persistence = this._persistence;
+        const entries = persistence ? await persistence.storage.read(persistence.key).catch(() => this._l1) : this._l1;
+        const local = this._searchL1(entries, qv, context);
         if (local) {
             this._l1Hits++;
             return { response: local.response, score: local.score, tier: 'l1' };
         }
 
-        if (this._l2) {
+        if (this._l2 && !context && this._allowsRemote()) {
             // L2 is best-effort: a gateway error degrades to local-only, never throws.
             const remote = await this._l2.lookup(qv, this._threshold).catch(() => undefined);
             if (remote && remote.score >= this._threshold) {
-                if (this._warmL1) this._addL1(qv, remote.response);
+                if (this._warmL1) await this._addL1(qv, remote.response, context);
                 this._l2Hits++;
                 return { response: remote.response, score: remote.score, tier: 'l2' };
             }
@@ -157,26 +180,27 @@ export class SemanticCache {
         return undefined;
     }
 
-    private async _storeVec(qv: Float32Array, response: string, meta?: Record<string, unknown>): Promise<void> {
-        this._addL1(qv, response);
-        if (this._l2) {
+    private async _storeVec(qv: Float32Array, response: string, meta: Record<string, unknown> | undefined, context: string): Promise<void> {
+        await this._addL1(qv, response, context);
+        if (this._l2 && !context && this._allowsRemote()) {
             // Best-effort: failing to share to L2 must not fail the caller's request.
             await this._l2.store(qv, response, meta).catch(() => { /* swallow — local copy still cached */ });
         }
     }
 
     /** Linear cosine scan over L1, dropping expired entries en route. */
-    private _searchL1(qv: Float32Array): { response: string; score: number } | undefined {
+    private _searchL1(entries: SemanticCacheEntry[], qv: Float32Array, context: string): { response: string; score: number } | undefined {
         const now = Date.now();
-        let best: L1Entry | undefined;
+        let best: SemanticCacheEntry | undefined;
         let bestScore = -Infinity;
 
-        for (let i = this._l1.length - 1; i >= 0; i--) {
-            const entry = this._l1[i]!;
+        for (let i = entries.length - 1; i >= 0; i--) {
+            const entry = entries[i]!;
             if (this._ttlMs != null && now > entry.timestamp + this._ttlMs) {
-                this._l1.splice(i, 1);
+                entries.splice(i, 1);
                 continue;
             }
+            if (entry.context !== context) continue;
             const score = cosineSimilarity(qv, entry.embedding);
             if (score > bestScore) {
                 bestScore = score;
@@ -189,8 +213,12 @@ export class SemanticCache {
             : undefined;
     }
 
-    private _addL1(qv: Float32Array, response: string): void {
-        this._l1.push({ embedding: qv, response, timestamp: Date.now() });
+    private async _addL1(qv: Float32Array, response: string, context: string): Promise<void> {
+        await this._clearing;
+        const entry = { embedding: qv.slice(), response, timestamp: Date.now(), context };
+        this._l1.push(entry);
         while (this._l1.length > this._maxEntries) this._l1.shift();
+        const persistence = this._persistence;
+        if (persistence) await persistence.storage.append(persistence.key, entry, this._maxEntries).catch(() => {});
     }
 }

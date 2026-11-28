@@ -50,13 +50,22 @@ export class SemanticCachingBridge implements TransformerBridge {
     }
 
     async generate(prompt: string, opts: BridgeGenerateOptions = {}): Promise<string> {
-        // Match on system + prompt meaning so different system contexts don't
-        // cross-hit; partition further by model via the stored meta.
-        const queryText = opts.systemPrompt ? `${opts.systemPrompt}\n${prompt}` : prompt;
+        // Vendor options can carry tool definitions or tool calls. Delegate requests
+        // with such options directly so a cached answer cannot stand in for an action.
+        if (opts.cacheable === false || opts.extra) {
+            const response = await this._inner.generate(prompt, opts);
+            this._lastCall = this._inner.lastCall;
+            return response;
+        }
+        const { systemPrompt, model, maxTokens, temperature, topP } = opts;
+        const context = [systemPrompt, model, maxTokens, temperature, topP].some((value) => value !== undefined)
+            ? JSON.stringify([systemPrompt, model, maxTokens, temperature, topP])
+            : '';
         const { response, cached, tier } = await this._cache.getOrGenerate(
-            queryText,
+            prompt,
             () => this._inner.generate(prompt, opts),
-            opts.model ? { model: opts.model } : undefined,
+            undefined,
+            context,
         );
 
         if (cached) {
