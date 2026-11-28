@@ -5,7 +5,7 @@ function percentile(samples: readonly number[], fraction: number): number {
 }
 
 // Opt in to the CPU gate so ordinary unit-test concurrency does not affect its timings.
-describe.runIf(process.env.BF_KNOWLEDGE_INDEX_PERF === '1')('50,000-card knowledge index', () => {
+(process.env.BF_KNOWLEDGE_INDEX_PERF === '1' ? describe : describe.skip)('50,000-card knowledge index', () => {
     let docs: ReturnType<typeof makeDocs>;
     let embedder: ReturnType<typeof makeEmbedder>;
     let index: Awaited<ReturnType<typeof buildIndex>>;

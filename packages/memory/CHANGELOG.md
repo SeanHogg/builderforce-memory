@@ -1,6 +1,10 @@
 # Changelog — @seanhogg/builderforce-memory
 
-## 2026.10.90
+## 2026.10.91
+
+- Fixed: `tests/knowledge-index.perf.test.ts` used vitest-only `describe.runIf` under Jest; 2026.10.90 never published because of it.
+
+## 2026.10.90 (not published)
 
 ### Changed — retrieval `chunkText`
 
