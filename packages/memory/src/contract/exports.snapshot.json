@@ -130,6 +130,7 @@
     "hashText",
     "htmlParser",
     "hybridRetrieve",
+    "indexedDbSemanticCache",
     "jaccardSimilarity",
     "jsonParser",
     "listDialects",

@@ -48,42 +48,61 @@ export function chunkText(text: string, opts: ChunkOptions = {}): Chunk[] {
 
     const trimmed = text.trim();
     if (trimmed.length === 0) return [];
-    if (trimmed.length <= chunkSize) return [{ text: trimmed, index: 0, start: 0 }];
+    // `start` is an offset into the ORIGINAL text, so the leading whitespace `trim` dropped is added back.
+    const lead = text.length - text.trimStart().length;
+    if (trimmed.length <= chunkSize) return [{ text: trimmed, index: 0, start: lead }];
 
     const pieces = splitRecursive(trimmed, chunkSize, separators);
 
     // Merge adjacent pieces up to chunkSize, then stitch overlap between chunks.
+    //
+    // `buf` is always a contiguous slice of `trimmed` beginning at `bufStart`; its first `carried` code units are
+    // the overlap carry, already emitted with the previous chunk. Every emitted chunk therefore has an exact
+    // offset, and the carry is strictly shorter than the chunk it came from, so each chunk ends strictly after
+    // the previous one: no chunk is ever re-emitted, and the buffer shrinks on every hard-split iteration.
     const chunks: Chunk[] = [];
     let buf = '';
-    const flush = () => {
-        const t = buf.trim();
-        if (t.length > 0) {
-            const start = chunks.length === 0 ? 0 : Math.max(0, trimmed.indexOf(t));
-            chunks.push({ text: t, index: chunks.length, start });
-        }
-        buf = '';
+    let bufStart = 0;
+    let carried = 0;
+    const emit = (raw: string, at: number) => {
+        const t = raw.trim();
+        if (t.length === 0) return;
+        const skipped = raw.length - raw.trimStart().length;
+        chunks.push({ text: t, index: chunks.length, start: lead + at + skipped });
     };
+    const carryOf = (raw: string) => safeTail(raw, Math.min(overlap, raw.length - 1));
 
     for (const piece of pieces) {
         if (buf.length + piece.length <= chunkSize) {
             buf += piece;
-        } else {
-            flush();
-            // Carry overlap from the previous chunk's tail.
-            const prev = chunks[chunks.length - 1]?.text ?? '';
-            buf = safeTail(prev, overlap) + piece;
-            // A single piece longer than chunkSize is hard-split.
-            while (buf.length > chunkSize) {
-                const cut = safeCutEnd(buf, 0, chunkSize);
-                const head = buf.slice(0, cut);
-                chunks.push({ text: head.trim(), index: chunks.length, start: 0 });
-                buf = safeTail(head, overlap) + buf.slice(cut);
+            continue;
+        }
+        if (buf.length > carried) emit(buf, bufStart);
+        const keep = carryOf(buf);
+        bufStart += buf.length - keep.length;
+        buf = keep + piece;
+        carried = keep.length;
+        // A single piece longer than chunkSize is hard-split.
+        while (buf.length > chunkSize) {
+            let cut = safeCutEnd(buf, 0, chunkSize);
+            if (cut <= carried) {
+                // The surrogate-safe cut would emit nothing but the carry: drop the carry, which is whole pairs.
+                buf = buf.slice(carried);
+                bufStart += carried;
+                carried = 0;
+                cut = safeCutEnd(buf, 0, chunkSize);
             }
+            const head = buf.slice(0, cut);
+            emit(head, bufStart);
+            const next = carryOf(head);
+            bufStart += cut - next.length;
+            buf = next + buf.slice(cut);
+            carried = next.length;
         }
     }
-    flush();
+    if (buf.length > carried) emit(buf, bufStart);
 
-    return chunks.map((c, i) => ({ ...c, index: i }));
+    return chunks;
 }
 
 /**

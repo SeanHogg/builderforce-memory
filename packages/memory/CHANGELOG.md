@@ -1,5 +1,23 @@
 # Changelog — @seanhogg/builderforce-memory
 
+## 2026.10.90
+
+### Changed — retrieval `chunkText`
+
+- **Breaking:** `chunkText` is removed from `@seanhogg/builderforce-memory/working`. Import `chunkText` from the root or `./retrieval` instead; pass `exact: true` for the old lossless round-trip behaviour (nothing trimmed, no overlap).
+- New `exact` option on `chunkText` (retrieval): the same recursive split, packed greedily, so the chunk texts concatenate back to the input.
+
+### Fixed
+
+- A hard cut never splits a UTF-16 surrogate pair.
+- Every default-mode chunk's `start` is its true offset into the original text (`text.slice(start, start + chunk.text.length) === chunk.text`). Chunks cut by the hard split used to report `start: 0`.
+- No chunk repeats the previous one: the overlap carry is always shorter than the chunk it comes from, so every chunk ends strictly after the previous chunk.
+- The overlap carry always makes progress. With `chunkOverlap` = `chunkSize - 1` (the clamp of the default 200 for any `chunkSize` up to 201) on astral text, the buffer never shrank and `chunkText` looped forever.
+
+### Added
+
+- `indexedDbSemanticCache(factory, dbName?)`: a `SemanticCachePersistence` that stores semantic-cache vectors in IndexedDB through structured clone, one read/write transaction per append, with `close()`.
+
 ## 2026.10.89
 
 ### Added — `@seanhogg/builderforce-memory-mcp`

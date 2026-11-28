@@ -99,6 +99,101 @@ test('regression: a surrogate pair is never split (overlap carry lands mid-pair)
     }
 });
 
+test('regression: overlap = chunkSize-1 on astral text terminates and never splits a pair', () => {
+    // Distinct astral characters (2 code units each) so order and coverage are checkable by position.
+    const distinct = Array.from({ length: 200 }, (_, i) => String.fromCodePoint(0x1f600 + i)).join('');
+    const same = '😀'.repeat(20);
+    const cases: Array<[string, { chunkSize: number; chunkOverlap?: number }]> = [
+        [same, { chunkSize: 7, chunkOverlap: 6 }],
+        [same, { chunkSize: 2, chunkOverlap: 1 }],
+        [same, { chunkSize: 3, chunkOverlap: 2 }],
+        [distinct, { chunkSize: 7, chunkOverlap: 6 }],
+        [distinct, { chunkSize: 3, chunkOverlap: 2 }],
+        [distinct, { chunkSize: 50 }], // default overlap 200 clamps to chunkSize - 1
+    ];
+    for (const [text, opts] of cases) {
+        const chunks = chunkText(text, opts);
+        expect(chunks.length).toBeGreaterThan(1);
+        for (const c of chunks) {
+            expect(c.text.length).toBeGreaterThan(0);
+            expect(c.text.length).toBeLessThanOrEqual(opts.chunkSize);
+            expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(c.text)).toBe(false);
+            expect(c.text.length % 2).toBe(0); // only whole pairs
+        }
+        expect(chunks[0]!.text.startsWith(text.slice(0, 2))).toBe(true);
+        expect(chunks[chunks.length - 1]!.text.endsWith(text.slice(-2))).toBe(true);
+    }
+    // Ordered, gap-free coverage by each chunk's own `start`.
+    for (const opts of [{ chunkSize: 7, chunkOverlap: 6 }, { chunkSize: 3, chunkOverlap: 2 }, { chunkSize: 50 }]) {
+        let prevStart = -1;
+        let prevEnd = 0;
+        for (const c of chunkText(distinct, opts)) {
+            expect(distinct.slice(c.start, c.start + c.text.length)).toBe(c.text);
+            expect(c.start).toBeGreaterThan(prevStart);
+            expect(c.start).toBeLessThanOrEqual(prevEnd); // no gap
+            expect(c.start + c.text.length).toBeGreaterThan(prevEnd);
+            prevStart = c.start;
+            prevEnd = c.start + c.text.length;
+        }
+        expect(prevEnd).toBe(distinct.length);
+    }
+});
+
+test("regression: every chunk's start is its true offset", () => {
+    const words = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu';
+    const text = `${words}. ${'😀🎉'.repeat(15)}\n\n${'x'.repeat(60)}\n${words} ${'é'.repeat(25)}${'🚀'.repeat(12)}`;
+    for (const [size, overlap] of [[10, 0], [10, 3], [10, 9], [17, 8], [30, 29], [30, 200], [64, 10], [3, 2], [2, 1]] as const) {
+        const chunks = chunkText(text, { chunkSize: size, chunkOverlap: overlap });
+        expect(chunks.length).toBeGreaterThan(1);
+        for (const c of chunks) {
+            expect(text.slice(c.start, c.start + c.text.length)).toBe(c.text);
+            expect(c.text.length).toBeLessThanOrEqual(size);
+        }
+    }
+    // The offset is into the ORIGINAL text, leading whitespace included.
+    const padded = chunkText(`  \n${'ab '.repeat(40)}`, { chunkSize: 20, chunkOverlap: 5 });
+    for (const c of padded) expect(`  \n${'ab '.repeat(40)}`.slice(c.start, c.start + c.text.length)).toBe(c.text);
+});
+
+test('regression: no chunk repeats the previous chunk', () => {
+    const distinct = Array.from({ length: 120 }, (_, i) => String.fromCodePoint(0x1f600 + i)).join('');
+    const ascii = 'abcdefghijklmnopqrstuvwxyz0123456789'.repeat(6);
+    for (const text of [distinct, ascii]) {
+        for (const [size, overlap] of [[7, 6], [6, 5], [10, 9], [4, 3], [3, 2], [20, 100]] as const) {
+            const chunks = chunkText(text, { chunkSize: size, chunkOverlap: overlap });
+            let prevEnd = 0;
+            for (const c of chunks) {
+                expect(c.start + c.text.length).toBeGreaterThan(prevEnd); // each chunk reaches past the previous one
+                prevEnd = c.start + c.text.length;
+            }
+            for (let i = 1; i < chunks.length; i++) expect(chunks[i]!.text).not.toBe(chunks[i - 1]!.text);
+        }
+    }
+});
+
+test('regression: chunkedTextSummary pins the summarizer chunk boundaries (paragraph, line, hard cut, greedy pack)', async () => {
+    const text = 'aaaaaaaa\n\n' + 'bbbb\ncccc\ndddd\n\n' + 'eeeeeeeeee\nffffffffff\ngggggggggg\n\n' + 'h'.repeat(45);
+    const seen: string[] = [];
+    await chunkedTextSummary({
+        text,
+        limit: 20,
+        measure: async (t) => t.length,
+        maxChunks: 10,
+        summarizeChunk: async (c) => { seen.push(c); return 'S'; },
+    });
+    // The first eight calls are the leaf chunks of `text`; later calls are the merge rounds.
+    expect(seen.slice(0, 8)).toEqual([
+        'aaaaaaaa\n\n',
+        'bbbb\ncccc\ndddd\n\n',
+        'eeeeeeeeee\n',
+        'ffffffffff\n',
+        'gggggggggg\n\n',
+        'h'.repeat(20),
+        'h'.repeat(20),
+        'hhhhh',
+    ]);
+});
+
 test('regression: chunkedTextSummary uses the shared splitter', async () => {
     const text = Array.from({ length: 6 }, (_, i) => `${i}`.padEnd(30, 'x')).join('\n\n');
     const seen: string[] = [];
