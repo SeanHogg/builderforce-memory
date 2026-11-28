@@ -6,10 +6,17 @@ function percentile(samples: readonly number[], fraction: number): number {
 
 // Opt in to the CPU gate so ordinary unit-test concurrency does not affect its timings.
 describe.runIf(process.env.BF_KNOWLEDGE_INDEX_PERF === '1')('50,000-card knowledge index', () => {
+    let docs: ReturnType<typeof makeDocs>;
+    let embedder: ReturnType<typeof makeEmbedder>;
+    let index: Awaited<ReturnType<typeof buildIndex>>;
+
+    beforeAll(async () => {
+        docs = makeDocs(50_000);
+        embedder = makeEmbedder(32);
+        index = await buildIndex(docs, embedder, {});
+    }, 1_800_000);
+
     it('meets the warm CPU retrieval and exact lookup budgets', async () => {
-        const docs = makeDocs(50_000);
-        const embedder = makeEmbedder(32);
-        const index = await buildIndex(docs, embedder, {});
         expect(index.storage().nodes).toBe(50_000);
         const queries = makeQueries(100);
         for (const query of queries) await index.search(query, { k: 10 });
@@ -32,9 +39,9 @@ describe.runIf(process.env.BF_KNOWLEDGE_INDEX_PERF === '1')('50,000-card knowled
         expect(embedder.calls - calls).toBe(queries.length);
         const p50 = percentile(searchMs, 0.5), p95 = percentile(searchMs, 0.95);
         const exactMax = Math.max(...exactMs);
-        console.info({ cards: docs.length, samples: queries.length, p50, p95, exactMax });
+        console.info({ cards: docs.length, dimensions: embedder.dims, samples: queries.length, p50, p95, exactMax });
         expect(p50).toBeLessThanOrEqual(20);
         expect(p95).toBeLessThanOrEqual(60);
         expect(exactMax).toBeLessThan(1);
-    }, 300_000);
+    }, 30_000);
 });

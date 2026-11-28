@@ -16,8 +16,10 @@
  * UTF-16 surrogate pair.
  */
 
-/** Separators from the coarsest boundary to the finest; past the last, a hard cut. */
-const SEPARATORS = ['\n\n', '\n'] as const;
+import { chunkText as chunkTextShared } from '../retrieval/chunk.js';
+
+/** Separators from the coarsest boundary to the finest; the empty one is the hard cut. */
+const SEPARATORS = ['\n\n', '\n', ''];
 /** Bounds the re-measure/re-split of a chunk the first estimate under-cut. */
 const MAX_REFIT_ATTEMPTS = 3;
 /** Merging summaries must shrink the text; this bounds a pathological recursion. */
@@ -52,53 +54,13 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError();
 }
 
-/** A hard cut of `text` into slices of at most `maxChars`, never between the halves of a surrogate pair. */
-function hardCut(text: string, maxChars: number): string[] {
-  const out: string[] = [];
-  let at = 0;
-  while (at < text.length) {
-    let end = Math.min(text.length, at + maxChars);
-    const last = text.charCodeAt(end - 1);
-    // A high surrogate at the cut belongs with the low one after it: cut before it (or keep the pair whole when it is the slice).
-    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end = end - 1 > at ? end - 1 : end + 1;
-    out.push(text.slice(at, end));
-    at = end;
-  }
-  return out;
-}
-
 /**
- * Cut `text` into pieces of at most `maxChars`: paragraphs first, then lines, then a hard cut. A piece still
- * over `maxChars` moves to the NEXT level only, so every recursion strictly descends and the split terminates;
- * the separator stays on its piece, so joining the pieces gives back `text`.
+ * `text` as chunks of at most `maxChars` (a lone surrogate pair at `maxChars` 1 is the one exception): the shared
+ * retrieval splitter in its exact mode, cut on paragraph, then line, then hard boundaries. Joined, the chunks give
+ * back `text`, except that a trailing whitespace-only remainder is dropped.
  */
-function pieces(text: string, maxChars: number, level = 0): string[] {
-  if (text.length <= maxChars) return [text];
-  const separator = SEPARATORS[level];
-  if (separator === undefined) return hardCut(text, maxChars);
-  const parts = text.split(separator);
-  if (parts.length === 1) return pieces(text, maxChars, level + 1);
-  return parts.flatMap((p, i) => pieces(i < parts.length - 1 ? p + separator : p, maxChars, level + 1));
-}
-
-/**
- * `text` as chunks of at most `maxChars` (a lone surrogate pair at `maxChars` 1 is the one exception): pieces cut on
- * paragraph, then line, then hard boundaries, packed greedily. Joined, the chunks give back `text`, except that a
- * trailing whitespace-only remainder is dropped.
- */
-export function chunkText(text: string, maxChars: number): string[] {
-  const max = Math.max(1, Math.floor(maxChars));
-  const chunks: string[] = [];
-  let current = '';
-  for (const piece of pieces(text, max)) {
-    if (current && current.length + piece.length > max) {
-      chunks.push(current);
-      current = '';
-    }
-    current += piece;
-  }
-  if (current.trim()) chunks.push(current);
-  return chunks;
+function splitText(text: string, maxChars: number): string[] {
+  return chunkTextShared(text, { chunkSize: Math.max(1, Math.floor(maxChars)), exact: true, separators: SEPARATORS }).map((c) => c.text);
 }
 
 /** Re-measure each chunk with the real measure; a chunk still over `limit` is split again (bounded). */
@@ -114,7 +76,7 @@ async function fitChunks(chunks: readonly string[], limit: number, o: ChunkedTex
         const tokens = await o.measure(part, o.signal);
         if (tokens <= limit || part.length <= 1) { next.push(part); continue; }
         over = true;
-        next.push(...chunkText(part, Math.max(1, Math.floor(((part.length / tokens) * limit) * 0.9))));
+        next.push(...splitText(part, Math.max(1, Math.floor(((part.length / tokens) * limit) * 0.9))));
       }
       parts = next;
       if (!over) break;
@@ -139,7 +101,7 @@ async function summarizeAt(o: ChunkedTextSummaryOptions, depth: number): Promise
   if (tokens <= limit) return o.summarizeChunk(text, signal);
   if (depth >= (o.maxMergeDepth ?? DEFAULT_MAX_MERGE_DEPTH)) return null;
 
-  const chunks = await fitChunks(chunkText(text, Math.max(1, Math.floor((text.length / tokens) * limit))), limit, o);
+  const chunks = await fitChunks(splitText(text, Math.max(1, Math.floor((text.length / tokens) * limit))), limit, o);
   if (chunks.length > o.maxChunks) return null;
 
   const summaries: string[] = [];

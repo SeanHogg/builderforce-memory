@@ -5,7 +5,12 @@
  */
 
 import { jest } from '@jest/globals';
-import { chunkedTextSummary, chunkText, isRepeatedNarration, wordContained, wordOverlap, type ChunkedTextSummaryOptions } from './index.js';
+import { chunkText as sharedChunkText } from '../retrieval/chunk.js';
+import { chunkedTextSummary, isRepeatedNarration, wordContained, wordOverlap, type ChunkedTextSummaryOptions } from './index.js';
+
+/** The summarizer's cut, expressed as the shared splitter's options (the removed working `chunkText(text, maxChars)`). */
+const chunkText = (text: string, maxChars: number): string[] =>
+    sharedChunkText(text, { chunkSize: maxChars, exact: true, separators: ['\n\n', '\n', ''] }).map((c) => c.text);
 
 const MAX_CHUNKS = 8;
 /** 1 char = 1 token, a 100-token window: chunks must stay under 80. */

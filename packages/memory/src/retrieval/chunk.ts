@@ -8,6 +8,8 @@
  * natural boundary that fits, fall back to finer ones) but is zero-dependency.
  */
 
+import { safeCutEnd, safeTail, splitRecursive } from './splitRecursive.js';
+
 export interface ChunkOptions {
     /** Target maximum chunk size in characters. Default 1000. */
     chunkSize?: number;
@@ -16,6 +18,9 @@ export interface ChunkOptions {
     chunkOverlap?: number;
     /** Separators tried in order, largest natural boundary first. */
     separators?: string[];
+    /** Lossless packing: nothing trimmed, no overlap (`chunkOverlap` is ignored), `start` is the true offset, so
+     *  the chunk texts concatenate back to the input (a trailing whitespace-only remainder is dropped). Default false. */
+    exact?: boolean;
 }
 
 export interface Chunk {
@@ -38,6 +43,8 @@ export function chunkText(text: string, opts: ChunkOptions = {}): Chunk[] {
     const chunkSize = Math.max(1, opts.chunkSize ?? 1000);
     const overlap = Math.min(Math.max(0, opts.chunkOverlap ?? 200), chunkSize - 1);
     const separators = opts.separators ?? DEFAULT_SEPARATORS;
+
+    if (opts.exact) return chunkExact(text, chunkSize, separators);
 
     const trimmed = text.trim();
     if (trimmed.length === 0) return [];
@@ -64,12 +71,13 @@ export function chunkText(text: string, opts: ChunkOptions = {}): Chunk[] {
             flush();
             // Carry overlap from the previous chunk's tail.
             const prev = chunks[chunks.length - 1]?.text ?? '';
-            buf = (overlap > 0 ? prev.slice(-overlap) : '') + piece;
+            buf = safeTail(prev, overlap) + piece;
             // A single piece longer than chunkSize is hard-split.
             while (buf.length > chunkSize) {
-                const head = buf.slice(0, chunkSize);
+                const cut = safeCutEnd(buf, 0, chunkSize);
+                const head = buf.slice(0, cut);
                 chunks.push({ text: head.trim(), index: chunks.length, start: 0 });
-                buf = (overlap > 0 ? head.slice(-overlap) : '') + buf.slice(chunkSize);
+                buf = safeTail(head, overlap) + buf.slice(cut);
             }
         }
     }
@@ -78,24 +86,25 @@ export function chunkText(text: string, opts: ChunkOptions = {}): Chunk[] {
     return chunks.map((c, i) => ({ ...c, index: i }));
 }
 
-/** Recursively splits text on the first separator that yields sub-chunkSize pieces. */
-function splitRecursive(text: string, chunkSize: number, separators: string[]): string[] {
-    /* istanbul ignore next -- defensive base case; callers only recurse on parts > chunkSize */
-    if (text.length <= chunkSize) return [text];
-    const [sep, ...rest] = separators;
-    if (sep === undefined) return [text];
-    if (sep === '') {
-        // Last resort: hard character split.
-        const out: string[] = [];
-        for (let i = 0; i < text.length; i += chunkSize) out.push(text.slice(i, i + chunkSize));
-        return out;
+/**
+ * Exact mode: the SAME recursive split, packed greedily with nothing trimmed and no overlap, so slicing the input by
+ * each chunk's `start`/length (or joining the chunk texts) reproduces it. Only a trailing whitespace-only remainder
+ * is dropped.
+ */
+function chunkExact(text: string, chunkSize: number, separators: string[]): Chunk[] {
+    if (text.trim().length === 0) return [];
+    const chunks: Chunk[] = [];
+    let current = '';
+    let start = 0;
+    const push = () => {
+        chunks.push({ text: current, index: chunks.length, start });
+        start += current.length;
+        current = '';
+    };
+    for (const piece of splitRecursive(text, chunkSize, separators)) {
+        if (current && current.length + piece.length > chunkSize) push();
+        current += piece;
     }
-    const parts = text.split(sep);
-    const out: string[] = [];
-    for (let i = 0; i < parts.length; i++) {
-        const part = i < parts.length - 1 ? parts[i]! + sep : parts[i]!;
-        if (part.length > chunkSize) out.push(...splitRecursive(part, chunkSize, rest));
-        else out.push(part);
-    }
-    return out;
+    if (current.trim().length > 0) push();
+    return chunks;
 }

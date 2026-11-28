@@ -4,6 +4,7 @@
  */
 
 import { chunkText } from '../src/retrieval/chunk.js';
+import { chunkedTextSummary } from '../src/working/textSummary.js';
 import { bm25Search, bm25Idf, bm25LengthNorm, bm25TermScore } from '../src/retrieval/bm25.js';
 import { reciprocalRankFusion } from '../src/retrieval/fusion.js';
 import { maximalMarginalRelevance } from '../src/retrieval/mmr.js';
@@ -58,6 +59,59 @@ test('chunkText with zero overlap does not carry context', () => {
     const text = `${'a'.repeat(30)}\n\n${'b'.repeat(30)}`;
     const chunks = chunkText(text, { chunkSize: 35, chunkOverlap: 0 });
     expect(chunks.length).toBeGreaterThan(1);
+});
+
+const EXACT_SEPARATORS = ['\n\n', '\n', ''];
+
+test('regression: chunkOverlap 0 round-trips the input exactly', () => {
+    const text = `${'p'.repeat(5)}\n\n${'l'.repeat(4)}\n${'m'.repeat(4)}\n\n${'h'.repeat(12)}`;
+    const chunks = chunkText(text, { chunkSize: 8, chunkOverlap: 0, separators: EXACT_SEPARATORS, exact: true });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(8);
+    // Nothing is trimmed or swallowed: separators stay on their chunk.
+    expect(chunks.map((c) => c.text).join('')).toBe(text);
+    for (const c of chunks) expect(text.slice(c.start, c.start + c.text.length)).toBe(c.text);
+    chunks.forEach((c, i) => expect(c.index).toBe(i));
+    // A trailing whitespace-only remainder is the one thing dropped.
+    expect(chunkText(`abc\n\n${' '.repeat(10)}`, { chunkSize: 5, exact: true, separators: EXACT_SEPARATORS }).map((c) => c.text)).toEqual(['abc\n\n', ' '.repeat(5)]);
+    // Whitespace-only input is still [] and the default (non-exact) output is unchanged by the new option.
+    expect(chunkText('  \n ', { exact: true })).toEqual([]);
+    expect(chunkText('short text', { chunkSize: 100, exact: true })).toEqual([{ text: 'short text', index: 0, start: 0 }]);
+});
+
+test('regression: a surrogate pair is never split', () => {
+    const text = '😀'.repeat(9); // 18 code units
+    for (const max of [1, 2, 3, 5, 7]) {
+        for (const exact of [true, false]) {
+            const chunks = chunkText(text, { chunkSize: max, chunkOverlap: 0, exact });
+            expect(chunks.map((c) => c.text).join('')).toBe(text);
+            for (const c of chunks) expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(c.text)).toBe(false);
+        }
+    }
+});
+
+test('regression: a surrogate pair is never split (overlap carry lands mid-pair)', () => {
+    const text = '😀'.repeat(20);
+    for (const [size, overlap] of [[7, 3], [9, 5], [10, 1], [6, 3]] as const) {
+        const chunks = chunkText(text, { chunkSize: size, chunkOverlap: overlap });
+        expect(chunks.length).toBeGreaterThan(1);
+        for (const c of chunks) expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(c.text)).toBe(false);
+    }
+});
+
+test('regression: chunkedTextSummary uses the shared splitter', async () => {
+    const text = Array.from({ length: 6 }, (_, i) => `${i}`.padEnd(30, 'x')).join('\n\n');
+    const seen: string[] = [];
+    await chunkedTextSummary({
+        text,
+        limit: 50,
+        measure: async (t) => t.length,
+        maxChunks: 8,
+        summarizeChunk: async (c) => { seen.push(c); return 'S'; },
+    });
+    const expected = chunkText(text, { chunkSize: 50, exact: true, separators: EXACT_SEPARATORS }).map((c) => c.text);
+    expect(expected.length).toBeGreaterThan(1);
+    expect(seen.slice(0, expected.length)).toEqual(expected);
 });
 
 // ── bm25Search ─────────────────────────────────────────────────────────────────
